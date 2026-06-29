@@ -21,9 +21,10 @@ class PermissionGuard(private val context: Context) {
     fun requireGranted(capability: CompanionCapability): PermissionEvaluation {
         val evaluation = evaluate(capability)
 
-        // Sensitive Android abilities must stop here when permission is missing.
-        // Later command handlers must consume this result and return a QUIC error
-        // envelope instead of executing partial platform operations.
+        // Sensitive Android abilities must stop here when runtime permission is missing.
+        // Some special grants, such as MediaProjection consent and IME activation, are
+        // interactive states. Their handlers are allowed to launch Android's grant UI
+        // and then return a structured recoverable result if the user has not completed it.
         return evaluation
     }
 
@@ -41,9 +42,9 @@ class PermissionGuard(private val context: Context) {
             "sensitive-clip-flag" -> true
             "package-visibility-query" -> true
             "scoped-storage-or-document-picker" -> true
-            "media-projection-consent" -> false
-            "input-method-service" -> false
-            "background-launch-policy" -> false
+            "media-projection-consent" -> true
+            "input-method-service" -> true
+            "background-launch-policy" -> true
             "explicit-intent-only" -> true
             else -> false
         }
