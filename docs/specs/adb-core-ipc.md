@@ -163,7 +163,7 @@ Core 已实现 `CompanionSessionManager`：
 Android Companion 已实现 `AndroidFeatureDispatcher` 与以下 handler：
 
 - 输入法：`input.text`、`input.key`；
-- 屏幕采集授权：`stream.open`、`stream.close`、`screenshot.capture` 状态检查；
+- 屏幕采集：`stream.open` 拉起授权，`screenshot.capture` 通过 MediaProjection + ImageReader + VirtualDisplay 保存 PNG，`stream.close` 关闭 projection；
 - 相机：`camera.open`、`camera.close`；
 - 录音：`audio.record.start`、`audio.record.stop`；
 - 剪贴板：`clipboard.read`、`clipboard.write`；
@@ -173,6 +173,30 @@ Android Companion 已实现 `AndroidFeatureDispatcher` 与以下 handler：
 - 电话 / 短信：`phone.call`、`sms.read`、`sms.send`；
 - 传感器：`sensor.subscribe`、`sensor.unsubscribe`；
 - UI：`ui.surface.show`、`overlay.show`、`overlay.hide`、`intent.chainLaunch`。
+
+`screenshot.capture` 参数：
+
+```json
+{
+  "width": 1080,
+  "height": 2400,
+  "timeoutMs": 1500
+}
+```
+
+成功结果：
+
+```json
+{
+  "streamId": "screen-1",
+  "path": "screenshots/example.png",
+  "width": 1080,
+  "height": 2400,
+  "sizeBytes": 123456,
+  "format": "png",
+  "state": "captured"
+}
+```
 
 ## Android Companion QUIC 协议
 
@@ -217,7 +241,7 @@ Android Companion 已实现 `AndroidFeatureDispatcher` 与以下 handler：
 - 将真实网络 QUIC socket 接到 `CompanionCommandRouter` 与 `CompanionSessionManager`；
 - 增加独立 AOSP ADB 源码镜像仓库与 GitHub Actions 编译产物同步；
 - 增加设备配对、证书、信任、会话恢复；
-- 增加屏幕帧 ImageReader/encoder surface；
+- 增加屏幕 H.264/AV1 实时编码流；
 - 增加相机预览/编码 surface；
 - 增加音频实时 QUIC media stream；
 - 增加 Android 单元测试和 instrumentation 测试。
