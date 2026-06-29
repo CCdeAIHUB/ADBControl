@@ -44,6 +44,23 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".screen.ScreenCaptureConsentActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <service
+            android:name=".input.CompanionInputMethodService"
+            android:exported="true"
+            android:permission="android.permission.BIND_INPUT_METHOD">
+            <intent-filter>
+                <action android:name="android.view.InputMethod" />
+            </intent-filter>
+            <meta-data
+                android:name="android.view.im"
+                android:resource="@xml/companion_input_method" />
+        </service>
+
         <service
             android:name=".quic.QuicCompanionService"
             android:exported="false"
