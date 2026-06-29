@@ -15,7 +15,7 @@ class ScreenCaptureFeatureHandler(private val context: Context) : FeatureCommand
 
     override fun handle(context: CompanionCommandContext): CompanionCommandResult {
         return when (context.operation) {
-            "stream.open" -> requestCaptureConsent(context)
+            "stream.open" -> openStream(context)
             "stream.close" -> closeCapture(context)
             "screenshot.capture" -> captureScreenshot(context)
             else -> CompanionCommandResult.failure(
@@ -24,6 +24,49 @@ class ScreenCaptureFeatureHandler(private val context: Context) : FeatureCommand
                 message = "Unsupported screen capture operation: ${context.operation}",
                 module = "companion.screen",
                 recoverable = false,
+            )
+        }
+    }
+
+    private fun openStream(command: CompanionCommandContext): CompanionCommandResult {
+        if (!ScreenCaptureState.isProjectionReady()) {
+            return requestCaptureConsent(command)
+        }
+
+        val width = command.args.intArg("width") ?: context.resources.displayMetrics.widthPixels
+        val height = command.args.intArg("height") ?: context.resources.displayMetrics.heightPixels
+        val bitrate = command.args.intArg("bitrate") ?: 4_000_000
+        val frameRate = command.args.intArg("frameRate") ?: 30
+
+        return try {
+            val stream = ScreenCaptureState.startVideoStream(
+                context = context,
+                width = width,
+                height = height,
+                bitrate = bitrate,
+                frameRate = frameRate,
+            )
+            CompanionCommandResult.success(
+                requestId = command.requestId,
+                result = mapOf(
+                    "sessionId" to stream.sessionId,
+                    "path" to stream.path,
+                    "width" to stream.width,
+                    "height" to stream.height,
+                    "bitrate" to stream.bitrate,
+                    "frameRate" to stream.frameRate,
+                    "format" to "mp4-h264",
+                    "state" to "streaming",
+                ),
+            )
+        } catch (exception: ScreenCaptureException) {
+            CompanionCommandResult.failure(
+                requestId = command.requestId,
+                errorCode = exception.errorCode,
+                message = exception.message,
+                module = "companion.screen",
+                recoverable = exception.recoverable,
+                suggestion = exception.suggestion,
             )
         }
     }
@@ -47,13 +90,33 @@ class ScreenCaptureFeatureHandler(private val context: Context) : FeatureCommand
     }
 
     private fun closeCapture(command: CompanionCommandContext): CompanionCommandResult {
-        ScreenCaptureState.stop()
-        return CompanionCommandResult.success(
-            requestId = command.requestId,
-            result = mapOf(
-                "state" to "closed",
-            ),
-        )
+        val sessionId = command.args.stringArg("sessionId")
+        return try {
+            val closed = if (sessionId == null) {
+                ScreenCaptureState.stop()
+                null
+            } else {
+                ScreenCaptureState.stopVideoStream(context, sessionId)
+            }
+            CompanionCommandResult.success(
+                requestId = command.requestId,
+                result = mapOf(
+                    "state" to "closed",
+                    "sessionId" to closed?.sessionId,
+                    "path" to closed?.path,
+                    "sizeBytes" to closed?.sizeBytes,
+                ),
+            )
+        } catch (exception: ScreenCaptureException) {
+            CompanionCommandResult.failure(
+                requestId = command.requestId,
+                errorCode = exception.errorCode,
+                message = exception.message,
+                module = "companion.screen",
+                recoverable = exception.recoverable,
+                suggestion = exception.suggestion,
+            )
+        }
     }
 
     private fun captureScreenshot(command: CompanionCommandContext): CompanionCommandResult {
