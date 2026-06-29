@@ -39,6 +39,14 @@ jobs:
           cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tee clippy.log
           echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
 
+      - name: Check Quinn transport feature and capture diagnostics
+        id: quinn_feature
+        continue-on-error: true
+        shell: bash
+        run: |
+          cargo check -p adbcontrol-core --features quinn-transport 2>&1 | tee quinn-transport.log
+          echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
       - name: Run tests and capture diagnostics
         id: tests
         continue-on-error: true
@@ -55,9 +63,10 @@ jobs:
           path: |
             fmt.log
             clippy.log
+            quinn-transport.log
             test.log
           if-no-files-found: error
 
       - name: Fail on Rust diagnostics
-        if: steps.fmt.outputs.status != '0' || steps.clippy.outputs.status != '0' || steps.tests.outputs.status != '0'
+        if: steps.fmt.outputs.status != '0' || steps.clippy.outputs.status != '0' || steps.quinn_feature.outputs.status != '0' || steps.tests.outputs.status != '0'
         run: exit 1
