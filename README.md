@@ -12,7 +12,7 @@ The project direction is **Core + Android companion app**:
 
 ## Current repository status
 
-This branch adds the first in-repository execution contract and acceptance specs so later Codex rounds can work from stable, testable requirements instead of conversation-only memory.
+This branch adds the first in-repository execution contract, acceptance specs, and executable Core domain skeleton so later Codex rounds can work from stable, testable requirements instead of conversation-only memory.
 
 Start with:
 
@@ -22,6 +22,14 @@ Start with:
 - [`schemas/control-api.schema.json`](./schemas/control-api.schema.json) — initial API envelope schema.
 - [`schemas/stream-open.schema.json`](./schemas/stream-open.schema.json) — initial real-time stream request schema.
 - [`specs/acceptance/`](./specs/acceptance/) — behavior-first acceptance specs.
+- [`core/domain/`](./core/domain/) — executable routing, trust, capability, and permission domain skeleton.
+- [`test/core/`](./test/core/) — node:test coverage for the first Core domain rules.
+
+## Test
+
+```bash
+npm test
+```
 
 ## Development rule
 
