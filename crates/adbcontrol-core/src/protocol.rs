@@ -249,7 +249,8 @@ mod tests {
         // 场景：前端发送非法 JSON 时，核心必须返回统一错误结构，不能 panic 或静默忽略。
         let service = service_with_recording_runner(Arc::new(Mutex::new(Vec::new())));
 
-        let response: IpcResponse = serde_json::from_str(&service.handle_json_line("{"))
+        let encoded = service.handle_json_line("{");
+        let response: IpcResponse = serde_json::from_str(encoded.as_str())
             .expect("response should be valid JSON");
 
         assert!(!response.ok);
@@ -265,10 +266,11 @@ mod tests {
         // 场景：前端调用未知 method 时，核心必须显式失败，不能假装成功。
         let service = service_with_recording_runner(Arc::new(Mutex::new(Vec::new())));
 
-        let response: IpcResponse = serde_json::from_str(&service.handle_json_line(
+        let encoded = service.handle_json_line(
             r#"{"id":"1","method":"unknown.method","params":{}}"#,
-        ))
-        .expect("response should be valid JSON");
+        );
+        let response: IpcResponse = serde_json::from_str(encoded.as_str())
+            .expect("response should be valid JSON");
 
         assert!(!response.ok);
         assert_eq!(response.id, Some("1".to_string()));
@@ -284,10 +286,11 @@ mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let service = service_with_recording_runner(calls.clone());
 
-        let response: IpcResponse = serde_json::from_str(&service.handle_json_line(
+        let encoded = service.handle_json_line(
             r#"{"id":"2","method":"adb.exec","params":{"args":["devices","-l"]}}"#,
-        ))
-        .expect("response should be valid JSON");
+        );
+        let response: IpcResponse = serde_json::from_str(encoded.as_str())
+            .expect("response should be valid JSON");
 
         assert!(response.ok);
         assert_eq!(
@@ -305,10 +308,11 @@ mod tests {
         // 场景：adb.exec 的 args 必须是 string[]，契约错误必须被协议层拦截。
         let service = service_with_recording_runner(Arc::new(Mutex::new(Vec::new())));
 
-        let response: IpcResponse = serde_json::from_str(&service.handle_json_line(
+        let encoded = service.handle_json_line(
             r#"{"id":"3","method":"adb.exec","params":{"args":"devices"}}"#,
-        ))
-        .expect("response should be valid JSON");
+        );
+        let response: IpcResponse = serde_json::from_str(encoded.as_str())
+            .expect("response should be valid JSON");
 
         assert!(!response.ok);
         assert_eq!(
