@@ -261,3 +261,123 @@ fn require_device_id(envelope: &QuicEnvelope) -> Result<String, AppError> {
             )
         })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::capability::{android_companion_capability_catalog, CapabilityPermissionState};
+
+    #[test]
+    fn hello_creates_handshaking_session_and_returns_ack() {
+        // 场景：Companion 建立连接后先发送 hello，Core 必须创建 session 并返回 helloAck。
+        let mut manager = CompanionSessionManager::default();
+
+        let ack = manager
+            .handle_envelope(hello_envelope("device-1"))
+            .expect("hello should create session");
+
+        assert_eq!(ack.kind, QuicMessageKind::HelloAck);
+        assert_eq!(ack.payload["selectedProtocolVersion"], COMPANION_PROTOCOL_VERSION);
+        assert_eq!(
+            manager.get_session("device-1").expect("session exists").connection_state,
+            ConnectionState::Handshaking
+        );
+    }
+
+    #[test]
+    fn state_message_before_hello_is_rejected() {
+        // 场景：能力状态不能在 hello 之前进入 Core，防止未配对设备污染 registry。
+        let mut manager = CompanionSessionManager::default();
+
+        let error = manager
+            .handle_envelope(capability_list_envelope("device-1", Vec::new()))
+            .expect_err("state before hello should fail");
+
+        assert_eq!(error.error_code, "COMPANION_SESSION_NOT_CONNECTED");
+    }
+
+    #[test]
+    fn capability_and_permission_state_make_session_ready() {
+        // 场景：hello 后同步能力与权限状态，Core 才能把设备视为可路由 ready session。
+        let mut manager = CompanionSessionManager::default();
+        manager
+            .handle_envelope(hello_envelope("device-1"))
+            .expect("hello should create session");
+
+        let capabilities = android_companion_capability_catalog();
+        manager
+            .handle_envelope(capability_list_envelope("device-1", capabilities.clone()))
+            .expect("capability list should sync");
+        manager
+            .handle_envelope(permission_state_envelope(
+                "device-1",
+                capabilities
+                    .iter()
+                    .map(|capability| CapabilityPermissionState {
+                        capability_id: capability.id.clone(),
+                        granted: true,
+                        android_permissions: capability.permission.android_permissions.clone(),
+                        missing_permissions: Vec::new(),
+                        special_grants: capability.permission.special_permissions.clone(),
+                        missing_special_grants: Vec::new(),
+                        user_consent_required: capability.permission.requires_user_consent,
+                    })
+                    .collect(),
+            ))
+            .expect("permission state should sync");
+
+        let session = manager.get_session("device-1").expect("session exists");
+        assert_eq!(session.connection_state, ConnectionState::Ready);
+        assert_eq!(session.capabilities.len(), capabilities.len());
+        assert_eq!(manager.devices()[0].device_id, "device-1");
+    }
+
+    fn hello_envelope(device_id: &str) -> QuicEnvelope {
+        QuicEnvelope {
+            protocol: String::from(COMPANION_PROTOCOL),
+            version: COMPANION_PROTOCOL_VERSION,
+            message_id: format!("hello-{device_id}"),
+            trace_id: Some(String::from("trace-1")),
+            device_id: Some(String::from(device_id)),
+            channel: QuicChannel::Control,
+            kind: QuicMessageKind::Hello,
+            payload: serde_json::to_value(CompanionHello {
+                app_version: String::from("0.1.0"),
+                device_id: String::from(device_id),
+                device_name: String::from("Pixel Test"),
+                android_sdk: 35,
+                supported_protocol_versions: vec![COMPANION_PROTOCOL_VERSION],
+            })
+            .expect("hello should serialize"),
+        }
+    }
+
+    fn capability_list_envelope(device_id: &str, capabilities: Vec<Capability>) -> QuicEnvelope {
+        QuicEnvelope {
+            protocol: String::from(COMPANION_PROTOCOL),
+            version: COMPANION_PROTOCOL_VERSION,
+            message_id: format!("cap-list-{device_id}"),
+            trace_id: Some(String::from("trace-2")),
+            device_id: Some(String::from(device_id)),
+            channel: QuicChannel::Control,
+            kind: QuicMessageKind::CapabilityList,
+            payload: json!({"capabilities": capabilities}),
+        }
+    }
+
+    fn permission_state_envelope(
+        device_id: &str,
+        states: Vec<CapabilityPermissionState>,
+    ) -> QuicEnvelope {
+        QuicEnvelope {
+            protocol: String::from(COMPANION_PROTOCOL),
+            version: COMPANION_PROTOCOL_VERSION,
+            message_id: format!("perm-{device_id}"),
+            trace_id: Some(String::from("trace-3")),
+            device_id: Some(String::from(device_id)),
+            channel: QuicChannel::Control,
+            kind: QuicMessageKind::PermissionState,
+            payload: json!({"states": states}),
+        }
+    }
+}
