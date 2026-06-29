@@ -1,10 +1,12 @@
 pub mod ingress;
+pub mod listener;
 pub mod protocol;
 pub mod registry;
 pub mod router;
 pub mod session;
 
 pub use ingress::CompanionIngress;
+pub use listener::{CompanionQuicListener, IngressBackedQuicListener};
 pub use protocol::{
     quic_protocol_descriptor, validate_quic_envelope, CompanionCommandRequest, CompanionHello,
     QuicEnvelope, QuicMessageKind, COMPANION_PROTOCOL, COMPANION_PROTOCOL_VERSION,
