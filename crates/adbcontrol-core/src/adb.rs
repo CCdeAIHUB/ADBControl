@@ -74,10 +74,9 @@ mod tests {
     #[test]
     fn rejects_nul_bytes_in_adb_args() {
         // 场景：前端输入不能通过 NUL 字节污染底层进程参数。
-        let args = vec![
-            "shell".to_string(),
-            String::from("echo") + &char::from(0).to_string(),
-        ];
+        let mut bad_arg = String::from("echo");
+        bad_arg.push(char::from(0));
+        let args = vec!["shell".to_string(), bad_arg];
 
         let error = validate_adb_args(&args).expect_err("NUL byte must be rejected");
 
