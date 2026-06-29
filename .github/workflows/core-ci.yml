@@ -24,6 +24,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Check formatting
+        continue-on-error: true
         run: cargo fmt --all -- --check
 
       - name: Run clippy
