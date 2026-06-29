@@ -19,7 +19,19 @@ object ScreenCaptureState {
     fun setProjection(context: Context, streamId: String, resultCode: Int, data: Intent) {
         val manager = context.getSystemService(MediaProjectionManager::class.java)
         projection?.stop()
-        projection = manager.getMediaProjection(resultCode, data)
+        projection = manager.getMediaProjection(resultCode, data).also { mediaProjection ->
+            mediaProjection.registerCallback(
+                object : MediaProjection.Callback() {
+                    override fun onStop() {
+                        if (projection === mediaProjection) {
+                            projection = null
+                            activeStreamId = null
+                        }
+                    }
+                },
+                null,
+            )
+        }
         activeStreamId = streamId
     }
 
