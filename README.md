@@ -1,6 +1,6 @@
 # ADBControl
 
-ADBControl 是一个跨平台 ADB 后端核心项目。当前阶段落地后端核心、Android 伴侣 App 能力协议、Android 功能执行层、媒体能力执行层、Android 纯 QUIC transport 适配边界、Core Quinn 纯 QUIC server wrapper、Core Companion ingress 和 ADB 资产 packaging 流程，不实现前端 UI。
+ADBControl 是一个跨平台 ADB 后端核心项目。当前阶段落地后端核心、Android 伴侣 App 能力协议、Android 功能执行层、媒体能力执行层、Android 纯 QUIC transport 适配边界、Core Quinn 纯 QUIC server wrapper、Core Companion ingress、Core 设备配对/信任模型和 ADB 资产 packaging 流程，不实现前端 UI。
 
 ## 第一阶段目标
 
@@ -81,9 +81,23 @@ Android Companion App 已新增 `features` 执行层和 `AndroidFeatureDispatche
 
 - Android native QUIC engine 的 JNI / native 实现；
 - 屏幕/相机实时 chunk 级编码输出 drain 到 QUIC media sink；
-- 设备配对、证书、信任、会话恢复。
+- 证书持久化文件和 UI 配对确认页面；
+- 设备会话恢复。
 
-这些部分已进入权限、session、router、handler、media sink、transport 和 ingress 边界，后续应在不改变 IPC/QUIC 契约的前提下接入纯 QUIC native engine 和媒体低延迟编码输出。
+这些部分已进入权限、session、router、handler、media sink、transport、trust 和 ingress 边界，后续应在不改变 IPC/QUIC 契约的前提下接入纯 QUIC native engine、媒体低延迟编码输出和持久化信任存储。
+
+### Core Companion pairing / trust
+
+已新增 `CompanionTrustStore`：
+
+- `begin_pairing`：接收 `deviceId`、`deviceName`、证书 SHA-256 指纹，生成 6 位短码和 pairing id；
+- `confirm_pairing`：只有短码匹配且未过期时，才把设备证书指纹加入信任记录；
+- 错误短码会消耗尝试次数，次数耗尽后移除 pending pairing；
+- 过期 pairing 会被移除并拒绝；
+- `is_trusted`：同时校验 device id、证书指纹、过期时间、撤销状态；
+- `revoke_device`：撤销信任，撤销后相同证书指纹也不能继续通过。
+
+配对短码由 `rand` 生成，避免使用时间戳或计数器伪造随机数。
 
 ### Core Companion ingress / QUIC listener
 
@@ -134,6 +148,7 @@ Core 已新增 `CompanionCommandRouter` 抽象，并让 `device.invoke` 接入 r
 - Companion 通讯：自定义 QUIC 应用层协议 `adbcontrol-companion-quic`，不使用 HTTP/3 作为主线；
 - Core ingress：网络无关的 Companion envelope 接收入口；
 - Core QUIC server：可选 `quinn-transport` feature，使用 Quinn 绑定纯 QUIC endpoint，将 stream/datagram 转给 ingress；
+- Core trust：短码配对 + 证书指纹绑定 + 可撤销信任记录；
 - 错误结构：统一 `AppError`，所有关键失败路径必须包含 `errorCode`、`module`、`recoverable`。
 
 ## 目录结构
