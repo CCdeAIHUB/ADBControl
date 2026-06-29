@@ -45,6 +45,10 @@
         </activity>
 
         <activity
+            android:name=".pairing.PairingConfirmationActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".screen.ScreenCaptureConsentActivity"
             android:exported="false"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
