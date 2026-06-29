@@ -1,10 +1,11 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fs, io::ErrorKind, path::Path};
 
 use rand::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 
+const TRUST_STORE_SCHEMA_VERSION: u32 = 1;
 const PAIRING_TTL_MS: u64 = 5 * 60 * 1000;
 const TRUST_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 const MAX_PAIRING_ATTEMPTS: u8 = 5;
@@ -61,7 +62,104 @@ pub struct CompanionTrustStore {
     trusted_devices: HashMap<String, TrustedDevice>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CompanionTrustStoreFile {
+    #[serde(rename = "schemaVersion")]
+    schema_version: u32,
+    #[serde(rename = "trustedDevices")]
+    trusted_devices: Vec<TrustedDevice>,
+}
+
 impl CompanionTrustStore {
+    pub fn load_trusted_devices_from_file(path: impl AsRef<Path>) -> Result<Self, AppError> {
+        let path = path.as_ref();
+        let content = match fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Self::default()),
+            Err(error) => {
+                return Err(AppError::new(
+                    "COMPANION_TRUST_STORE_READ_FAILED",
+                    "Core failed to read companion trust store file.",
+                    "companion.trust",
+                    true,
+                )
+                .with_cause(error));
+            }
+        };
+
+        let file: CompanionTrustStoreFile = serde_json::from_str(&content).map_err(|error| {
+            AppError::new(
+                "COMPANION_TRUST_STORE_PARSE_FAILED",
+                "Core failed to parse companion trust store JSON.",
+                "companion.trust",
+                false,
+            )
+            .with_cause(error)
+        })?;
+
+        if file.schema_version != TRUST_STORE_SCHEMA_VERSION {
+            return Err(AppError::new(
+                "COMPANION_TRUST_STORE_SCHEMA_UNSUPPORTED",
+                "Companion trust store schema version is not supported.",
+                "companion.trust",
+                false,
+            )
+            .with_suggestion(format!(
+                "Expected schemaVersion {TRUST_STORE_SCHEMA_VERSION}, got {}.",
+                file.schema_version
+            )));
+        }
+
+        let mut store = Self::default();
+        for device in file.trusted_devices {
+            validate_device_id(&device.device_id)?;
+            validate_fingerprint(&device.certificate_fingerprint_sha256)?;
+            store.trusted_devices.insert(device.device_id.clone(), device);
+        }
+        Ok(store)
+    }
+
+    pub fn save_trusted_devices_to_file(&self, path: impl AsRef<Path>) -> Result<(), AppError> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent).map_err(|error| {
+                    AppError::new(
+                        "COMPANION_TRUST_STORE_DIR_CREATE_FAILED",
+                        "Core failed to create companion trust store directory.",
+                        "companion.trust",
+                        true,
+                    )
+                    .with_cause(error)
+                })?;
+            }
+        }
+
+        let file = CompanionTrustStoreFile {
+            schema_version: TRUST_STORE_SCHEMA_VERSION,
+            trusted_devices: self.trusted_devices.values().cloned().collect(),
+        };
+        let content = serde_json::to_string_pretty(&file).map_err(|error| {
+            AppError::new(
+                "COMPANION_TRUST_STORE_SERIALIZE_FAILED",
+                "Core failed to serialize companion trust store JSON.",
+                "companion.trust",
+                false,
+            )
+            .with_cause(error)
+        })?;
+
+        fs::write(path, content).map_err(|error| {
+            AppError::new(
+                "COMPANION_TRUST_STORE_WRITE_FAILED",
+                "Core failed to write companion trust store file.",
+                "companion.trust",
+                true,
+            )
+            .with_cause(error)
+        })
+    }
+
     pub fn begin_pairing(
         &mut self,
         request: PairingRequest,
@@ -222,6 +320,8 @@ fn normalize_fingerprint(fingerprint: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     const NOW: u64 = 1_700_000_000_000;
@@ -242,6 +342,55 @@ mod tests {
         assert_eq!(trusted.device_id, "device-1");
         assert!(store.is_trusted("device-1", FINGERPRINT, NOW + 2_000));
         assert!(store.pending_pairing(&challenge.pairing_id).is_none());
+    }
+
+    #[test]
+    fn trusted_devices_roundtrip_through_json_file() {
+        // 场景：Core 重启后必须能从 trust store 文件恢复已配对设备和证书指纹。
+        let path = temp_trust_store_path("roundtrip");
+        let mut store = CompanionTrustStore::default();
+        let challenge = store.begin_pairing(pairing_request(), NOW).unwrap();
+        store
+            .confirm_pairing(&challenge.pairing_id, &challenge.short_code, NOW + 1_000)
+            .unwrap();
+        store.save_trusted_devices_to_file(&path).unwrap();
+
+        let loaded = CompanionTrustStore::load_trusted_devices_from_file(&path).unwrap();
+        fs::remove_file(&path).ok();
+
+        assert!(loaded.is_trusted("device-1", FINGERPRINT, NOW + 2_000));
+        assert!(loaded.pending_pairings.is_empty());
+    }
+
+    #[test]
+    fn revoked_state_is_persisted_to_json_file() {
+        // 场景：已撤销设备写入 trust store 后，Core 重启也不能恢复其信任。
+        let path = temp_trust_store_path("revoked");
+        let mut store = CompanionTrustStore::default();
+        let challenge = store.begin_pairing(pairing_request(), NOW).unwrap();
+        store
+            .confirm_pairing(&challenge.pairing_id, &challenge.short_code, NOW + 1_000)
+            .unwrap();
+        store.revoke_device("device-1", NOW + 2_000).unwrap();
+        store.save_trusted_devices_to_file(&path).unwrap();
+
+        let loaded = CompanionTrustStore::load_trusted_devices_from_file(&path).unwrap();
+        fs::remove_file(&path).ok();
+
+        assert!(!loaded.is_trusted("device-1", FINGERPRINT, NOW + 3_000));
+        assert!(loaded.trusted_device("device-1").unwrap().revoked_at_unix_ms.is_some());
+    }
+
+    #[test]
+    fn missing_trust_store_file_loads_empty_store() {
+        // 场景：首次启动 Core 没有 trust store 文件时，应得到空 store，而不是启动失败。
+        let path = temp_trust_store_path("missing");
+        fs::remove_file(&path).ok();
+
+        let loaded = CompanionTrustStore::load_trusted_devices_from_file(&path).unwrap();
+
+        assert!(loaded.trusted_devices.is_empty());
+        assert!(loaded.pending_pairings.is_empty());
     }
 
     #[test]
@@ -317,5 +466,12 @@ mod tests {
             device_name: String::from("Pixel Test"),
             certificate_fingerprint_sha256: String::from(FINGERPRINT),
         }
+    }
+
+    fn temp_trust_store_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "adbcontrol-trust-{name}-{}.json",
+            rand::rng().random::<u64>()
+        ))
     }
 }
