@@ -2,7 +2,7 @@
 
 ## 目标
 
-`CompanionIngress` 是 Core 侧接收 Android Companion QUIC/HTTP3 消息的网络无关入口。真实 HTTP/3 / QUIC server 只负责接收 bytes，然后调用 ingress；ingress 负责：
+`CompanionIngress` 是 Core 侧接收 Android Companion 自定义 QUIC 消息的网络无关入口。真实 QUIC listener 只负责接收 stream/datagram bytes，然后调用 ingress；ingress 负责：
 
 1. 解析 JSON envelope；
 2. 校验 `adbcontrol-companion-quic` 协议名与版本；
@@ -312,4 +312,4 @@ let response_bytes = ingress.handle_json_bytes(request_bytes);
 ## 当前边界
 
 - 已完成：网络无关 ingress、session 分发、media ACK、error envelope 化、单元测试。
-- 未完成：真实 HTTP/3 listener、TLS 证书、设备配对、媒体落盘 / relay。
+- 未完成：真实纯 QUIC listener、TLS 证书、设备配对、媒体落盘 / relay。
