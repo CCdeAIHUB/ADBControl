@@ -70,6 +70,17 @@ Android Companion App 已新增 `features` 执行层和 `AndroidFeatureDispatche
 
 这些能力已经进入权限与 command router 边界，但需要后续接入专用 MediaProjection / Camera / AudioRecord / IME pipeline 后才能真正启用。
 
+### Core Companion command router
+
+Core 已新增 `CompanionCommandRouter` 抽象，并让 `device.invoke` 接入 router：
+
+- 未连接 QUIC session 时返回 `COMPANION_SESSION_NOT_CONNECTED`；
+- 已连接 session 时生成 `adbcontrol-companion-quic` 的 `commandRequest` envelope；
+- 测试用 in-memory session 可以验证 IPC `device.invoke` 到 QUIC `commandRequest` 的转换；
+- 真实网络 QUIC transport 后续只需要实现同一个 router trait。
+
+详细说明见 `docs/protocols/companion-command-router.md`。
+
 ## 技术路线
 
 - 后端核心：Rust workspace；
@@ -143,6 +154,7 @@ cargo run -p adbcontrol-core
 
 - IPC 协议列表：`docs/protocols/ipc-protocol-list.md`
 - QUIC 协议列表：`docs/protocols/quic-protocol-list.md`
+- Core Companion command router：`docs/protocols/companion-command-router.md`
 
 以上文档逐项列出 method / message、请求示例、成功示例、失败示例和当前实现状态。
 
