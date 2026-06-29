@@ -10,12 +10,17 @@ import android.os.HandlerThread
 import android.view.Surface
 import com.adbcontrol.companion.core.CompanionCommandContext
 import com.adbcontrol.companion.core.CompanionCommandResult
+import com.adbcontrol.companion.media.EncodedVideoStream
+import com.adbcontrol.companion.media.MediaStreamSink
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
-class CameraFeatureHandler(private val context: Context) : FeatureCommandHandler {
+class CameraFeatureHandler(
+    private val context: Context,
+    private val mediaStreamSink: MediaStreamSink,
+) : FeatureCommandHandler {
     override val capabilityIds: Set<String> = setOf("android.camera.stream")
     override val operations: Set<String> = setOf("camera.open", "camera.close")
 
@@ -47,30 +52,91 @@ class CameraFeatureHandler(private val context: Context) : FeatureCommandHandler
                 module = "companion.camera",
                 recoverable = true,
             )
-        val sessionId = UUID.randomUUID().toString()
+        val realtime = command.args.booleanArg("realtime") ?: false
         val width = command.args.intArg("width") ?: 1280
         val height = command.args.intArg("height") ?: 720
         val bitrate = command.args.intArg("bitrate") ?: 3_000_000
         val frameRate = command.args.intArg("frameRate") ?: 30
+
+        return if (realtime) {
+            openRealtimeCamera(command, cameraId, width, height, bitrate, frameRate)
+        } else {
+            openFileCamera(command, cameraId, width, height, bitrate, frameRate)
+        }
+    }
+
+    private fun openRealtimeCamera(
+        command: CompanionCommandContext,
+        cameraId: String,
+        width: Int,
+        height: Int,
+        bitrate: Int,
+        frameRate: Int,
+    ): CompanionCommandResult {
+        val device = openCameraDevice(cameraId) ?: return cameraOpenFailed(command.requestId)
+        val encoder = EncodedVideoStream(
+            width = width.coerceIn(240, 4096),
+            height = height.coerceIn(240, 4096),
+            bitrate = bitrate.coerceIn(256_000, 30_000_000),
+            frameRate = frameRate.coerceIn(5, 60),
+            sink = mediaStreamSink,
+        )
+        val surface = encoder.start()
+        val captureSession = createRecordSession(device, surface)
+            ?: run {
+                encoder.stop()
+                device.close()
+                return cameraSessionFailed(command.requestId)
+            }
+        val request = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
+            addTarget(surface)
+        }.build()
+        captureSession.setRepeatingRequest(request, null, handler)
+        sessions[encoder.sessionId()] = CameraSession(
+            cameraDevice = device,
+            captureSession = captureSession,
+            recorder = null,
+            outputFile = null,
+            encoder = encoder,
+        )
+
+        return CompanionCommandResult.success(
+            requestId = command.requestId,
+            result = mapOf(
+                "sessionId" to encoder.sessionId(),
+                "cameraId" to cameraId,
+                "state" to "streaming",
+                "path" to "",
+                "width" to width.coerceIn(240, 4096),
+                "height" to height.coerceIn(240, 4096),
+                "bitrate" to bitrate.coerceIn(256_000, 30_000_000),
+                "frameRate" to frameRate.coerceIn(5, 60),
+                "format" to "h264-annexb",
+                "transport" to "media-sink",
+            ),
+        )
+    }
+
+    private fun openFileCamera(
+        command: CompanionCommandContext,
+        cameraId: String,
+        width: Int,
+        height: Int,
+        bitrate: Int,
+        frameRate: Int,
+    ): CompanionCommandResult {
+        val sessionId = UUID.randomUUID().toString()
         val outputFile = File(context.filesDir, "camera-streams/$sessionId.mp4")
         outputFile.parentFile?.mkdirs()
 
-        val device = openCameraDevice(command.requestId, cameraId) ?: return CompanionCommandResult.failure(
-            requestId = command.requestId,
-            errorCode = "COMPANION_CAMERA_OPEN_FAILED",
-            message = "Android camera failed to open.",
-            module = "companion.camera",
-            recoverable = true,
-        )
+        val device = openCameraDevice(cameraId) ?: return cameraOpenFailed(command.requestId)
         val recorder = buildRecorder(outputFile, width, height, bitrate, frameRate)
-        val captureSession = createRecordSession(command.requestId, device, recorder.surface)
-            ?: return CompanionCommandResult.failure(
-                requestId = command.requestId,
-                errorCode = "COMPANION_CAMERA_SESSION_FAILED",
-                message = "Android failed to create a camera recording session.",
-                module = "companion.camera",
-                recoverable = true,
-            )
+        val captureSession = createRecordSession(device, recorder.surface)
+            ?: run {
+                runCatching { recorder.release() }
+                device.close()
+                return cameraSessionFailed(command.requestId)
+            }
         val request = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
             addTarget(recorder.surface)
         }.build()
@@ -81,7 +147,7 @@ class CameraFeatureHandler(private val context: Context) : FeatureCommandHandler
             captureSession = captureSession,
             recorder = recorder,
             outputFile = outputFile,
-            surfaces = listOf(recorder.surface),
+            encoder = null,
         )
 
         return CompanionCommandResult.success(
@@ -96,11 +162,32 @@ class CameraFeatureHandler(private val context: Context) : FeatureCommandHandler
                 "bitrate" to bitrate,
                 "frameRate" to frameRate,
                 "format" to "mp4-h264",
+                "transport" to "sandbox-file",
             ),
         )
     }
 
-    private fun openCameraDevice(requestId: String, cameraId: String): CameraDevice? {
+    private fun cameraOpenFailed(requestId: String): CompanionCommandResult {
+        return CompanionCommandResult.failure(
+            requestId = requestId,
+            errorCode = "COMPANION_CAMERA_OPEN_FAILED",
+            message = "Android camera failed to open.",
+            module = "companion.camera",
+            recoverable = true,
+        )
+    }
+
+    private fun cameraSessionFailed(requestId: String): CompanionCommandResult {
+        return CompanionCommandResult.failure(
+            requestId = requestId,
+            errorCode = "COMPANION_CAMERA_SESSION_FAILED",
+            message = "Android failed to create a camera recording session.",
+            module = "companion.camera",
+            recoverable = true,
+        )
+    }
+
+    private fun openCameraDevice(cameraId: String): CameraDevice? {
         val latch = CountDownLatch(1)
         var openedDevice: CameraDevice? = null
         cameraManager.openCamera(
@@ -147,7 +234,6 @@ class CameraFeatureHandler(private val context: Context) : FeatureCommandHandler
     }
 
     private fun createRecordSession(
-        requestId: String,
         device: CameraDevice,
         surface: Surface,
     ): CameraCaptureSession? {
@@ -194,8 +280,8 @@ class CameraFeatureHandler(private val context: Context) : FeatureCommandHandler
             result = mapOf(
                 "sessionId" to sessionId,
                 "state" to "closed",
-                "path" to session.outputFile.relativeTo(context.filesDir).path,
-                "sizeBytes" to session.outputFile.length(),
+                "path" to (session.outputFile?.relativeTo(context.filesDir)?.path ?: ""),
+                "sizeBytes" to (session.outputFile?.length() ?: 0),
             ),
         )
     }
@@ -203,18 +289,18 @@ class CameraFeatureHandler(private val context: Context) : FeatureCommandHandler
     private data class CameraSession(
         val cameraDevice: CameraDevice,
         val captureSession: CameraCaptureSession,
-        val recorder: MediaRecorder,
-        val outputFile: File,
-        val surfaces: List<Surface> = emptyList(),
+        val recorder: MediaRecorder?,
+        val outputFile: File?,
+        val encoder: EncodedVideoStream?,
     ) {
         fun close() {
             runCatching { captureSession.stopRepeating() }
             captureSession.close()
-            runCatching { recorder.stop() }
-            runCatching { recorder.reset() }
-            runCatching { recorder.release() }
+            runCatching { recorder?.stop() }
+            runCatching { recorder?.reset() }
+            runCatching { recorder?.release() }
+            runCatching { encoder?.stop() }
             cameraDevice.close()
-            surfaces.forEach { surface -> surface.release() }
         }
     }
 }
