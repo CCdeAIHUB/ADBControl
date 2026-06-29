@@ -5,8 +5,10 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
+import android.hardware.display.VirtualDisplay
 import android.media.Image
 import android.media.ImageReader
+import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import java.io.File
@@ -15,6 +17,7 @@ import java.util.UUID
 object ScreenCaptureState {
     private var projection: MediaProjection? = null
     private var activeStreamId: String? = null
+    private val videoSessions = mutableMapOf<String, ScreenVideoSession>()
 
     fun setProjection(context: Context, streamId: String, resultCode: Int, data: Intent) {
         val manager = context.getSystemService(MediaProjectionManager::class.java)
@@ -24,6 +27,7 @@ object ScreenCaptureState {
                 object : MediaProjection.Callback() {
                     override fun onStop() {
                         if (projection === mediaProjection) {
+                            stopAllVideoSessions()
                             projection = null
                             activeStreamId = null
                         }
@@ -38,6 +42,80 @@ object ScreenCaptureState {
     fun isProjectionReady(): Boolean = projection != null
 
     fun currentStreamId(): String? = activeStreamId
+
+    fun startVideoStream(
+        context: Context,
+        width: Int,
+        height: Int,
+        bitrate: Int,
+        frameRate: Int,
+    ): ScreenVideoResult {
+        val mediaProjection = projection ?: throw ScreenCaptureException(
+            errorCode = "COMPANION_MEDIA_PROJECTION_CONSENT_REQUIRED",
+            message = "Screen video stream requires Android MediaProjection user consent.",
+            recoverable = true,
+            suggestion = "Call stream.open and approve the Android screen capture consent dialog first.",
+        )
+        val safeWidth = width.coerceIn(240, 4096)
+        val safeHeight = height.coerceIn(240, 4096)
+        val safeBitrate = bitrate.coerceIn(256_000, 30_000_000)
+        val safeFrameRate = frameRate.coerceIn(5, 60)
+        val sessionId = UUID.randomUUID().toString()
+        val outputFile = File(context.filesDir, "screen-streams/$sessionId.mp4")
+        outputFile.parentFile?.mkdirs()
+
+        @Suppress("DEPRECATION")
+        val recorder = MediaRecorder().apply {
+            setVideoSource(MediaRecorder.VideoSource.SURFACE)
+            setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            setVideoEncoder(MediaRecorder.VideoEncoder.H264)
+            setVideoSize(safeWidth, safeHeight)
+            setVideoEncodingBitRate(safeBitrate)
+            setVideoFrameRate(safeFrameRate)
+            setOutputFile(outputFile.absolutePath)
+            prepare()
+        }
+        val virtualDisplay = mediaProjection.createVirtualDisplay(
+            "ADBControlScreenVideo-$sessionId",
+            safeWidth,
+            safeHeight,
+            context.resources.displayMetrics.densityDpi,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+            recorder.surface,
+            null,
+            null,
+        )
+        recorder.start()
+        videoSessions[sessionId] = ScreenVideoSession(sessionId, recorder, virtualDisplay, outputFile)
+
+        return ScreenVideoResult(
+            sessionId = sessionId,
+            path = outputFile.relativeTo(context.filesDir).path,
+            width = safeWidth,
+            height = safeHeight,
+            bitrate = safeBitrate,
+            frameRate = safeFrameRate,
+        )
+    }
+
+    fun stopVideoStream(context: Context, sessionId: String?): ScreenVideoStopResult {
+        val id = sessionId ?: videoSessions.keys.firstOrNull() ?: throw ScreenCaptureException(
+            errorCode = "COMPANION_SCREEN_STREAM_NOT_FOUND",
+            message = "No active screen video stream exists.",
+            recoverable = true,
+        )
+        val session = videoSessions.remove(id) ?: throw ScreenCaptureException(
+            errorCode = "COMPANION_SCREEN_STREAM_NOT_FOUND",
+            message = "Screen video stream is not active: $id",
+            recoverable = true,
+        )
+        session.stop()
+        return ScreenVideoStopResult(
+            sessionId = id,
+            path = session.outputFile.relativeTo(context.filesDir).path,
+            sizeBytes = session.outputFile.length(),
+        )
+    }
 
     fun capturePng(
         context: Context,
@@ -93,9 +171,16 @@ object ScreenCaptureState {
     }
 
     fun stop() {
+        stopAllVideoSessions()
         projection?.stop()
         projection = null
         activeStreamId = null
+    }
+
+    private fun stopAllVideoSessions() {
+        val sessions = videoSessions.values.toList()
+        videoSessions.clear()
+        sessions.forEach { session -> session.stop() }
     }
 
     private fun acquireImage(imageReader: ImageReader, timeoutMs: Long): Image? {
@@ -134,11 +219,40 @@ object ScreenCaptureState {
     }
 }
 
+private data class ScreenVideoSession(
+    val sessionId: String,
+    val recorder: MediaRecorder,
+    val virtualDisplay: VirtualDisplay,
+    val outputFile: File,
+) {
+    fun stop() {
+        runCatching { recorder.stop() }
+        runCatching { recorder.reset() }
+        runCatching { recorder.release() }
+        virtualDisplay.release()
+    }
+}
+
 data class ScreenCaptureResult(
     val streamId: String?,
     val path: String,
     val width: Int,
     val height: Int,
+    val sizeBytes: Long,
+)
+
+data class ScreenVideoResult(
+    val sessionId: String,
+    val path: String,
+    val width: Int,
+    val height: Int,
+    val bitrate: Int,
+    val frameRate: Int,
+)
+
+data class ScreenVideoStopResult(
+    val sessionId: String,
+    val path: String,
     val sizeBytes: Long,
 )
 
