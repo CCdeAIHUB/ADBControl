@@ -17,7 +17,7 @@ class AndroidFeatureDispatcher(
     private val capabilities = AndroidCapabilityCatalog.defaultCapabilities().associateBy { it.id }
     private val handlers: List<FeatureCommandHandler> = listOf(
         InputFeatureHandler(context),
-        ScreenCaptureFeatureHandler(context),
+        ScreenCaptureFeatureHandler(context, mediaStreamSink),
         CameraFeatureHandler(context),
         AudioRecordFeatureHandler(context, mediaStreamSink),
         ClipboardFeatureHandler(context),
