@@ -28,7 +28,7 @@ Android Companion App
 Android device
 ```
 
-第二阶段已预留能力范围：
+第二阶段能力范围：
 
 - 输入法 / 输入相关能力；
 - 投屏 / 屏幕采集；
@@ -45,6 +45,31 @@ Android device
 - 悬浮窗；
 - 链式启动。
 
+### Android Companion 当前已落地的功能性 handler
+
+Android Companion App 已新增 `features` 执行层和 `AndroidFeatureDispatcher`。当前已经有具体执行代码的能力：
+
+- `clipboard.read` / `clipboard.write`：读取和写入文本剪贴板；
+- `volume.get` / `volume.set`：读取和设置媒体音量；
+- `app.list`：读取当前用户可见应用列表；
+- `file.read` / `file.write`：读取和写入 Companion App sandbox 内的文本文件；
+- `phone.call`：在权限允许后发起电话调用；
+- `sms.read`：读取短信列表；
+- `sms.send`：支持短信 compose 模式，`direct=true` 时走直接发送；
+- `sensor.subscribe` / `sensor.unsubscribe`：注册/取消运动传感器监听，并保存最近样本；
+- `ui.surface.show`：拉起 Companion 主界面；
+- `overlay.show` / `overlay.hide`：显示/隐藏悬浮窗；
+- `intent.chainLaunch`：按显式 package/class 链式启动 Activity。
+
+仍为明确占位、未假装完成的能力：
+
+- 投屏 / 屏幕编码流；
+- 相机视频流；
+- 录音音频流；
+- 输入法文本注入管线。
+
+这些能力已经进入权限与 command router 边界，但需要后续接入专用 MediaProjection / Camera / AudioRecord / IME pipeline 后才能真正启用。
+
 ## 技术路线
 
 - 后端核心：Rust workspace；
@@ -60,7 +85,7 @@ Android device
 ```text
 assets/adb/                  # ADB 资产 manifest 与后续二进制放置位置
 crates/adbcontrol-core/       # 后端核心 crate
-android/companion-app/        # Android 伴侣 App 工程骨架
+android/companion-app/        # Android 伴侣 App 工程与能力执行层
 docs/adr/                     # 架构决策记录
 docs/specs/                   # 行为 spec / TDD 场景说明
 docs/protocols/               # IPC / QUIC 协议清单与示例
