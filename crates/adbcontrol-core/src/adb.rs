@@ -24,17 +24,21 @@ impl AdbRunner for ProcessAdbRunner {
         validate_adb_args(args)?;
 
         // 安全边界：核心只能启动 manifest 解析出的 adb 二进制，并且只通过 args 传参。
-        // 这里不拼接 shell 字符串，避免前端输入变成任意系统命令执行。
-        let output = Command::new(adb_binary).args(args).output().map_err(|error| {
-            AppError::new(
-                "ADB_PROCESS_SPAWN_FAILED",
-                format!("Failed to start adb binary at {}", adb_binary.display()),
-                "adb.runner",
-                true,
-            )
-            .with_cause(error)
-            .with_suggestion("Verify that the ADB asset exists, is executable, and matches the host target.")
-        })?;
+        let output = Command::new(adb_binary)
+            .args(args)
+            .output()
+            .map_err(|error| {
+                AppError::new(
+                    "ADB_PROCESS_SPAWN_FAILED",
+                    format!("Failed to start adb binary at {}", adb_binary.display()),
+                    "adb.runner",
+                    true,
+                )
+                .with_cause(error)
+                .with_suggestion(
+                    "Verify that the ADB asset exists, is executable, and matches the host target.",
+                )
+            })?;
 
         Ok(AdbCommandOutput {
             exit_code: output.status.code().unwrap_or(-1),
@@ -46,7 +50,7 @@ impl AdbRunner for ProcessAdbRunner {
 
 pub fn validate_adb_args(args: &[String]) -> Result<(), AppError> {
     for arg in args {
-        if arg.contains('\0') {
+        if arg.as_bytes().contains(&0) {
             return Err(AppError::new(
                 "ADB_ARGS_CONTAIN_NUL",
                 "ADB arguments must not contain NUL bytes.",
@@ -70,7 +74,7 @@ mod tests {
     #[test]
     fn rejects_nul_bytes_in_adb_args() {
         // 场景：前端输入不能通过 NUL 字节污染底层进程参数。
-        let args = vec!["shell".to_string(), "echo\0bad".to_string()];
+        let args = vec!["shell".to_string(), String::from("echo") + &char::from(0).to_string()];
 
         let error = validate_adb_args(&args).expect_err("NUL byte must be rejected");
 
