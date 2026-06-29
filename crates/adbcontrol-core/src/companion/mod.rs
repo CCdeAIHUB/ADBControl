@@ -1,6 +1,7 @@
 pub mod protocol;
 pub mod registry;
 pub mod router;
+pub mod session;
 
 pub use protocol::{
     quic_protocol_descriptor, validate_quic_envelope, CompanionCommandRequest, CompanionHello,
@@ -12,3 +13,4 @@ pub use router::{
     CompanionCommandRouter, CompanionCommandStatus, DisconnectedCompanionCommandRouter,
     InMemoryCompanionCommandRouter, InMemoryCompanionSession,
 };
+pub use session::{CompanionSession, CompanionSessionManager};
