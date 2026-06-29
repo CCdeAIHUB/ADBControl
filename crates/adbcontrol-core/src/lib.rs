@@ -22,6 +22,8 @@ pub use companion::{
     InMemoryCompanionCommandRouter, InMemoryCompanionSession, QuicEnvelope, QuicMessageKind,
     COMPANION_PROTOCOL, COMPANION_PROTOCOL_VERSION,
 };
+#[cfg(feature = "quinn-transport")]
+pub use companion::QuinnCompanionServer;
 pub use error::AppError;
 pub use platform::HostTarget;
 pub use protocol::{CoreService, IpcRequest, IpcResponse};
