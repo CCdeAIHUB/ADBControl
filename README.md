@@ -1,6 +1,6 @@
 # ADBControl
 
-ADBControl 是一个跨平台 ADB 后端核心项目。当前阶段落地后端核心、Android 伴侣 App 能力协议、Android 功能执行层、媒体能力执行层、Android QUIC/HTTP3 传输适配层、Core Companion ingress 和 ADB 资产 packaging 流程，不实现前端 UI。
+ADBControl 是一个跨平台 ADB 后端核心项目。当前阶段落地后端核心、Android 伴侣 App 能力协议、Android 功能执行层、媒体能力执行层、Android 纯 QUIC transport 适配边界、Core Companion ingress 和 ADB 资产 packaging 流程，不实现前端 UI。
 
 ## 第一阶段目标
 
@@ -14,7 +14,7 @@ ADBControl 是一个跨平台 ADB 后端核心项目。当前阶段落地后端�
 
 ## 第二阶段目标：Android Companion App
 
-Android 伴侣 App 是独立运行在 Android 设备上的能力提供端，不是跨平台前端。它通过 QUIC/HTTP3 与 Core 建立连接，并将 Android 权限能力转换成 Capability 提供给 Core。Core 再通过 IPC 将这些能力暴露给前端。
+Android 伴侣 App 是独立运行在 Android 设备上的能力提供端，不是跨平台前端。它通过纯 QUIC 与 Core 建立连接，并将 Android 权限能力转换成 Capability 提供给 Core。Core 再通过 IPC 将这些能力暴露给前端。
 
 ```text
 Frontend
@@ -22,7 +22,7 @@ Frontend
 Core
   ├─ ADB Provider
   └─ Android Companion Provider
-       ↓ QUIC / HTTP3
+       ↓ custom QUIC protocol
 Android Companion App
        ↓ Android permission / service / sensor / media APIs
 Android device
@@ -70,10 +70,20 @@ Android Companion App 已新增 `features` 执行层和 `AndroidFeatureDispatche
 
 已新增：
 
-- `CronetQuicTransport`：基于 Cronet 的 Android 传输适配器，使用 HTTPS endpoint 发送 QUIC 应用层 envelope；
+- `NativeQuicTransport`：Android 侧纯 QUIC transport 适配边界，只接受 `quic://` endpoint；
+- `NativeQuicEngine`：后续 JNI / native QUIC engine 必须实现的接口；
 - `QuicMediaStreamSink`：把媒体 stream open/chunk/close 包装为 `STREAM_OPEN`、`STREAM_CHUNK`、`STREAM_CLOSE` envelope；
-- `QuicCompanionService.connect(endpoint, deviceId)`：创建 Cronet transport，发送 hello，并把音频 media sink 切换到 QUIC envelope sink；
+- `QuicCompanionService.connect(endpoint, deviceId)`：创建 native QUIC transport，发送 hello，并把音频 media sink 切换到 QUIC envelope sink；
 - `SandboxFileMediaStreamSink`：本地文件 sink，用于无网络或测试环境下保留媒体数据。
+
+仍明确未假装完成的部分：
+
+- Android native QUIC engine 的 JNI / native 实现；
+- Core 侧真实 QUIC listener 与 TLS/证书；
+- 屏幕/相机实时 chunk 级编码输出 drain 到 QUIC media sink；
+- 设备配对、证书、信任、会话恢复。
+
+这些部分已进入权限、session、router、handler、media sink、transport 和 ingress 边界，后续应在不改变 IPC/QUIC 契约的前提下接入纯 QUIC native engine 和 Core 侧 QUIC listener。
 
 ### Core Companion ingress
 
@@ -84,14 +94,6 @@ Android Companion App 已新增 `features` 执行层和 `AndroidFeatureDispatche
 - 将 `hello`、`capabilityList`、`permissionState`、`heartbeat` 分发给 `CompanionSessionManager`；
 - ACK `streamOpen`、`streamChunk`、`streamClose`，并避免 media chunk 污染 session state；
 - 将非法 JSON、协议错误、状态错误转换为 QUIC `error` envelope。
-
-仍明确未假装完成的部分：
-
-- Core 侧真实 HTTP/3 listener 与 TLS 证书；
-- 屏幕/相机实时 chunk 级编码输出 drain 到 QUIC media sink；
-- 设备配对、证书、信任、会话恢复。
-
-这些部分已进入权限、session、router、handler、media sink、transport 和 ingress 边界，后续应在不改变 IPC/QUIC 契约的前提下接入 Core 侧 HTTP/3 listener 和更细粒度的编码输出 drain。
 
 ### Core Companion command router
 
@@ -122,8 +124,8 @@ Core 已新增 `CompanionCommandRouter` 抽象，并让 `device.invoke` 接入 r
 - IPC 协议：JSON Lines request/response；
 - 第一阶段 IPC transport：stdio pipe，方便跨平台前端先以子进程方式集成；
 - 后续 IPC transport：Windows Named Pipe、Unix Domain Socket；
-- Companion 通讯：QUIC 应用层协议 `adbcontrol-companion-quic`，Android 侧以 Cronet HTTP/3 over QUIC 作为传输适配层；
-- Core ingress：网络无关的 Companion envelope 接收入口，真实 HTTP/3 listener 后续只需调用它；
+- Companion 通讯：自定义 QUIC 应用层协议 `adbcontrol-companion-quic`，不使用 HTTP/3 作为主线；
+- Core ingress：网络无关的 Companion envelope 接收入口，真实 QUIC listener 后续只需调用它；
 - 错误结构：统一 `AppError`，所有关键失败路径必须包含 `errorCode`、`module`、`recoverable`。
 
 ## 目录结构
