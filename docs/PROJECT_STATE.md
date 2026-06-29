@@ -20,7 +20,7 @@ Core responsibilities:
 
 Android companion app responsibilities:
 
-- Provide app-side capabilities such as screenshot, hardware information, simulated keyboard input, simulated touch, real-time screen streaming, and app-side permission/capability reporting.
+- Provide app-side capabilities such as screenshot, hardware information, simulated input, real-time screen streaming, and app-side permission/capability reporting.
 - Communicate with Core through a secure session protocol rather than raw UDP.
 - Android companion app implementation is Kotlin / Gradle Kotlin DSL.
 - Do not use HTTP/3/Cronet as the locked transport implementation and do not add a fake native engine placeholder.
@@ -37,30 +37,37 @@ The previous round's working context indicated that these seven capability areas
 6. Android hello / capability / permission initial synchronization.
 7. Real-time H.264 chunk streaming connected to `stream.open(realtime=true)`, while file-level MP4 recording remains a separate path.
 
-Because the current GitHub repository does not yet expose those files on `main`, these are treated as the required reconstruction and verification checklist for the next implementation pass.
+Because the current GitHub repository did not yet expose those files on `main`, these were treated as the required reconstruction and verification checklist.
 
 ## Current branch progress
 
-This branch now contains a small executable Core domain skeleton under `core/domain/` with Node's built-in `node:test` coverage under `test/core/`.
+This branch now contains:
 
-Implemented in this skeleton:
+- `core/domain/`: executable Core routing, trust, capability, and permission skeleton.
+- `core/adb/`: allowlisted ADB adapter for device listing, screenshot capture, and property query. It intentionally does not expose arbitrary shell execution.
+- `core/transport/`: framed TCP/TLS JSON message transport for real socket-based Core/app-style messaging tests.
+- `android-app/`: Kotlin / Gradle Kotlin DSL app module.
+- `android-app/src/main/cpp/`: JNI native transport boundary linked against a real QUIC library through CMake.
+
+Implemented in executable Core code:
 
 - structured domain errors matching the schema subsystem model;
 - device state with separate ADB/app capabilities and app session authentication state;
 - pairing-protected hello, capability sync, and permission sync;
 - stream routing for `stream.open(realtime=true)` that requires an authenticated Android app session, `screen.stream.h264` capability, and screen capture permission;
-- explicit separation between real-time H.264 chunks and MP4 recording side effects.
+- explicit separation between real-time H.264 chunks and MP4 recording side effects;
+- allowlisted ADB process execution adapter;
+- TCP/TLS framed transport for real network-message tests.
 
-Not implemented in this skeleton:
+Partially added but not fully verified in this environment:
 
-- real network transport;
-- QUIC/native engine;
-- Android JNI;
-- ADB process execution;
-- MediaProjection;
-- file-level media store persistence.
+- Android JNI native QUIC boundary using CMake and external QUIC library inputs.
 
-Those remain future adapter layers and must not be faked.
+Not completed in this pass:
+
+- file-level media store persistence was drafted locally, but GitHub write safety checks blocked committing that file;
+- Android MediaProjection + MediaCodec screen encoder was drafted locally, but GitHub write safety checks blocked committing the direct capture-to-stream implementation;
+- native QUIC Android build was not compiled because the environment does not provide Android SDK/NDK and the required ABI-compatible QUIC library.
 
 ## Current execution rule
 
