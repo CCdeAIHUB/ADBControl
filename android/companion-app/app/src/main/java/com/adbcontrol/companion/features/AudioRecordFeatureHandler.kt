@@ -6,10 +6,15 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import com.adbcontrol.companion.core.CompanionCommandContext
 import com.adbcontrol.companion.core.CompanionCommandResult
+import com.adbcontrol.companion.media.MediaStreamSink
+import com.adbcontrol.companion.media.SandboxFileMediaStreamSink
 import java.io.File
 import java.util.UUID
 
-class AudioRecordFeatureHandler(private val context: Context) : FeatureCommandHandler {
+class AudioRecordFeatureHandler(
+    private val context: Context,
+    private val streamSink: MediaStreamSink = SandboxFileMediaStreamSink(File(context.filesDir, "audio-streams")),
+) : FeatureCommandHandler {
     override val capabilityIds: Set<String> = setOf("android.audio.record")
     override val operations: Set<String> = setOf("audio.record.start", "audio.record.stop")
 
@@ -69,6 +74,7 @@ class AudioRecordFeatureHandler(private val context: Context) : FeatureCommandHa
             sampleRate = sampleRate,
             bufferSize = bufferSize,
             maxDurationMs = maxDurationMs,
+            streamSink = streamSink,
         )
         sessions[sessionId] = session
         session.start()
@@ -81,7 +87,7 @@ class AudioRecordFeatureHandler(private val context: Context) : FeatureCommandHa
                 "encoding" to "pcm_s16le",
                 "channels" to 1,
                 "path" to outputFile.relativeTo(context.filesDir).path,
-                "state" to "recording",
+                "state" to "streaming",
             ),
         )
     }
@@ -125,6 +131,7 @@ class AudioRecordFeatureHandler(private val context: Context) : FeatureCommandHa
         val sampleRate: Int,
         private val bufferSize: Int,
         private val maxDurationMs: Int,
+        private val streamSink: MediaStreamSink,
     ) {
         @Volatile
         private var active = false
@@ -133,6 +140,15 @@ class AudioRecordFeatureHandler(private val context: Context) : FeatureCommandHa
         fun start() {
             active = true
             recorder.startRecording()
+            streamSink.onStreamStarted(
+                sessionId = sessionId,
+                mimeType = "audio/pcm",
+                metadata = mapOf(
+                    "sampleRate" to sampleRate,
+                    "channels" to 1,
+                    "encoding" to "pcm_s16le",
+                ),
+            )
             worker = Thread({
                 val buffer = ByteArray(bufferSize)
                 val deadline = System.currentTimeMillis() + maxDurationMs
@@ -140,11 +156,18 @@ class AudioRecordFeatureHandler(private val context: Context) : FeatureCommandHa
                     while (active && System.currentTimeMillis() < deadline) {
                         val read = recorder.read(buffer, 0, buffer.size)
                         if (read > 0) {
-                            output.write(buffer, 0, read)
+                            val chunk = buffer.copyOf(read)
+                            output.write(chunk)
+                            streamSink.onChunk(
+                                sessionId = sessionId,
+                                chunk = chunk,
+                                metadata = mapOf("sampleRate" to sampleRate),
+                            )
                         }
                     }
                 }
                 active = false
+                streamSink.onStreamStopped(sessionId)
                 recorder.stop()
                 recorder.release()
             }, "adbcontrol-audio-$sessionId").apply { start() }
@@ -153,6 +176,7 @@ class AudioRecordFeatureHandler(private val context: Context) : FeatureCommandHa
         fun stop() {
             active = false
             worker?.join(1_000)
+            runCatching { streamSink.onStreamStopped(sessionId) }
             runCatching { recorder.stop() }
             runCatching { recorder.release() }
         }
