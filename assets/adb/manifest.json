@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "adbVersion": "37.0.0",
+  "assets": [
+    {
+      "targetId": "windows-x86_64",
+      "path": "assets/adb/windows-x86_64/adb.exe",
+      "source": "official-platform-tools",
+      "sha256": null
+    },
+    {
+      "targetId": "windows-arm64",
+      "path": "assets/adb/windows-arm64/adb.exe",
+      "source": "custom-github-build",
+      "sha256": null
+    },
+    {
+      "targetId": "macos-x86_64",
+      "path": "assets/adb/macos-x86_64/adb",
+      "source": "official-platform-tools",
+      "sha256": null
+    },
+    {
+      "targetId": "macos-arm64",
+      "path": "assets/adb/macos-arm64/adb",
+      "source": "official-platform-tools",
+      "sha256": null
+    },
+    {
+      "targetId": "linux-x86_64",
+      "path": "assets/adb/linux-x86_64/adb",
+      "source": "official-platform-tools",
+      "sha256": null
+    },
+    {
+      "targetId": "linux-arm64",
+      "path": "assets/adb/linux-arm64/adb",
+      "source": "custom-github-build",
+      "sha256": null
+    },
+    {
+      "targetId": "android-x86_64",
+      "path": "assets/adb/android-x86_64/adb",
+      "source": "custom-github-build",
+      "sha256": null
+    },
+    {
+      "targetId": "android-arm64",
+      "path": "assets/adb/android-arm64/adb",
+      "source": "custom-github-build",
+      "sha256": null
+    }
+  ]
+}
