@@ -15,6 +15,7 @@ class EncodedVideoStream(
     private val sink: MediaStreamSink,
 ) {
     private val codec: MediaCodec = MediaCodec.createEncoderByType(MIME_TYPE)
+    private val bufferInfo = MediaCodec.BufferInfo()
     private lateinit var inputSurface: Surface
     @Volatile
     private var active = false
@@ -35,7 +36,11 @@ class EncodedVideoStream(
         inputSurface = codec.createInputSurface()
         codec.start()
         active = true
-        sink.onStreamStarted(sessionId, MIME_TYPE, mapOf("width" to width, "height" to height, "frameRate" to frameRate))
+        sink.onStreamStarted(
+            sessionId,
+            MIME_TYPE,
+            mapOf("width" to width, "height" to height, "frameRate" to frameRate, "bitrate" to bitrate),
+        )
         worker = Thread(::drainLoop, "adbcontrol-video-$sessionId").apply { start() }
         return inputSurface
     }
@@ -43,7 +48,7 @@ class EncodedVideoStream(
     fun stop() {
         active = false
         runCatching { codec.signalEndOfInputStream() }
-        worker?.join(1_000)
+        worker?.join(1_500)
         runCatching { codec.stop() }
         runCatching { codec.release() }
         runCatching { inputSurface.release() }
@@ -52,8 +57,48 @@ class EncodedVideoStream(
 
     private fun drainLoop() {
         while (active) {
-            Thread.sleep(16)
+            drainOnce()
         }
+        repeat(12) { drainOnce() }
+    }
+
+    private fun drainOnce() {
+        when (val outputIndex = codec.dequeueOutputBuffer(bufferInfo, 10_000)) {
+            MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
+            MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> sendFormatConfig()
+            else -> if (outputIndex >= 0) writeOutputBuffer(outputIndex)
+        }
+    }
+
+    private fun sendFormatConfig() {
+        val format = codec.outputFormat
+        val config = format.getByteBuffer("csd-0") ?: return
+        val bytes = ByteArray(config.remaining())
+        config.get(bytes)
+        if (bytes.isNotEmpty()) {
+            sink.onConfig(sessionId, bytes, mapOf("kind" to "csd-0"))
+        }
+    }
+
+    private fun writeOutputBuffer(outputIndex: Int) {
+        codec.getOutputBuffer(outputIndex)?.let { outputBuffer ->
+            outputBuffer.position(bufferInfo.offset)
+            outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
+            val bytes = ByteArray(bufferInfo.size)
+            outputBuffer.get(bytes)
+            if (bytes.isNotEmpty()) {
+                val metadata = mapOf(
+                    "presentationTimeUs" to bufferInfo.presentationTimeUs,
+                    "flags" to bufferInfo.flags,
+                )
+                if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
+                    sink.onConfig(sessionId, bytes, metadata)
+                } else {
+                    sink.onChunk(sessionId, bytes, metadata)
+                }
+            }
+        }
+        codec.releaseOutputBuffer(outputIndex, false)
     }
 
     companion object {
