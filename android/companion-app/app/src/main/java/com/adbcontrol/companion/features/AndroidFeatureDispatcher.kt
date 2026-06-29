@@ -5,17 +5,21 @@ import com.adbcontrol.companion.core.AndroidCapabilityCatalog
 import com.adbcontrol.companion.core.CompanionCommandContext
 import com.adbcontrol.companion.core.CompanionCommandResult
 import com.adbcontrol.companion.core.PermissionGuard
+import com.adbcontrol.companion.media.MediaStreamSink
+import com.adbcontrol.companion.media.SandboxFileMediaStreamSink
+import java.io.File
 
 class AndroidFeatureDispatcher(
     context: Context,
     private val permissionGuard: PermissionGuard,
+    mediaStreamSink: MediaStreamSink = SandboxFileMediaStreamSink(File(context.filesDir, "media-streams")),
 ) {
     private val capabilities = AndroidCapabilityCatalog.defaultCapabilities().associateBy { it.id }
     private val handlers: List<FeatureCommandHandler> = listOf(
         InputFeatureHandler(context),
         ScreenCaptureFeatureHandler(context),
         CameraFeatureHandler(context),
-        AudioRecordFeatureHandler(context),
+        AudioRecordFeatureHandler(context, mediaStreamSink),
         ClipboardFeatureHandler(context),
         MediaVolumeFeatureHandler(context),
         AppListFeatureHandler(context),
