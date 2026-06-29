@@ -8,6 +8,8 @@ import com.adbcontrol.companion.core.AndroidCapabilityCatalog
 import com.adbcontrol.companion.core.CompanionCommandContext
 import com.adbcontrol.companion.core.PermissionGuard
 import com.adbcontrol.companion.features.AndroidFeatureDispatcher
+import com.adbcontrol.companion.media.QuicMediaStreamSink
+
 
 enum class CompanionConnectionState {
     DISCONNECTED,
@@ -19,10 +21,11 @@ enum class CompanionConnectionState {
 }
 
 class QuicCompanionService : Service() {
-    private val transport: QuicTransport = UnconfiguredQuicTransport()
+    private var transport: QuicTransport = UnconfiguredQuicTransport()
     private lateinit var permissionGuard: PermissionGuard
     private lateinit var featureDispatcher: AndroidFeatureDispatcher
     private var connectionState: CompanionConnectionState = CompanionConnectionState.DISCONNECTED
+    private var connectedDeviceId: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -87,10 +90,24 @@ class QuicCompanionService : Service() {
         )
     }
 
-    fun connect(endpoint: String) {
+    fun connect(endpoint: String, deviceId: String = "android-companion") {
         connectionState = CompanionConnectionState.CONNECTING
-        transport.connect(endpoint)
+        val cronetTransport = CronetQuicTransport(this)
+        cronetTransport.connect(endpoint)
+        transport = cronetTransport
+        connectedDeviceId = deviceId
+        featureDispatcher = AndroidFeatureDispatcher(
+            this,
+            permissionGuard,
+            QuicMediaStreamSink(transport, connectedDeviceId),
+        )
+        transport.send(buildHello(deviceId, Build.MODEL ?: "Android device"))
         connectionState = CompanionConnectionState.HANDSHAKING
+    }
+
+    override fun onDestroy() {
+        transport.close()
+        super.onDestroy()
     }
 
     fun currentState(): CompanionConnectionState = connectionState
