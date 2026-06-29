@@ -1,5 +1,6 @@
 package com.adbcontrol.companion.core
 
+import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.provider.Settings
@@ -27,6 +28,9 @@ class PermissionGuard(private val context: Context) {
     }
 
     private fun hasRuntimePermission(permission: String): Boolean {
+        if (permission == Manifest.permission.SYSTEM_ALERT_WINDOW) {
+            return true
+        }
         return context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
     }
 
