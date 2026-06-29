@@ -1,6 +1,6 @@
 # ADBControl
 
-ADBControl 是一个跨平台 ADB 后端核心项目。当前阶段落地后端核心、Android 伴侣 App 能力协议、Android 功能执行层和 ADB 资产 packaging 流程，不实现前端 UI。
+ADBControl 是一个跨平台 ADB 后端核心项目。当前阶段落地后端核心、Android 伴侣 App 能力协议、Android 功能执行层、媒体能力执行层、Android QUIC/HTTP3 传输适配层和 ADB 资产 packaging 流程，不实现前端 UI。
 
 ## 第一阶段目标
 
@@ -14,7 +14,7 @@ ADBControl 是一个跨平台 ADB 后端核心项目。当前阶段落地后端�
 
 ## 第二阶段目标：Android Companion App
 
-Android 伴侣 App 是独立运行在 Android 设备上的能力提供端，不是跨平台前端。它通过 QUIC 与 Core 建立连接，并将 Android 权限能力转换成 Capability 提供给 Core。Core 再通过 IPC 将这些能力暴露给前端。
+Android 伴侣 App 是独立运行在 Android 设备上的能力提供端，不是跨平台前端。它通过 QUIC/HTTP3 与 Core 建立连接，并将 Android 权限能力转换成 Capability 提供给 Core。Core 再通过 IPC 将这些能力暴露给前端。
 
 ```text
 Frontend
@@ -22,7 +22,7 @@ Frontend
 Core
   ├─ ADB Provider
   └─ Android Companion Provider
-       ↓ QUIC
+       ↓ QUIC / HTTP3
 Android Companion App
        ↓ Android permission / service / sensor / media APIs
 Android device
@@ -50,10 +50,10 @@ Android device
 Android Companion App 已新增 `features` 执行层和 `AndroidFeatureDispatcher`。当前已经有具体执行代码的能力：
 
 - `input.text` / `input.key`：通过 ADBControl Companion IME 向当前输入连接提交文本或按键；
-- `stream.open` / `stream.close`：拉起 Android MediaProjection 授权入口并维护屏幕采集状态；
+- `stream.open` / `stream.close`：无授权时拉起 Android MediaProjection 授权；有授权后启动屏幕 H.264/MP4 编码会话并写入 sandbox；
 - `screenshot.capture`：使用 MediaProjection + ImageReader + VirtualDisplay 抓取一帧并保存为 Companion App sandbox 内 PNG 文件；
-- `camera.open` / `camera.close`：通过 Camera2 打开/关闭相机会话；
-- `audio.record.start` / `audio.record.stop`：通过 AudioRecord 录制 PCM 到 Companion App sandbox；
+- `camera.open` / `camera.close`：通过 Camera2 + MediaRecorder surface 录制 H.264/MP4 到 sandbox；
+- `audio.record.start` / `audio.record.stop`：通过 AudioRecord 边录边写 PCM，并将 PCM chunk 推送到 `MediaStreamSink`；
 - `clipboard.read` / `clipboard.write`：读取和写入文本剪贴板；
 - `volume.get` / `volume.set`：读取和设置媒体音量；
 - `app.list`：读取当前用户可见应用列表；
@@ -66,14 +66,22 @@ Android Companion App 已新增 `features` 执行层和 `AndroidFeatureDispatche
 - `overlay.show` / `overlay.hide`：显示/隐藏悬浮窗；
 - `intent.chainLaunch`：按显式 package/class 链式启动 Activity。
 
+### Android QUIC / Media transport
+
+已新增：
+
+- `CronetQuicTransport`：基于 Cronet 的 Android 传输适配器，使用 HTTPS endpoint 发送 QUIC 应用层 envelope；
+- `QuicMediaStreamSink`：把媒体 stream open/chunk/close 包装为 `STREAM_OPEN`、`STREAM_CHUNK`、`STREAM_CLOSE` envelope；
+- `QuicCompanionService.connect(endpoint, deviceId)`：创建 Cronet transport，发送 hello，并把音频 media sink 切换到 QUIC envelope sink；
+- `SandboxFileMediaStreamSink`：本地文件 sink，用于无网络或测试环境下保留媒体数据。
+
 仍明确未假装完成的部分：
 
-- 屏幕 H.264/AV1 实时编码流；
-- 相机预览/编码 surface 绑定；
-- 音频实时 QUIC media stream 推送；
-- 真实网络 QUIC socket。
+- Core 侧 HTTP/3/QUIC 接收服务端；
+- 屏幕/相机实时 chunk 级编码输出 drain 到 QUIC media sink；
+- 设备配对、证书、信任、会话恢复。
 
-这些部分已进入权限、session、router 和 handler 边界，后续应在不改变 IPC/QUIC 契约的前提下接入具体编码器和网络 transport。
+这些部分已进入权限、session、router、handler、媒体 sink 和 transport 边界，后续应在不改变 IPC/QUIC 契约的前提下接入 Core 侧服务端和更细粒度的编码输出 drain。
 
 ### Core Companion command router
 
@@ -104,7 +112,7 @@ Core 已新增 `CompanionCommandRouter` 抽象，并让 `device.invoke` 接入 r
 - IPC 协议：JSON Lines request/response；
 - 第一阶段 IPC transport：stdio pipe，方便跨平台前端先以子进程方式集成；
 - 后续 IPC transport：Windows Named Pipe、Unix Domain Socket；
-- Companion 通讯：QUIC 应用层协议 `adbcontrol-companion-quic`；
+- Companion 通讯：QUIC 应用层协议 `adbcontrol-companion-quic`，Android 侧以 Cronet HTTP/3 over QUIC 作为传输适配层；
 - 错误结构：统一 `AppError`，所有关键失败路径必须包含 `errorCode`、`module`、`recoverable`。
 
 ## 目录结构
