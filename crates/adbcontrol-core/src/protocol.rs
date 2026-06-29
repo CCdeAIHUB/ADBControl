@@ -292,7 +292,7 @@ mod tests {
         assert!(response.ok);
         assert_eq!(
             calls.lock().expect("lock should not be poisoned")[0],
-            vec!["devices", "-l"]
+            vec!["devices".to_string(), "-l".to_string()]
         );
         assert_eq!(
             response.result.expect("result is required"),
