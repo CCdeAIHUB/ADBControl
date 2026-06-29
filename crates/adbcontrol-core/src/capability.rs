@@ -13,14 +13,14 @@ pub struct Capability {
     pub operations: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CapabilityProvider {
     Adb,
     AndroidCompanion,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CapabilityTransport {
     Ipc,
@@ -30,7 +30,7 @@ pub enum CapabilityTransport {
     QuicDatagram,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CapabilitySensitivity {
     Low,
@@ -99,7 +99,10 @@ pub fn android_companion_capability_catalog() -> Vec<Capability> {
             CapabilityTransport::QuicDataStream,
             CapabilitySensitivity::High,
             &["file.read"],
-            &["android.permission.READ_MEDIA_IMAGES", "android.permission.READ_MEDIA_VIDEO"],
+            &[
+                "android.permission.READ_MEDIA_IMAGES",
+                "android.permission.READ_MEDIA_VIDEO",
+            ],
             &["scoped-storage-or-document-picker"],
             true,
         ),
@@ -165,7 +168,10 @@ pub fn android_companion_capability_catalog() -> Vec<Capability> {
             CapabilityTransport::QuicControl,
             CapabilitySensitivity::Critical,
             &["phone.call"],
-            &["android.permission.CALL_PHONE", "android.permission.READ_PHONE_STATE"],
+            &[
+                "android.permission.CALL_PHONE",
+                "android.permission.READ_PHONE_STATE",
+            ],
             &[],
             true,
         ),
@@ -282,7 +288,10 @@ fn capability(
             android_permissions: to_strings(android_permissions),
             special_permissions: to_strings(special_permissions),
             requires_user_consent,
-            audit_required: matches!(sensitivity, CapabilitySensitivity::High | CapabilitySensitivity::Critical),
+            audit_required: matches!(
+                sensitivity,
+                CapabilitySensitivity::High | CapabilitySensitivity::Critical
+            ),
         },
         operations: to_strings(operations),
     }
