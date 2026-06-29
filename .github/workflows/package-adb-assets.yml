@@ -1,0 +1,33 @@
+name: Package ADB Assets
+
+on:
+  workflow_dispatch:
+
+jobs:
+  official-platform-tools:
+    name: Download official Platform-Tools assets
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y unzip curl
+
+      - name: Download official ADB assets
+        run: bash scripts/adb/download-official-platform-tools.sh
+
+      - name: Verify manifest assets
+        run: python3 scripts/adb/verify-adb-manifest.py --allow-missing-custom
+
+      - name: Upload official ADB assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: adb-official-platform-tools
+          path: |
+            assets/adb/linux-x86_64/adb
+            assets/adb/macos-x86_64/adb
+            assets/adb/macos-arm64/adb
+            assets/adb/windows-x86_64/adb.exe
+          if-no-files-found: error
