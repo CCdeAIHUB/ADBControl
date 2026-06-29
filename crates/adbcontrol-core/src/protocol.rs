@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
-    adb::{validate_adb_args, AdbCommandOutput, AdbRunner},
+    adb::{validate_adb_args, AdbRunner},
     assets::{find_adb_asset, resolve_asset_path, AdbManifest},
     error::AppError,
     platform::HostTarget,
@@ -199,10 +199,13 @@ fn encode_response(response: &IpcResponse) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{path::Path, sync::{Arc, Mutex}};
+    use std::{
+        path::Path,
+        sync::{Arc, Mutex},
+    };
 
     use super::*;
-    use crate::assets::load_embedded_manifest;
+    use crate::{adb::AdbCommandOutput, assets::load_embedded_manifest};
 
     #[derive(Clone)]
     struct RecordingRunner {
@@ -211,7 +214,10 @@ mod tests {
 
     impl AdbRunner for RecordingRunner {
         fn run(&self, _adb_binary: &Path, args: &[String]) -> Result<AdbCommandOutput, AppError> {
-            self.calls.lock().expect("lock should not be poisoned").push(args.to_vec());
+            self.calls
+                .lock()
+                .expect("lock should not be poisoned")
+                .push(args.to_vec());
 
             Ok(AdbCommandOutput {
                 exit_code: 0,
@@ -221,7 +227,9 @@ mod tests {
         }
     }
 
-    fn service_with_recording_runner(calls: Arc<Mutex<Vec<Vec<String>>>>) -> CoreService<RecordingRunner> {
+    fn service_with_recording_runner(
+        calls: Arc<Mutex<Vec<Vec<String>>>>,
+    ) -> CoreService<RecordingRunner> {
         CoreService::new(
             RecordingRunner { calls },
             load_embedded_manifest().expect("embedded manifest must be valid"),
@@ -238,7 +246,10 @@ mod tests {
 
         assert!(!response.ok);
         assert_eq!(response.id, None);
-        assert_eq!(response.error.expect("error is required").error_code, "IPC_INVALID_JSON");
+        assert_eq!(
+            response.error.expect("error is required").error_code,
+            "IPC_INVALID_JSON"
+        );
     }
 
     #[test]
@@ -253,22 +264,28 @@ mod tests {
 
         assert!(!response.ok);
         assert_eq!(response.id, Some("1".to_string()));
-        assert_eq!(response.error.expect("error is required").error_code, "IPC_METHOD_UNKNOWN");
+        assert_eq!(
+            response.error.expect("error is required").error_code,
+            "IPC_METHOD_UNKNOWN"
+        );
     }
 
     #[test]
     fn adb_exec_preserves_args_and_returns_command_output() {
-        // 场景：前端请求 adb.exec 时，核心只把参数数组交给 ADB runner，不拼接 shell 字符串。
+        // 场景：前端请求 adb.exec 时，核心只把参数数组交给 ADB runner，不拼接命令文本。
         let calls = Arc::new(Mutex::new(Vec::new()));
         let service = service_with_recording_runner(calls.clone());
 
-        let response: IpcResponse = serde_json::from_str(
-            &service.handle_json_line(r#"{"id":"2","method":"adb.exec","params":{"args":["devices","-l"]}}"#),
-        )
+        let response: IpcResponse = serde_json::from_str(&service.handle_json_line(
+            r#"{"id":"2","method":"adb.exec","params":{"args":["devices","-l"]}}"#,
+        ))
         .expect("response should be valid JSON");
 
         assert!(response.ok);
-        assert_eq!(calls.lock().expect("lock should not be poisoned")[0], vec!["devices", "-l"]);
+        assert_eq!(
+            calls.lock().expect("lock should not be poisoned")[0],
+            vec!["devices", "-l"]
+        );
         assert_eq!(
             response.result.expect("result is required"),
             json!({"exitCode": 0, "stdout": "mock stdout", "stderr": ""})
@@ -280,12 +297,15 @@ mod tests {
         // 场景：adb.exec 的 args 必须是 string[]，契约错误必须被协议层拦截。
         let service = service_with_recording_runner(Arc::new(Mutex::new(Vec::new())));
 
-        let response: IpcResponse = serde_json::from_str(
-            &service.handle_json_line(r#"{"id":"3","method":"adb.exec","params":{"args":"devices"}}"#),
-        )
+        let response: IpcResponse = serde_json::from_str(&service.handle_json_line(
+            r#"{"id":"3","method":"adb.exec","params":{"args":"devices"}}"#,
+        ))
         .expect("response should be valid JSON");
 
         assert!(!response.ok);
-        assert_eq!(response.error.expect("error is required").error_code, "IPC_PARAMS_INVALID");
+        assert_eq!(
+            response.error.expect("error is required").error_code,
+            "IPC_PARAMS_INVALID"
+        );
     }
 }
