@@ -4,12 +4,16 @@ import android.content.Context
 import android.content.Intent
 import com.adbcontrol.companion.core.CompanionCommandContext
 import com.adbcontrol.companion.core.CompanionCommandResult
+import com.adbcontrol.companion.media.MediaStreamSink
 import com.adbcontrol.companion.screen.ScreenCaptureConsentActivity
 import com.adbcontrol.companion.screen.ScreenCaptureException
 import com.adbcontrol.companion.screen.ScreenCaptureState
 import java.util.UUID
 
-class ScreenCaptureFeatureHandler(private val context: Context) : FeatureCommandHandler {
+class ScreenCaptureFeatureHandler(
+    private val context: Context,
+    private val mediaStreamSink: MediaStreamSink,
+) : FeatureCommandHandler {
     override val capabilityIds: Set<String> = setOf("android.screen.capture")
     override val operations: Set<String> = setOf("stream.open", "stream.close", "screenshot.capture")
 
@@ -37,15 +41,27 @@ class ScreenCaptureFeatureHandler(private val context: Context) : FeatureCommand
         val height = command.args.intArg("height") ?: context.resources.displayMetrics.heightPixels
         val bitrate = command.args.intArg("bitrate") ?: 4_000_000
         val frameRate = command.args.intArg("frameRate") ?: 30
+        val realtime = command.args.booleanArg("realtime") ?: false
 
         return try {
-            val stream = ScreenCaptureState.startVideoStream(
-                context = context,
-                width = width,
-                height = height,
-                bitrate = bitrate,
-                frameRate = frameRate,
-            )
+            val stream = if (realtime) {
+                ScreenCaptureState.startRealtimeVideoStream(
+                    context = context,
+                    width = width,
+                    height = height,
+                    bitrate = bitrate,
+                    frameRate = frameRate,
+                    sink = mediaStreamSink,
+                )
+            } else {
+                ScreenCaptureState.startVideoStream(
+                    context = context,
+                    width = width,
+                    height = height,
+                    bitrate = bitrate,
+                    frameRate = frameRate,
+                )
+            }
             CompanionCommandResult.success(
                 requestId = command.requestId,
                 result = mapOf(
@@ -55,7 +71,8 @@ class ScreenCaptureFeatureHandler(private val context: Context) : FeatureCommand
                     "height" to stream.height,
                     "bitrate" to stream.bitrate,
                     "frameRate" to stream.frameRate,
-                    "format" to "mp4-h264",
+                    "format" to if (realtime) "h264-annexb" else "mp4-h264",
+                    "transport" to if (realtime) "media-sink" else "sandbox-file",
                     "state" to "streaming",
                 ),
             )
