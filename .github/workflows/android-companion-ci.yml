@@ -27,11 +27,16 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK packages
+      - name: Install Android SDK packages and capture diagnostics
+        id: android_sdk
+        continue-on-error: true
         shell: bash
         run: |
-          yes | sdkmanager --licenses >/dev/null
-          sdkmanager "platforms;android-36" "build-tools;36.0.0"
+          {
+            yes | sdkmanager --licenses >/dev/null || true
+            sdkmanager --install "platforms;android-36" "build-tools;36.0.0"
+          } 2>&1 | tee android-sdk.log
+          echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -52,9 +57,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: android-companion-diagnostics
-          path: android/companion-app/android-build.log
-          if-no-files-found: error
+          path: |
+            android-sdk.log
+            android/companion-app/android-build.log
+          if-no-files-found: warn
 
-      - name: Fail on Android build diagnostics
-        if: steps.android_build.outputs.status != '0'
+      - name: Fail on Android diagnostics
+        if: steps.android_sdk.outputs.status != '0' || steps.android_build.outputs.status != '0'
         run: exit 1
