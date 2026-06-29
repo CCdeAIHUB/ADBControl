@@ -92,7 +92,7 @@ class QuicCompanionService : Service() {
 
     fun connect(endpoint: String, deviceId: String = "android-companion") {
         connectionState = CompanionConnectionState.CONNECTING
-        val nativeTransport = NativeQuicTransport()
+        val nativeTransport = NativeQuicTransport(NativeQuicEngineProvider.create())
         nativeTransport.connect(endpoint)
         transport = nativeTransport
         connectedDeviceId = deviceId
