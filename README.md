@@ -1,6 +1,6 @@
 # ADBControl
 
-ADBControl 是一个跨平台 ADB 后端核心项目。当前阶段落地后端核心、Android 伴侣 App 能力协议、Android 功能执行层、媒体能力执行层、Android QUIC/HTTP3 传输适配层和 ADB 资产 packaging 流程，不实现前端 UI。
+ADBControl 是一个跨平台 ADB 后端核心项目。当前阶段落地后端核心、Android 伴侣 App 能力协议、Android 功能执行层、媒体能力执行层、Android QUIC/HTTP3 传输适配层、Core Companion ingress 和 ADB 资产 packaging 流程，不实现前端 UI。
 
 ## 第一阶段目标
 
@@ -75,13 +75,23 @@ Android Companion App 已新增 `features` 执行层和 `AndroidFeatureDispatche
 - `QuicCompanionService.connect(endpoint, deviceId)`：创建 Cronet transport，发送 hello，并把音频 media sink 切换到 QUIC envelope sink；
 - `SandboxFileMediaStreamSink`：本地文件 sink，用于无网络或测试环境下保留媒体数据。
 
+### Core Companion ingress
+
+已新增 `CompanionIngress`：
+
+- 接收 Android Companion 发来的 JSON envelope bytes；
+- 校验协议名、版本、messageId；
+- 将 `hello`、`capabilityList`、`permissionState`、`heartbeat` 分发给 `CompanionSessionManager`；
+- ACK `streamOpen`、`streamChunk`、`streamClose`，并避免 media chunk 污染 session state；
+- 将非法 JSON、协议错误、状态错误转换为 QUIC `error` envelope。
+
 仍明确未假装完成的部分：
 
-- Core 侧 HTTP/3/QUIC 接收服务端；
+- Core 侧真实 HTTP/3 listener 与 TLS 证书；
 - 屏幕/相机实时 chunk 级编码输出 drain 到 QUIC media sink；
 - 设备配对、证书、信任、会话恢复。
 
-这些部分已进入权限、session、router、handler、媒体 sink 和 transport 边界，后续应在不改变 IPC/QUIC 契约的前提下接入 Core 侧服务端和更细粒度的编码输出 drain。
+这些部分已进入权限、session、router、handler、media sink、transport 和 ingress 边界，后续应在不改变 IPC/QUIC 契约的前提下接入 Core 侧 HTTP/3 listener 和更细粒度的编码输出 drain。
 
 ### Core Companion command router
 
@@ -113,6 +123,7 @@ Core 已新增 `CompanionCommandRouter` 抽象，并让 `device.invoke` 接入 r
 - 第一阶段 IPC transport：stdio pipe，方便跨平台前端先以子进程方式集成；
 - 后续 IPC transport：Windows Named Pipe、Unix Domain Socket；
 - Companion 通讯：QUIC 应用层协议 `adbcontrol-companion-quic`，Android 侧以 Cronet HTTP/3 over QUIC 作为传输适配层；
+- Core ingress：网络无关的 Companion envelope 接收入口，真实 HTTP/3 listener 后续只需调用它；
 - 错误结构：统一 `AppError`，所有关键失败路径必须包含 `errorCode`、`module`、`recoverable`。
 
 ## 目录结构
@@ -180,6 +191,7 @@ cargo run -p adbcontrol-core
 - IPC 协议列表：`docs/protocols/ipc-protocol-list.md`
 - QUIC 协议列表：`docs/protocols/quic-protocol-list.md`
 - Core Companion command router：`docs/protocols/companion-command-router.md`
+- Core Companion ingress：`docs/protocols/companion-ingress.md`
 
 以上文档逐项列出 method / message、请求示例、成功示例、失败示例和当前实现状态。
 
