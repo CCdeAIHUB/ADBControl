@@ -23,27 +23,41 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+      - name: Check formatting and capture diagnostics
+        id: fmt
+        continue-on-error: true
+        shell: bash
+        run: |
+          cargo fmt --all -- --check 2>&1 | tee fmt.log
+          echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
 
       - name: Run clippy and capture diagnostics
         id: clippy
         continue-on-error: true
+        shell: bash
         run: |
           cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tee clippy.log
           echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
 
-      - name: Upload clippy diagnostics
+      - name: Run tests and capture diagnostics
+        id: tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          cargo test --workspace 2>&1 | tee test.log
+          echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Rust diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: clippy-diagnostics
-          path: clippy.log
+          name: rust-core-diagnostics
+          path: |
+            fmt.log
+            clippy.log
+            test.log
           if-no-files-found: error
 
-      - name: Fail on clippy diagnostics
-        if: steps.clippy.outputs.status != '0'
+      - name: Fail on Rust diagnostics
+        if: steps.fmt.outputs.status != '0' || steps.clippy.outputs.status != '0' || steps.tests.outputs.status != '0'
         run: exit 1
-
-      - name: Run tests
-        run: cargo test --workspace
