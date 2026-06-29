@@ -6,6 +6,7 @@ pub mod quinn_transport;
 pub mod registry;
 pub mod router;
 pub mod session;
+pub mod trust;
 
 pub use ingress::CompanionIngress;
 pub use listener::{CompanionQuicListener, IngressBackedQuicListener};
@@ -22,3 +23,6 @@ pub use router::{
     InMemoryCompanionCommandRouter, InMemoryCompanionSession,
 };
 pub use session::{CompanionSession, CompanionSessionManager};
+pub use trust::{
+    CompanionTrustStore, PairingChallenge, PairingRequest, TrustedDevice,
+};
