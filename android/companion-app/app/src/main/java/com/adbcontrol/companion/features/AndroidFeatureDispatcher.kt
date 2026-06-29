@@ -12,6 +12,10 @@ class AndroidFeatureDispatcher(
 ) {
     private val capabilities = AndroidCapabilityCatalog.defaultCapabilities().associateBy { it.id }
     private val handlers: List<FeatureCommandHandler> = listOf(
+        InputFeatureHandler(context),
+        ScreenCaptureFeatureHandler(context),
+        CameraFeatureHandler(context),
+        AudioRecordFeatureHandler(context),
         ClipboardFeatureHandler(context),
         MediaVolumeFeatureHandler(context),
         AppListFeatureHandler(context),
@@ -19,7 +23,6 @@ class AndroidFeatureDispatcher(
         TelephonyFeatureHandler(context),
         MotionSensorFeatureHandler(context),
         UiFeatureHandler(context),
-        PlaceholderSensitiveStreamHandler(),
     )
 
     fun dispatch(context: CompanionCommandContext): CompanionCommandResult {
