@@ -266,6 +266,10 @@ pub fn android_companion_capability_catalog() -> Vec<Capability> {
     ]
 }
 
+// The catalog helper mirrors one protocol table row at a time. Keeping all row
+// fields adjacent makes permission and sensitivity review less error-prone than
+// scattering the same data across several partial builders.
+#[allow(clippy::too_many_arguments)]
 fn capability(
     id: &str,
     title: &str,
