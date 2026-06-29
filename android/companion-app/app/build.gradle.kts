@@ -15,3 +15,7 @@ android {
         versionName = "0.1.0"
     }
 }
+
+dependencies {
+    implementation("org.chromium.net:cronet-embedded:143.7445.0")
+}
