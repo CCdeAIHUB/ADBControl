@@ -1,0 +1,37 @@
+name: Build ADB Assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      adb_ref:
+        description: ADB source ref or tag in the external mirror repository
+        required: true
+        default: android-16.0.0_r1
+      source_repository:
+        description: External repository that mirrors the minimal AOSP ADB source tree
+        required: true
+        default: CCdeAIHUB/aosp-adb-tools
+
+jobs:
+  plan:
+    name: Build plan for ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - windows-x86_64
+          - windows-arm64
+          - macos-x86_64
+          - macos-arm64
+          - linux-x86_64
+          - linux-arm64
+          - android-x86_64
+          - android-arm64
+
+    steps:
+      - name: Checkout ADBControl
+        uses: actions/checkout@v4
+
+      - name: Print integration plan
+        run: echo "Target ${{ matrix.target }} will be built from ${{ inputs.source_repository }} at ${{ inputs.adb_ref }} in a follow-up implementation phase."
