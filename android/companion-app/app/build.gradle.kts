@@ -17,5 +17,4 @@ android {
 }
 
 dependencies {
-    implementation("org.chromium.net:cronet-embedded:143.7445.0")
 }
