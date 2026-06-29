@@ -5,7 +5,9 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import com.adbcontrol.companion.core.AndroidCapabilityCatalog
+import com.adbcontrol.companion.core.CompanionCommandContext
 import com.adbcontrol.companion.core.PermissionGuard
+import com.adbcontrol.companion.features.AndroidFeatureDispatcher
 
 enum class CompanionConnectionState {
     DISCONNECTED,
@@ -19,11 +21,13 @@ enum class CompanionConnectionState {
 class QuicCompanionService : Service() {
     private val transport: QuicTransport = UnconfiguredQuicTransport()
     private lateinit var permissionGuard: PermissionGuard
+    private lateinit var featureDispatcher: AndroidFeatureDispatcher
     private var connectionState: CompanionConnectionState = CompanionConnectionState.DISCONNECTED
 
     override fun onCreate() {
         super.onCreate()
         permissionGuard = PermissionGuard(this)
+        featureDispatcher = AndroidFeatureDispatcher(this, permissionGuard)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -57,6 +61,30 @@ class QuicCompanionService : Service() {
                 "requiresUserConsent" to capability.requiresUserConsent,
             )
         }
+    }
+
+    fun handleCommandRequest(
+        deviceId: String,
+        traceId: String?,
+        request: CompanionCommandRequest,
+    ): QuicEnvelope {
+        val result = featureDispatcher.dispatch(
+            CompanionCommandContext(
+                requestId = request.requestId,
+                capabilityId = request.capabilityId,
+                operation = request.operation,
+                args = request.args,
+            ),
+        )
+
+        return QuicEnvelope(
+            messageId = "response-${request.requestId}",
+            traceId = traceId,
+            deviceId = deviceId,
+            channel = QuicChannel.CONTROL,
+            kind = if (result.ok) QuicMessageKind.COMMAND_RESPONSE else QuicMessageKind.ERROR,
+            payload = result.toPayload(),
+        )
     }
 
     fun connect(endpoint: String) {
