@@ -12,7 +12,7 @@ The project direction is **Core + Android companion app**:
 
 ## Current repository status
 
-This branch adds the first in-repository execution contract, acceptance specs, and executable Core domain skeleton so later Codex rounds can work from stable, testable requirements instead of conversation-only memory.
+This branch adds the first in-repository execution contract, acceptance specs, executable Core domain skeleton, first Core adapters, and an Android Kotlin/JNI module.
 
 Start with:
 
@@ -23,13 +23,20 @@ Start with:
 - [`schemas/stream-open.schema.json`](./schemas/stream-open.schema.json) — initial real-time stream request schema.
 - [`specs/acceptance/`](./specs/acceptance/) — behavior-first acceptance specs.
 - [`core/domain/`](./core/domain/) — executable routing, trust, capability, and permission domain skeleton.
-- [`test/core/`](./test/core/) — node:test coverage for the first Core domain rules.
+- [`core/adb/`](./core/adb/) — allowlisted ADB adapter.
+- [`core/transport/`](./core/transport/) — framed TCP/TLS JSON transport.
+- [`android-app/`](./android-app/) — Kotlin app module with JNI native transport boundary.
+- [`test/core/`](./test/core/) — node:test coverage for the first Core rules and adapters.
 
 ## Test
 
 ```bash
 npm test
 ```
+
+## Android build note
+
+The Android native transport requires an ABI-compatible QUIC library and headers via CMake inputs. No Cronet/HTTP3 fallback or mock native engine is included.
 
 ## Development rule
 
