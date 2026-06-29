@@ -92,9 +92,9 @@ class QuicCompanionService : Service() {
 
     fun connect(endpoint: String, deviceId: String = "android-companion") {
         connectionState = CompanionConnectionState.CONNECTING
-        val cronetTransport = CronetQuicTransport(this)
-        cronetTransport.connect(endpoint)
-        transport = cronetTransport
+        val nativeTransport = NativeQuicTransport()
+        nativeTransport.connect(endpoint)
+        transport = nativeTransport
         connectedDeviceId = deviceId
         featureDispatcher = AndroidFeatureDispatcher(
             this,
