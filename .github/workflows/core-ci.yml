@@ -24,11 +24,26 @@ jobs:
           components: rustfmt, clippy
 
       - name: Check formatting
-        continue-on-error: true
         run: cargo fmt --all -- --check
 
-      - name: Run clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Run clippy and capture diagnostics
+        id: clippy
+        continue-on-error: true
+        run: |
+          cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tee clippy.log
+          echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload clippy diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clippy-diagnostics
+          path: clippy.log
+          if-no-files-found: error
+
+      - name: Fail on clippy diagnostics
+        if: steps.clippy.outputs.status != '0'
+        run: exit 1
 
       - name: Run tests
         run: cargo test --workspace
