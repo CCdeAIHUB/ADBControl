@@ -59,7 +59,7 @@ class ScreenCaptureFeatureHandler(private val context: Context) : FeatureCommand
     private fun captureScreenshot(command: CompanionCommandContext): CompanionCommandResult {
         val width = command.args.intArg("width") ?: context.resources.displayMetrics.widthPixels
         val height = command.args.intArg("height") ?: context.resources.displayMetrics.heightPixels
-        val timeoutMs = command.args.longArg("timeoutMs") ?: 1_500L
+        val timeoutMs = (command.args.intArg("timeoutMs") ?: 1_500).toLong()
 
         return try {
             val capture = ScreenCaptureState.capturePng(
