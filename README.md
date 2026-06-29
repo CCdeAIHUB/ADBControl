@@ -1,6 +1,6 @@
 # ADBControl
 
-ADBControl 是一个跨平台 ADB 后端核心项目。当前阶段落地后端核心、Android 伴侣 App 能力协议、Android 功能执行层、媒体能力执行层、Android 纯 QUIC transport 适配边界、Core Companion ingress 和 ADB 资产 packaging 流程，不实现前端 UI。
+ADBControl 是一个跨平台 ADB 后端核心项目。当前阶段落地后端核心、Android 伴侣 App 能力协议、Android 功能执行层、媒体能力执行层、Android 纯 QUIC transport 适配边界、Core Quinn 纯 QUIC server wrapper、Core Companion ingress 和 ADB 资产 packaging 流程，不实现前端 UI。
 
 ## 第一阶段目标
 
@@ -72,20 +72,20 @@ Android Companion App 已新增 `features` 执行层和 `AndroidFeatureDispatche
 
 - `NativeQuicTransport`：Android 侧纯 QUIC transport 适配边界，只接受 `quic://` endpoint；
 - `NativeQuicEngine`：后续 JNI / native QUIC engine 必须实现的接口；
+- `NativeQuicEngineProvider`：允许后续 JNI / NDK 实现向 Companion Service 注入真实 engine；
 - `QuicMediaStreamSink`：把媒体 stream open/chunk/close 包装为 `STREAM_OPEN`、`STREAM_CHUNK`、`STREAM_CLOSE` envelope；
 - `QuicCompanionService.connect(endpoint, deviceId)`：创建 native QUIC transport，发送 hello，并把音频 media sink 切换到 QUIC envelope sink；
 - `SandboxFileMediaStreamSink`：本地文件 sink，用于无网络或测试环境下保留媒体数据。
 
-仍明确未假装完成的部分：
+仍明确未完成的部分：
 
 - Android native QUIC engine 的 JNI / native 实现；
-- Core 侧真实 QUIC listener 与 TLS/证书；
 - 屏幕/相机实时 chunk 级编码输出 drain 到 QUIC media sink；
 - 设备配对、证书、信任、会话恢复。
 
-这些部分已进入权限、session、router、handler、media sink、transport 和 ingress 边界，后续应在不改变 IPC/QUIC 契约的前提下接入纯 QUIC native engine 和 Core 侧 QUIC listener。
+这些部分已进入权限、session、router、handler、media sink、transport 和 ingress 边界，后续应在不改变 IPC/QUIC 契约的前提下接入纯 QUIC native engine 和媒体低延迟编码输出。
 
-### Core Companion ingress
+### Core Companion ingress / QUIC listener
 
 已新增 `CompanionIngress`：
 
@@ -94,6 +94,13 @@ Android Companion App 已新增 `features` 执行层和 `AndroidFeatureDispatche
 - 将 `hello`、`capabilityList`、`permissionState`、`heartbeat` 分发给 `CompanionSessionManager`；
 - ACK `streamOpen`、`streamChunk`、`streamClose`，并避免 media chunk 污染 session state；
 - 将非法 JSON、协议错误、状态错误转换为 QUIC `error` envelope。
+
+已新增 Core 纯 QUIC 接入层：
+
+- `CompanionQuicListener`：抽象 control/media bytes 接收入口；
+- `IngressBackedQuicListener`：把 QUIC stream/datagram bytes 转入 `CompanionIngress`；
+- `QuinnCompanionServer`：可选 `quinn-transport` feature 下的纯 QUIC server wrapper，绑定 `quinn::Endpoint`，接收 bidirectional stream 和 datagram，并转发到 `CompanionQuicListener`；
+- Core CI 会额外执行 `cargo check -p adbcontrol-core --features quinn-transport`，确保 Quinn transport 代码可编译。
 
 ### Core Companion command router
 
@@ -125,7 +132,8 @@ Core 已新增 `CompanionCommandRouter` 抽象，并让 `device.invoke` 接入 r
 - 第一阶段 IPC transport：stdio pipe，方便跨平台前端先以子进程方式集成；
 - 后续 IPC transport：Windows Named Pipe、Unix Domain Socket；
 - Companion 通讯：自定义 QUIC 应用层协议 `adbcontrol-companion-quic`，不使用 HTTP/3 作为主线；
-- Core ingress：网络无关的 Companion envelope 接收入口，真实 QUIC listener 后续只需调用它；
+- Core ingress：网络无关的 Companion envelope 接收入口；
+- Core QUIC server：可选 `quinn-transport` feature，使用 Quinn 绑定纯 QUIC endpoint，将 stream/datagram 转给 ingress；
 - 错误结构：统一 `AppError`，所有关键失败路径必须包含 `errorCode`、`module`、`recoverable`。
 
 ## 目录结构
@@ -146,6 +154,7 @@ scripts/adb/                  # ADB 资产下载与校验脚本
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
+cargo check -p adbcontrol-core --features quinn-transport
 cargo test --workspace
 ```
 
