@@ -12,7 +12,7 @@ The project direction is **Core + Android companion app**:
 
 ## Current repository status
 
-This branch adds the first in-repository execution contract, acceptance specs, executable Core domain skeleton, first Core adapters, scoped media persistence, and an Android Kotlin/JNI module.
+This branch adds the first in-repository execution contract, acceptance specs, executable Core domain skeleton, first Core adapters, scoped media persistence, an ADB screenshot-to-media application service, and an Android Kotlin/JNI module.
 
 Start with:
 
@@ -24,9 +24,10 @@ Start with:
 - [`specs/acceptance/`](./specs/acceptance/) — behavior-first acceptance specs.
 - [`core/domain/`](./core/domain/) — executable routing, trust, capability, and permission domain skeleton.
 - [`core/adb/`](./core/adb/) — allowlisted ADB adapter.
+- [`core/application/`](./core/application/) — application services that compose domain checks with adapters.
 - [`core/transport/`](./core/transport/) — framed TCP/TLS JSON transport.
 - [`core/media/`](./core/media/) — scoped file media store with root containment checks.
-- [`android-app/`](./android-app/) — Kotlin app module with JNI native transport boundary.
+- [`android-app/`](./android-app/) — Kotlin app module with JNI native transport boundary and no-side-effect frame/session contracts.
 - [`test/core/`](./test/core/) — node:test coverage for Core rules and adapters.
 
 ## Test
@@ -35,7 +36,7 @@ Start with:
 npm test
 ```
 
-Current local result: 18 tests passed, 0 failed.
+Current local result: 20 tests passed, 0 failed.
 
 ## Android build note
 
