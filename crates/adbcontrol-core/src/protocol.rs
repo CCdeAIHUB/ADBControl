@@ -163,7 +163,11 @@ impl<R: AdbRunner> CoreService<R> {
     }
 }
 
-fn response_from_serializable<T: Serialize>(id: String, value: &T, module: &'static str) -> IpcResponse {
+fn response_from_serializable<T: Serialize>(
+    id: String,
+    value: &T,
+    module: &'static str,
+) -> IpcResponse {
     match serde_json::to_value(value) {
         Ok(value) => IpcResponse::success(id, value),
         Err(error) => IpcResponse::failure(
@@ -213,7 +217,11 @@ mod tests {
     }
 
     impl AdbRunner for RecordingRunner {
-        fn run(&self, _adb_binary: &Path, args: &[String]) -> Result<AdbCommandOutput, AppError> {
+        fn run(
+            &self,
+            _adb_binary: &Path,
+            args: &[String],
+        ) -> Result<AdbCommandOutput, AppError> {
             self.calls
                 .lock()
                 .expect("lock should not be poisoned")
@@ -257,9 +265,9 @@ mod tests {
         // 场景：前端调用未知 method 时，核心必须显式失败，不能假装成功。
         let service = service_with_recording_runner(Arc::new(Mutex::new(Vec::new())));
 
-        let response: IpcResponse = serde_json::from_str(
-            &service.handle_json_line(r#"{"id":"1","method":"unknown.method","params":{}}"#),
-        )
+        let response: IpcResponse = serde_json::from_str(&service.handle_json_line(
+            r#"{"id":"1","method":"unknown.method","params":{}}"#,
+        ))
         .expect("response should be valid JSON");
 
         assert!(!response.ok);
