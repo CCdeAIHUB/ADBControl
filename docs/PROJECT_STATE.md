@@ -22,6 +22,8 @@ Android companion app responsibilities:
 
 - Provide app-side capabilities such as screenshot, hardware information, simulated keyboard input, simulated touch, real-time screen streaming, and app-side permission/capability reporting.
 - Communicate with Core through a secure session protocol rather than raw UDP.
+- Android companion app implementation is Kotlin / Gradle Kotlin DSL.
+- Do not use HTTP/3/Cronet as the locked transport implementation and do not add a fake native engine placeholder.
 
 ## Continuation memory from the previous round
 
@@ -36,6 +38,29 @@ The previous round's working context indicated that these seven capability areas
 7. Real-time H.264 chunk streaming connected to `stream.open(realtime=true)`, while file-level MP4 recording remains a separate path.
 
 Because the current GitHub repository does not yet expose those files on `main`, these are treated as the required reconstruction and verification checklist for the next implementation pass.
+
+## Current branch progress
+
+This branch now contains a small executable Core domain skeleton under `core/domain/` with Node's built-in `node:test` coverage under `test/core/`.
+
+Implemented in this skeleton:
+
+- structured domain errors matching the schema subsystem model;
+- device state with separate ADB/app capabilities and app session authentication state;
+- pairing-protected hello, capability sync, and permission sync;
+- stream routing for `stream.open(realtime=true)` that requires an authenticated Android app session, `screen.stream.h264` capability, and screen capture permission;
+- explicit separation between real-time H.264 chunks and MP4 recording side effects.
+
+Not implemented in this skeleton:
+
+- real network transport;
+- QUIC/native engine;
+- Android JNI;
+- ADB process execution;
+- MediaProjection;
+- file-level media store persistence.
+
+Those remain future adapter layers and must not be faked.
 
 ## Current execution rule
 
