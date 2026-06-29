@@ -11,6 +11,8 @@ import android.media.ImageReader
 import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import com.adbcontrol.companion.media.EncodedVideoStream
+import com.adbcontrol.companion.media.MediaStreamSink
 import java.io.File
 import java.util.UUID
 
@@ -18,6 +20,7 @@ object ScreenCaptureState {
     private var projection: MediaProjection? = null
     private var activeStreamId: String? = null
     private val videoSessions = mutableMapOf<String, ScreenVideoSession>()
+    private val realtimeSessions = mutableMapOf<String, ScreenRealtimeSession>()
 
     fun setProjection(context: Context, streamId: String, resultCode: Int, data: Intent) {
         val manager = context.getSystemService(MediaProjectionManager::class.java)
@@ -28,6 +31,7 @@ object ScreenCaptureState {
                     override fun onStop() {
                         if (projection === mediaProjection) {
                             stopAllVideoSessions()
+                            stopAllRealtimeSessions()
                             projection = null
                             activeStreamId = null
                         }
@@ -43,6 +47,48 @@ object ScreenCaptureState {
 
     fun currentStreamId(): String? = activeStreamId
 
+    fun startRealtimeVideoStream(
+        context: Context,
+        width: Int,
+        height: Int,
+        bitrate: Int,
+        frameRate: Int,
+        sink: MediaStreamSink,
+    ): ScreenVideoResult {
+        val mediaProjection = projection ?: throw projectionRequired()
+        val safeWidth = width.coerceIn(240, 4096)
+        val safeHeight = height.coerceIn(240, 4096)
+        val safeBitrate = bitrate.coerceIn(256_000, 30_000_000)
+        val safeFrameRate = frameRate.coerceIn(5, 60)
+        val encoder = EncodedVideoStream(
+            width = safeWidth,
+            height = safeHeight,
+            bitrate = safeBitrate,
+            frameRate = safeFrameRate,
+            sink = sink,
+        )
+        val inputSurface = encoder.start()
+        val display = mediaProjection.createVirtualDisplay(
+            "ADBControlRealtimeScreen-${encoder.sessionId()}",
+            safeWidth,
+            safeHeight,
+            context.resources.displayMetrics.densityDpi,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+            inputSurface,
+            null,
+            null,
+        )
+        realtimeSessions[encoder.sessionId()] = ScreenRealtimeSession(encoder.sessionId(), encoder, display)
+        return ScreenVideoResult(
+            sessionId = encoder.sessionId(),
+            path = "",
+            width = safeWidth,
+            height = safeHeight,
+            bitrate = safeBitrate,
+            frameRate = safeFrameRate,
+        )
+    }
+
     fun startVideoStream(
         context: Context,
         width: Int,
@@ -50,12 +96,7 @@ object ScreenCaptureState {
         bitrate: Int,
         frameRate: Int,
     ): ScreenVideoResult {
-        val mediaProjection = projection ?: throw ScreenCaptureException(
-            errorCode = "COMPANION_MEDIA_PROJECTION_CONSENT_REQUIRED",
-            message = "Screen video stream requires Android MediaProjection user consent.",
-            recoverable = true,
-            suggestion = "Call stream.open and approve the Android screen capture consent dialog first.",
-        )
+        val mediaProjection = projection ?: throw projectionRequired()
         val safeWidth = width.coerceIn(240, 4096)
         val safeHeight = height.coerceIn(240, 4096)
         val safeBitrate = bitrate.coerceIn(256_000, 30_000_000)
@@ -99,11 +140,15 @@ object ScreenCaptureState {
     }
 
     fun stopVideoStream(context: Context, sessionId: String?): ScreenVideoStopResult {
-        val id = sessionId ?: videoSessions.keys.firstOrNull() ?: throw ScreenCaptureException(
+        val id = sessionId ?: realtimeSessions.keys.firstOrNull() ?: videoSessions.keys.firstOrNull() ?: throw ScreenCaptureException(
             errorCode = "COMPANION_SCREEN_STREAM_NOT_FOUND",
             message = "No active screen video stream exists.",
             recoverable = true,
         )
+        realtimeSessions.remove(id)?.let { session ->
+            session.stop()
+            return ScreenVideoStopResult(sessionId = id, path = "", sizeBytes = 0)
+        }
         val session = videoSessions.remove(id) ?: throw ScreenCaptureException(
             errorCode = "COMPANION_SCREEN_STREAM_NOT_FOUND",
             message = "Screen video stream is not active: $id",
@@ -172,14 +217,30 @@ object ScreenCaptureState {
 
     fun stop() {
         stopAllVideoSessions()
+        stopAllRealtimeSessions()
         projection?.stop()
         projection = null
         activeStreamId = null
     }
 
+    private fun projectionRequired(): ScreenCaptureException {
+        return ScreenCaptureException(
+            errorCode = "COMPANION_MEDIA_PROJECTION_CONSENT_REQUIRED",
+            message = "Screen video stream requires Android MediaProjection user consent.",
+            recoverable = true,
+            suggestion = "Call stream.open and approve the Android screen capture consent dialog first.",
+        )
+    }
+
     private fun stopAllVideoSessions() {
         val sessions = videoSessions.values.toList()
         videoSessions.clear()
+        sessions.forEach { session -> session.stop() }
+    }
+
+    private fun stopAllRealtimeSessions() {
+        val sessions = realtimeSessions.values.toList()
+        realtimeSessions.clear()
         sessions.forEach { session -> session.stop() }
     }
 
@@ -230,6 +291,17 @@ private data class ScreenVideoSession(
         runCatching { recorder.reset() }
         runCatching { recorder.release() }
         virtualDisplay.release()
+    }
+}
+
+private data class ScreenRealtimeSession(
+    val sessionId: String,
+    val encoder: EncodedVideoStream,
+    val virtualDisplay: VirtualDisplay,
+) {
+    fun stop() {
+        virtualDisplay.release()
+        encoder.stop()
     }
 }
 
