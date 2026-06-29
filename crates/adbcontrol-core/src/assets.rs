@@ -62,7 +62,10 @@ pub fn parse_manifest_str(content: &str) -> Result<AdbManifest, AppError> {
     Ok(manifest)
 }
 
-pub fn find_adb_asset(manifest: &AdbManifest, target: &HostTarget) -> Result<AdbAsset, AppError> {
+pub fn find_adb_asset(
+    manifest: &AdbManifest,
+    target: &HostTarget,
+) -> Result<AdbAsset, AppError> {
     manifest
         .assets
         .iter()
@@ -75,7 +78,9 @@ pub fn find_adb_asset(manifest: &AdbManifest, target: &HostTarget) -> Result<Adb
                 "adb.assets",
                 false,
             )
-            .with_suggestion("Build or download the target ADB binary and add it to assets/adb/manifest.json.")
+            .with_suggestion(
+                "Build or download the target ADB binary and add it to assets/adb/manifest.json.",
+            )
         })
 }
 
