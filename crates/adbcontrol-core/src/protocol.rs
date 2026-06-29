@@ -7,7 +7,10 @@ use crate::{
     adb::{validate_adb_args, AdbRunner},
     assets::{find_adb_asset, resolve_asset_path, AdbManifest},
     capability::android_companion_capability_catalog,
-    companion::{quic_protocol_descriptor, CompanionRegistry},
+    companion::{
+        quic_protocol_descriptor, CompanionCommandDispatch, CompanionCommandRouter,
+        CompanionRegistry, DisconnectedCompanionCommandRouter,
+    },
     error::AppError,
     platform::HostTarget,
 };
@@ -76,18 +79,23 @@ struct DeviceInvokeParams {
     args: Value,
 }
 
-pub struct CoreService<R: AdbRunner> {
+pub struct CoreService<
+    R: AdbRunner,
+    Q: CompanionCommandRouter = DisconnectedCompanionCommandRouter,
+> {
     runner: R,
     manifest: AdbManifest,
     companion_registry: CompanionRegistry,
+    companion_router: Q,
 }
 
-impl<R: AdbRunner> CoreService<R> {
+impl<R: AdbRunner> CoreService<R, DisconnectedCompanionCommandRouter> {
     pub fn new(runner: R, manifest: AdbManifest) -> Self {
         Self {
             runner,
             manifest,
             companion_registry: CompanionRegistry::default(),
+            companion_router: DisconnectedCompanionCommandRouter,
         }
     }
 
@@ -100,6 +108,23 @@ impl<R: AdbRunner> CoreService<R> {
             runner,
             manifest,
             companion_registry,
+            companion_router: DisconnectedCompanionCommandRouter,
+        }
+    }
+}
+
+impl<R: AdbRunner, Q: CompanionCommandRouter> CoreService<R, Q> {
+    pub fn new_with_companion_registry_and_router(
+        runner: R,
+        manifest: AdbManifest,
+        companion_registry: CompanionRegistry,
+        companion_router: Q,
+    ) -> Self {
+        Self {
+            runner,
+            manifest,
+            companion_registry,
+            companion_router,
         }
     }
 
@@ -260,12 +285,13 @@ impl<R: AdbRunner> CoreService<R> {
     }
 
     fn handle_device_invoke(&self, request: IpcRequest) -> IpcResponse {
+        let request_id = request.id;
         let params: DeviceInvokeParams = match parse_ipc_params(
             request.params,
             "device.invoke params must match { deviceId, capabilityId, operation, args }.",
         ) {
             Ok(params) => params,
-            Err(error) => return IpcResponse::failure(Some(request.id), error),
+            Err(error) => return IpcResponse::failure(Some(request_id), error),
         };
 
         for (value, name) in [
@@ -274,13 +300,13 @@ impl<R: AdbRunner> CoreService<R> {
             (&params.operation, "operation"),
         ] {
             if let Err(error) = require_non_empty(value, name) {
-                return IpcResponse::failure(Some(request.id), error);
+                return IpcResponse::failure(Some(request_id), error);
             }
         }
 
         if !params.args.is_object() {
             return IpcResponse::failure(
-                Some(request.id),
+                Some(request_id),
                 AppError::new(
                     "IPC_PARAMS_INVALID",
                     "device.invoke args must be a JSON object.",
@@ -292,7 +318,7 @@ impl<R: AdbRunner> CoreService<R> {
 
         let device = match self.companion_registry.get_device(&params.device_id) {
             Ok(device) => device,
-            Err(error) => return IpcResponse::failure(Some(request.id), error),
+            Err(error) => return IpcResponse::failure(Some(request_id), error),
         };
 
         let capability = match device
@@ -303,7 +329,7 @@ impl<R: AdbRunner> CoreService<R> {
             Some(capability) => capability,
             None => {
                 return IpcResponse::failure(
-                    Some(request.id),
+                    Some(request_id),
                     AppError::new(
                         "COMPANION_CAPABILITY_NOT_FOUND",
                         format!(
@@ -319,7 +345,7 @@ impl<R: AdbRunner> CoreService<R> {
 
         if !capability.operations.contains(&params.operation) {
             return IpcResponse::failure(
-                Some(request.id),
+                Some(request_id),
                 AppError::new(
                     "COMPANION_OPERATION_NOT_SUPPORTED",
                     format!(
@@ -332,20 +358,18 @@ impl<R: AdbRunner> CoreService<R> {
             );
         }
 
-        // The command has passed Core-side routing validation. Execution still
-        // belongs to the future QUIC transport/provider implementation, so the
-        // protocol returns an explicit recoverable failure instead of silently
-        // pretending the Android command was delivered.
-        IpcResponse::failure(
-            Some(request.id),
-            AppError::new(
-                "COMPANION_COMMAND_ROUTER_NOT_READY",
-                "Android companion command routing is not connected to a QUIC transport yet.",
-                "companion.router",
-                true,
-            )
-            .with_suggestion("Start a QUIC companion session before invoking device capabilities."),
-        )
+        let dispatch = CompanionCommandDispatch {
+            request_id: request_id.clone(),
+            device_id: params.device_id,
+            capability_id: params.capability_id,
+            operation: params.operation,
+            args: params.args,
+        };
+
+        match self.companion_router.dispatch(dispatch) {
+            Ok(response) => response_from_serializable(request_id, &response, "companion.router"),
+            Err(error) => IpcResponse::failure(Some(request_id), error),
+        }
     }
 
     fn resolve_current_adb_path(&self) -> Result<PathBuf, AppError> {
@@ -436,7 +460,10 @@ mod tests {
     use crate::{
         adb::AdbCommandOutput,
         assets::load_embedded_manifest,
-        companion::{sample_android_companion_device, CompanionRegistry},
+        companion::{
+            sample_android_companion_device, CompanionRegistry, InMemoryCompanionCommandRouter,
+            InMemoryCompanionSession,
+        },
     };
 
     #[derive(Clone)]
@@ -479,6 +506,20 @@ mod tests {
             },
             load_embedded_manifest().expect("embedded manifest must be valid"),
             CompanionRegistry::new(vec![sample_android_companion_device()]),
+        )
+    }
+
+    fn service_with_connected_sample_companion(
+    ) -> CoreService<RecordingRunner, InMemoryCompanionCommandRouter> {
+        CoreService::new_with_companion_registry_and_router(
+            RecordingRunner {
+                calls: Arc::new(Mutex::new(Vec::new())),
+            },
+            load_embedded_manifest().expect("embedded manifest must be valid"),
+            CompanionRegistry::new(vec![sample_android_companion_device()]),
+            InMemoryCompanionCommandRouter::new(vec![InMemoryCompanionSession::dispatch_only(
+                "android-companion-sample",
+            )]),
         )
     }
 
@@ -651,8 +692,8 @@ mod tests {
     }
 
     #[test]
-    fn device_invoke_validates_capability_before_transport_dispatch() {
-        // 场景：设备存在且能力/操作合法时，本阶段仍必须显式说明 QUIC router 未连接，不能假装执行成功。
+    fn device_invoke_requires_connected_companion_session() {
+        // 场景：设备和能力存在，但 QUIC session 尚未连接时，Core 必须返回可恢复 session 错误。
         let service = service_with_sample_companion();
 
         let encoded = service.handle_json_line(
@@ -664,7 +705,31 @@ mod tests {
         assert!(!response.ok);
         assert_eq!(
             response.error.expect("error is required").error_code,
-            "COMPANION_COMMAND_ROUTER_NOT_READY"
+            "COMPANION_SESSION_NOT_CONNECTED"
         );
+    }
+
+    #[test]
+    fn device_invoke_dispatches_quic_command_request_when_session_is_connected() {
+        // 场景：设备、能力、操作、session 都合法时，Core 必须把 IPC invoke 转换为 QUIC commandRequest。
+        let service = service_with_connected_sample_companion();
+
+        let encoded = service.handle_json_line(
+            r#"{"id":"10","method":"device.invoke","params":{"deviceId":"android-companion-sample","capabilityId":"android.volume.media","operation":"volume.set","args":{"level":5}}}"#,
+        );
+        let response: IpcResponse = serde_json::from_str(encoded.as_str())
+            .expect("response should be valid JSON");
+        let result = response.result.expect("result is required");
+
+        assert!(response.ok);
+        assert_eq!(result["status"], "dispatched");
+        assert_eq!(result["envelope"]["kind"], "commandRequest");
+        assert_eq!(result["envelope"]["payload"]["requestId"], "10");
+        assert_eq!(
+            result["envelope"]["payload"]["capabilityId"],
+            "android.volume.media"
+        );
+        assert_eq!(result["envelope"]["payload"]["operation"], "volume.set");
+        assert_eq!(result["envelope"]["payload"]["args"]["level"], 5);
     }
 }
