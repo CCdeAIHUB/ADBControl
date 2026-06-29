@@ -10,16 +10,19 @@ import java.util.UUID
 class QuicMediaStreamSink(
     private val transport: QuicTransport,
     private val deviceId: String?,
+    private val certificateFingerprintSha256: String? = null,
 ) : MediaStreamSink {
     override fun onStreamStarted(sessionId: String, mimeType: String, metadata: Map<String, Any?>) {
         transport.send(
             envelope(
                 sessionId = sessionId,
                 kind = QuicMessageKind.STREAM_OPEN,
-                payload = mapOf(
-                    "sessionId" to sessionId,
-                    "mimeType" to mimeType,
-                    "metadata" to metadata,
+                payload = trustPayload(
+                    mapOf(
+                        "sessionId" to sessionId,
+                        "mimeType" to mimeType,
+                        "metadata" to metadata,
+                    ),
                 ),
             ),
         )
@@ -38,9 +41,11 @@ class QuicMediaStreamSink(
             envelope(
                 sessionId = sessionId,
                 kind = QuicMessageKind.STREAM_CLOSE,
-                payload = mapOf(
-                    "sessionId" to sessionId,
-                    "metadata" to metadata,
+                payload = trustPayload(
+                    mapOf(
+                        "sessionId" to sessionId,
+                        "metadata" to metadata,
+                    ),
                 ),
             ),
         )
@@ -56,15 +61,23 @@ class QuicMediaStreamSink(
             envelope(
                 sessionId = sessionId,
                 kind = QuicMessageKind.STREAM_CHUNK,
-                payload = mapOf(
-                    "sessionId" to sessionId,
-                    "chunkType" to chunkType,
-                    "encoding" to "base64",
-                    "data" to Base64.encodeToString(data, Base64.NO_WRAP),
-                    "sizeBytes" to data.size,
-                    "metadata" to metadata,
+                payload = trustPayload(
+                    mapOf(
+                        "sessionId" to sessionId,
+                        "chunkType" to chunkType,
+                        "encoding" to "base64",
+                        "data" to Base64.encodeToString(data, Base64.NO_WRAP),
+                        "sizeBytes" to data.size,
+                        "metadata" to metadata,
+                    ),
                 ),
             ),
+        )
+    }
+
+    private fun trustPayload(payload: Map<String, Any?>): Map<String, Any?> {
+        return if (certificateFingerprintSha256 == null) payload else payload + mapOf(
+            "certificateFingerprintSha256" to certificateFingerprintSha256,
         )
     }
 
