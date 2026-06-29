@@ -4,11 +4,13 @@ import android.content.Context
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
+import android.media.MediaRecorder
 import android.os.Handler
 import android.os.HandlerThread
 import android.view.Surface
 import com.adbcontrol.companion.core.CompanionCommandContext
 import com.adbcontrol.companion.core.CompanionCommandResult
+import java.io.File
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -46,10 +48,61 @@ class CameraFeatureHandler(private val context: Context) : FeatureCommandHandler
                 recoverable = true,
             )
         val sessionId = UUID.randomUUID().toString()
+        val width = command.args.intArg("width") ?: 1280
+        val height = command.args.intArg("height") ?: 720
+        val bitrate = command.args.intArg("bitrate") ?: 3_000_000
+        val frameRate = command.args.intArg("frameRate") ?: 30
+        val outputFile = File(context.filesDir, "camera-streams/$sessionId.mp4")
+        outputFile.parentFile?.mkdirs()
+
+        val device = openCameraDevice(command.requestId, cameraId) ?: return CompanionCommandResult.failure(
+            requestId = command.requestId,
+            errorCode = "COMPANION_CAMERA_OPEN_FAILED",
+            message = "Android camera failed to open.",
+            module = "companion.camera",
+            recoverable = true,
+        )
+        val recorder = buildRecorder(outputFile, width, height, bitrate, frameRate)
+        val captureSession = createRecordSession(command.requestId, device, recorder.surface)
+            ?: return CompanionCommandResult.failure(
+                requestId = command.requestId,
+                errorCode = "COMPANION_CAMERA_SESSION_FAILED",
+                message = "Android failed to create a camera recording session.",
+                module = "companion.camera",
+                recoverable = true,
+            )
+        val request = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
+            addTarget(recorder.surface)
+        }.build()
+        captureSession.setRepeatingRequest(request, null, handler)
+        recorder.start()
+        sessions[sessionId] = CameraSession(
+            cameraDevice = device,
+            captureSession = captureSession,
+            recorder = recorder,
+            outputFile = outputFile,
+            surfaces = listOf(recorder.surface),
+        )
+
+        return CompanionCommandResult.success(
+            requestId = command.requestId,
+            result = mapOf(
+                "sessionId" to sessionId,
+                "cameraId" to cameraId,
+                "state" to "recording",
+                "path" to outputFile.relativeTo(context.filesDir).path,
+                "width" to width,
+                "height" to height,
+                "bitrate" to bitrate,
+                "frameRate" to frameRate,
+                "format" to "mp4-h264",
+            ),
+        )
+    }
+
+    private fun openCameraDevice(requestId: String, cameraId: String): CameraDevice? {
         val latch = CountDownLatch(1)
         var openedDevice: CameraDevice? = null
-        var openError: String? = null
-
         cameraManager.openCamera(
             cameraId,
             object : CameraDevice.StateCallback() {
@@ -59,49 +112,63 @@ class CameraFeatureHandler(private val context: Context) : FeatureCommandHandler
                 }
 
                 override fun onDisconnected(camera: CameraDevice) {
-                    openError = "Camera disconnected while opening."
                     camera.close()
                     latch.countDown()
                 }
 
                 override fun onError(camera: CameraDevice, error: Int) {
-                    openError = "Android camera open failed with error code $error."
                     camera.close()
                     latch.countDown()
                 }
             },
             handler,
         )
+        return if (latch.await(3, TimeUnit.SECONDS)) openedDevice else null
+    }
 
-        if (!latch.await(3, TimeUnit.SECONDS)) {
-            return CompanionCommandResult.failure(
-                requestId = command.requestId,
-                errorCode = "COMPANION_CAMERA_OPEN_TIMEOUT",
-                message = "Timed out while opening Android camera.",
-                module = "companion.camera",
-                recoverable = true,
-            )
+    @Suppress("DEPRECATION")
+    private fun buildRecorder(
+        outputFile: File,
+        width: Int,
+        height: Int,
+        bitrate: Int,
+        frameRate: Int,
+    ): MediaRecorder {
+        return MediaRecorder().apply {
+            setVideoSource(MediaRecorder.VideoSource.SURFACE)
+            setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            setVideoEncoder(MediaRecorder.VideoEncoder.H264)
+            setVideoSize(width.coerceIn(240, 4096), height.coerceIn(240, 4096))
+            setVideoEncodingBitRate(bitrate.coerceIn(256_000, 30_000_000))
+            setVideoFrameRate(frameRate.coerceIn(5, 60))
+            setOutputFile(outputFile.absolutePath)
+            prepare()
         }
+    }
 
-        val device = openedDevice
-            ?: return CompanionCommandResult.failure(
-                requestId = command.requestId,
-                errorCode = "COMPANION_CAMERA_OPEN_FAILED",
-                message = openError ?: "Android camera failed to open.",
-                module = "companion.camera",
-                recoverable = true,
-            )
-        sessions[sessionId] = CameraSession(device)
-        return CompanionCommandResult.success(
-            requestId = command.requestId,
-            result = mapOf(
-                "sessionId" to sessionId,
-                "cameraId" to cameraId,
-                "state" to "opened",
-                "streaming" to false,
-                "note" to "Camera device is open. Preview/encoder surface binding is the next media-pipeline step.",
-            ),
+    private fun createRecordSession(
+        requestId: String,
+        device: CameraDevice,
+        surface: Surface,
+    ): CameraCaptureSession? {
+        val latch = CountDownLatch(1)
+        var createdSession: CameraCaptureSession? = null
+        device.createCaptureSession(
+            listOf(surface),
+            object : CameraCaptureSession.StateCallback() {
+                override fun onConfigured(session: CameraCaptureSession) {
+                    createdSession = session
+                    latch.countDown()
+                }
+
+                override fun onConfigureFailed(session: CameraCaptureSession) {
+                    session.close()
+                    latch.countDown()
+                }
+            },
+            handler,
         )
+        return if (latch.await(3, TimeUnit.SECONDS)) createdSession else null
     }
 
     private fun closeCamera(command: CompanionCommandContext): CompanionCommandResult {
@@ -127,17 +194,25 @@ class CameraFeatureHandler(private val context: Context) : FeatureCommandHandler
             result = mapOf(
                 "sessionId" to sessionId,
                 "state" to "closed",
+                "path" to session.outputFile.relativeTo(context.filesDir).path,
+                "sizeBytes" to session.outputFile.length(),
             ),
         )
     }
 
     private data class CameraSession(
         val cameraDevice: CameraDevice,
-        val captureSession: CameraCaptureSession? = null,
+        val captureSession: CameraCaptureSession,
+        val recorder: MediaRecorder,
+        val outputFile: File,
         val surfaces: List<Surface> = emptyList(),
     ) {
         fun close() {
-            captureSession?.close()
+            runCatching { captureSession.stopRepeating() }
+            captureSession.close()
+            runCatching { recorder.stop() }
+            runCatching { recorder.reset() }
+            runCatching { recorder.release() }
             cameraDevice.close()
             surfaces.forEach { surface -> surface.release() }
         }
