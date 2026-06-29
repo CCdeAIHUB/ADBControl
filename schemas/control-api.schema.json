@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://adbcontrol.local/schemas/control-api.schema.json",
+  "title": "ADBControl Control API Envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["requestId", "operation", "target", "payload"],
+  "properties": {
+    "requestId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Caller-generated request identifier used for tracing and idempotency where supported."
+    },
+    "operation": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable operation name, for example device.screenshot or stream.open."
+    },
+    "target": {
+      "$ref": "#/$defs/TargetDevice"
+    },
+    "payload": {
+      "type": "object",
+      "description": "Operation-specific payload validated by the operation schema."
+    }
+  },
+  "$defs": {
+    "TargetDevice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deviceId"],
+      "properties": {
+        "deviceId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "preferredChannel": {
+          "type": "string",
+          "enum": ["auto", "adb", "app"],
+          "default": "auto"
+        }
+      }
+    },
+    "ErrorResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requestId", "ok", "error"],
+      "properties": {
+        "requestId": { "type": "string" },
+        "ok": { "const": false },
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "message", "subsystem", "retryable"],
+          "properties": {
+            "code": { "type": "string", "minLength": 1 },
+            "message": { "type": "string", "minLength": 1 },
+            "subsystem": {
+              "type": "string",
+              "enum": ["api", "schema", "permission", "capability", "pairing", "transport", "adb", "android_app", "media", "storage", "unknown"]
+            },
+            "retryable": { "type": "boolean" },
+            "details": { "type": "object" }
+          }
+        }
+      }
+    }
+  }
+}
