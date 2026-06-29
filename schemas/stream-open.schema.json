@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://adbcontrol.local/schemas/stream-open.schema.json",
+  "title": "stream.open payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["realtime", "source"],
+  "properties": {
+    "realtime": {
+      "type": "boolean",
+      "description": "When true, opens a low-latency chunk stream instead of creating only a recorded file."
+    },
+    "source": {
+      "type": "string",
+      "enum": ["screen", "camera"],
+      "default": "screen"
+    },
+    "codec": {
+      "type": "string",
+      "enum": ["h264"],
+      "default": "h264"
+    },
+    "container": {
+      "type": "string",
+      "enum": ["raw_h264_chunks", "mp4"],
+      "default": "raw_h264_chunks"
+    },
+    "width": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "height": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "fps": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 120,
+      "default": 30
+    },
+    "bitrateKbps": {
+      "type": "integer",
+      "minimum": 64
+    },
+    "recordToMediaStore": {
+      "type": "boolean",
+      "default": false,
+      "description": "Optional recording side effect. Real-time chunk streaming must work independently of MP4 recording."
+    }
+  }
+}
