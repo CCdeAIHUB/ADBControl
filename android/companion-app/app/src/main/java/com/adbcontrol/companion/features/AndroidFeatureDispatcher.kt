@@ -18,7 +18,7 @@ class AndroidFeatureDispatcher(
     private val handlers: List<FeatureCommandHandler> = listOf(
         InputFeatureHandler(context),
         ScreenCaptureFeatureHandler(context, mediaStreamSink),
-        CameraFeatureHandler(context),
+        CameraFeatureHandler(context, mediaStreamSink),
         AudioRecordFeatureHandler(context, mediaStreamSink),
         ClipboardFeatureHandler(context),
         MediaVolumeFeatureHandler(context),
