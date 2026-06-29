@@ -11,8 +11,8 @@
 - 不把完整 AOSP 源码复制进主仓库；
 - 不允许执行任意系统 shell 命令；
 - 不在 Core 中直接调用 Android 系统 API；
-- 不在本阶段实现完整投屏、相机、录音编码管线；
-- 不在 QUIC router 未接入时假装 Android Companion 命令已执行成功。
+- 不在 Core 中实现 Android 媒体编码器；
+- 不在 QUIC session 未连接时假装 Android Companion 命令已执行成功。
 
 ## IPC 请求格式
 
@@ -96,7 +96,7 @@
 
 ### `device.list`
 
-返回 Core 当前注册的 Android Companion 设备。真实 QUIC transport 接入前，该列表由 Core 内部注册表提供。
+返回 Core 当前注册的 Android Companion 设备。真实 QUIC transport 接入后，设备列表应由 `CompanionSessionManager` 与 registry 同步。
 
 ### `device.getCapabilities`
 
@@ -143,7 +143,36 @@
 2. 校验设备已连接或已注册；
 3. 校验设备暴露该 capability；
 4. 校验 capability 支持该 operation；
-5. 若真实 QUIC router 未连接，返回 `COMPANION_COMMAND_ROUTER_NOT_READY`，不能假装成功。
+5. 校验 `args` 必须是 JSON object；
+6. 调用 `CompanionCommandRouter`；
+7. 若 session 未连接，返回 `COMPANION_SESSION_NOT_CONNECTED`；
+8. 若 session 已连接，生成 `adbcontrol-companion-quic` 的 `commandRequest` envelope。
+
+## Core Companion Session
+
+Core 已实现 `CompanionSessionManager`：
+
+- `hello`：创建 `Handshaking` session，并返回 `helloAck`；
+- `capabilityList`：同步设备能力；
+- `permissionState`：同步权限状态；
+- `heartbeat`：检查 session 并返回 heartbeat ack；
+- 当能力与权限都已同步后，session 进入 `Ready`。
+
+## Android Companion 功能执行层
+
+Android Companion 已实现 `AndroidFeatureDispatcher` 与以下 handler：
+
+- 输入法：`input.text`、`input.key`；
+- 屏幕采集授权：`stream.open`、`stream.close`、`screenshot.capture` 状态检查；
+- 相机：`camera.open`、`camera.close`；
+- 录音：`audio.record.start`、`audio.record.stop`；
+- 剪贴板：`clipboard.read`、`clipboard.write`；
+- 音量：`volume.get`、`volume.set`；
+- 应用列表：`app.list`；
+- App sandbox 文件：`file.read`、`file.write`；
+- 电话 / 短信：`phone.call`、`sms.read`、`sms.send`；
+- 传感器：`sensor.subscribe`、`sensor.unsubscribe`；
+- UI：`ui.surface.show`、`overlay.show`、`overlay.hide`、`intent.chainLaunch`。
 
 ## Android Companion QUIC 协议
 
@@ -156,6 +185,7 @@
 
 - `docs/protocols/ipc-protocol-list.md`
 - `docs/protocols/quic-protocol-list.md`
+- `docs/protocols/companion-command-router.md`
 
 ## TDD 场景
 
@@ -174,16 +204,20 @@
 - 场景：QUIC 协议名不匹配必须返回 `COMPANION_PROTOCOL_MISMATCH`；
 - 场景：未连接设备查询能力必须返回 `COMPANION_DEVICE_NOT_CONNECTED`；
 - 场景：查询设备权限状态必须返回每个能力的权限矩阵；
-- 场景：`device.invoke` 在 QUIC router 未接入时必须返回 `COMPANION_COMMAND_ROUTER_NOT_READY`，不能返回成功。
+- 场景：设备已注册但 session 未连接时 `device.invoke` 必须返回 `COMPANION_SESSION_NOT_CONNECTED`；
+- 场景：session 已连接时 `device.invoke` 必须生成 QUIC `commandRequest` envelope；
+- 场景：Companion hello 创建 handshaking session；
+- 场景：capabilityList / permissionState 不能在 hello 之前污染 session；
+- 场景：capabilityList + permissionState 同步后 session 进入 ready。
 
 ## 后续阶段
 
 - 增加 Windows Named Pipe transport；
 - 增加 Unix Domain Socket transport；
-- 增加 ADB 二进制下载/校验/打包流程；
+- 将真实网络 QUIC socket 接到 `CompanionCommandRouter` 与 `CompanionSessionManager`；
 - 增加独立 AOSP ADB 源码镜像仓库与 GitHub Actions 编译产物同步；
-- 选择并接入真实 Rust / Android QUIC transport；
 - 增加设备配对、证书、信任、会话恢复；
-- 增加 Capability Router，将 ADB Provider 与 Android Companion Provider 统一路由；
-- 增加 Android Companion 真实系统能力实现；
-- 增加 Android Companion CI。
+- 增加屏幕帧 ImageReader/encoder surface；
+- 增加相机预览/编码 surface；
+- 增加音频实时 QUIC media stream；
+- 增加 Android 单元测试和 instrumentation 测试。
