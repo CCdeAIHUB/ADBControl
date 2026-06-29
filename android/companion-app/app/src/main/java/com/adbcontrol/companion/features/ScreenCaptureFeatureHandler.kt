@@ -5,6 +5,7 @@ import android.content.Intent
 import com.adbcontrol.companion.core.CompanionCommandContext
 import com.adbcontrol.companion.core.CompanionCommandResult
 import com.adbcontrol.companion.screen.ScreenCaptureConsentActivity
+import com.adbcontrol.companion.screen.ScreenCaptureException
 import com.adbcontrol.companion.screen.ScreenCaptureState
 import java.util.UUID
 
@@ -56,24 +57,38 @@ class ScreenCaptureFeatureHandler(private val context: Context) : FeatureCommand
     }
 
     private fun captureScreenshot(command: CompanionCommandContext): CompanionCommandResult {
-        if (!ScreenCaptureState.isProjectionReady()) {
-            return CompanionCommandResult.failure(
+        val width = command.args.intArg("width") ?: context.resources.displayMetrics.widthPixels
+        val height = command.args.intArg("height") ?: context.resources.displayMetrics.heightPixels
+        val timeoutMs = command.args.longArg("timeoutMs") ?: 1_500L
+
+        return try {
+            val capture = ScreenCaptureState.capturePng(
+                context = context,
+                width = width,
+                height = height,
+                timeoutMs = timeoutMs,
+            )
+            CompanionCommandResult.success(
                 requestId = command.requestId,
-                errorCode = "COMPANION_MEDIA_PROJECTION_CONSENT_REQUIRED",
-                message = "Screen capture requires Android MediaProjection user consent before screenshots can be captured.",
+                result = mapOf(
+                    "streamId" to capture.streamId,
+                    "path" to capture.path,
+                    "width" to capture.width,
+                    "height" to capture.height,
+                    "sizeBytes" to capture.sizeBytes,
+                    "format" to "png",
+                    "state" to "captured",
+                ),
+            )
+        } catch (exception: ScreenCaptureException) {
+            CompanionCommandResult.failure(
+                requestId = command.requestId,
+                errorCode = exception.errorCode,
+                message = exception.message,
                 module = "companion.screen",
-                recoverable = true,
-                suggestion = "Call stream.open and approve the Android screen capture consent dialog first.",
+                recoverable = exception.recoverable,
+                suggestion = exception.suggestion,
             )
         }
-
-        return CompanionCommandResult.failure(
-            requestId = command.requestId,
-            errorCode = "COMPANION_SCREEN_ENCODER_NOT_READY",
-            message = "MediaProjection consent is available, but screenshot frame extraction is not connected to ImageReader/encoder yet.",
-            module = "companion.screen",
-            recoverable = true,
-            suggestion = "Attach an ImageReader or encoder surface to ScreenCaptureState before calling screenshot.capture.",
-        )
     }
 }
