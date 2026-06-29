@@ -14,9 +14,12 @@ pub use capability::{
     CapabilityPermissionState, CapabilityProvider, CapabilitySensitivity, CapabilityTransport,
 };
 pub use companion::{
-    quic_protocol_descriptor, sample_android_companion_device, validate_quic_envelope,
-    CompanionDevice, CompanionRegistry, ConnectionState, QuicEnvelope, QuicMessageKind,
-    COMPANION_PROTOCOL, COMPANION_PROTOCOL_VERSION,
+    build_command_request_envelope, quic_protocol_descriptor, sample_android_companion_device,
+    validate_quic_envelope, CompanionCommandDispatch, CompanionCommandResponse,
+    CompanionCommandRouter, CompanionCommandStatus, CompanionDevice, CompanionRegistry,
+    ConnectionState, DisconnectedCompanionCommandRouter, InMemoryCompanionCommandRouter,
+    InMemoryCompanionSession, QuicEnvelope, QuicMessageKind, COMPANION_PROTOCOL,
+    COMPANION_PROTOCOL_VERSION,
 };
 pub use error::AppError;
 pub use platform::HostTarget;
