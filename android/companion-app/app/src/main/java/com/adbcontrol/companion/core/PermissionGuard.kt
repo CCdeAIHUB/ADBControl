@@ -1,6 +1,5 @@
 package com.adbcontrol.companion.core
 
-import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.provider.Settings
