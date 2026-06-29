@@ -106,7 +106,7 @@ pub fn resolve_asset_path(asset: &AdbAsset) -> Result<PathBuf, AppError> {
             )
         })?;
 
-    Ok(executable_dir.join(&asset.path))
+    Ok(executable_dir.join(asset.path.as_str()))
 }
 
 #[cfg(test)]
@@ -131,8 +131,7 @@ mod tests {
             }"#,
         )
         .expect("manifest should parse");
-        let target =
-            HostTarget::from_parts("linux", "aarch64").expect("target should parse");
+        let target = HostTarget::from_parts("linux", "aarch64").expect("target should parse");
 
         let asset = find_adb_asset(&manifest, &target).expect("asset should exist");
 
@@ -151,11 +150,9 @@ mod tests {
             }"#,
         )
         .expect("manifest should parse");
-        let target =
-            HostTarget::from_parts("windows", "x86_64").expect("target should parse");
+        let target = HostTarget::from_parts("windows", "x86_64").expect("target should parse");
 
-        let error = find_adb_asset(&manifest, &target)
-            .expect_err("asset should be missing");
+        let error = find_adb_asset(&manifest, &target).expect_err("asset should be missing");
 
         assert_eq!(error.error_code, "ADB_ASSET_NOT_FOUND");
         assert_eq!(error.module, "adb.assets");
