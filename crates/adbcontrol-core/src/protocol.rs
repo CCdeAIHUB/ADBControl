@@ -72,7 +72,7 @@ struct DeviceInvokeParams {
     capability_id: String,
     #[serde(default)]
     operation: String,
-    #[serde(default)]
+    #[serde(default = "default_params_object")]
     args: Value,
 }
 
@@ -278,6 +278,18 @@ impl<R: AdbRunner> CoreService<R> {
             }
         }
 
+        if !params.args.is_object() {
+            return IpcResponse::failure(
+                Some(request.id),
+                AppError::new(
+                    "IPC_PARAMS_INVALID",
+                    "device.invoke args must be a JSON object.",
+                    "ipc.protocol",
+                    false,
+                ),
+            );
+        }
+
         let device = match self.companion_registry.get_device(&params.device_id) {
             Ok(device) => device,
             Err(error) => return IpcResponse::failure(Some(request.id), error),
@@ -343,7 +355,14 @@ impl<R: AdbRunner> CoreService<R> {
     }
 }
 
-fn parse_ipc_params<T: DeserializeOwned>(params: Value, expected_message: &str) -> Result<T, AppError> {
+fn default_params_object() -> Value {
+    json!({})
+}
+
+fn parse_ipc_params<T: DeserializeOwned>(
+    params: Value,
+    expected_message: &str,
+) -> Result<T, AppError> {
     serde_json::from_value(params).map_err(|error| {
         AppError::new(
             "IPC_PARAMS_INVALID",
