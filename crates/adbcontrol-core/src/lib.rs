@@ -16,8 +16,9 @@ pub use capability::{
 pub use companion::{
     build_command_request_envelope, quic_protocol_descriptor, sample_android_companion_device,
     validate_quic_envelope, CompanionCommandDispatch, CompanionCommandResponse,
-    CompanionCommandRouter, CompanionCommandStatus, CompanionDevice, CompanionRegistry,
-    CompanionSession, CompanionSessionManager, ConnectionState, DisconnectedCompanionCommandRouter,
+    CompanionCommandRouter, CompanionCommandStatus, CompanionDevice, CompanionIngress,
+    CompanionQuicListener, CompanionRegistry, CompanionSession, CompanionSessionManager,
+    ConnectionState, DisconnectedCompanionCommandRouter, IngressBackedQuicListener,
     InMemoryCompanionCommandRouter, InMemoryCompanionSession, QuicEnvelope, QuicMessageKind,
     COMPANION_PROTOCOL, COMPANION_PROTOCOL_VERSION,
 };
