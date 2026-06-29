@@ -51,7 +51,7 @@ Android Companion App 已新增 `features` 执行层和 `AndroidFeatureDispatche
 
 - `input.text` / `input.key`：通过 ADBControl Companion IME 向当前输入连接提交文本或按键；
 - `stream.open` / `stream.close`：拉起 Android MediaProjection 授权入口并维护屏幕采集状态；
-- `screenshot.capture`：已接入 MediaProjection 状态检查，帧提取需后续绑定 ImageReader/encoder surface；
+- `screenshot.capture`：使用 MediaProjection + ImageReader + VirtualDisplay 抓取一帧并保存为 Companion App sandbox 内 PNG 文件；
 - `camera.open` / `camera.close`：通过 Camera2 打开/关闭相机会话；
 - `audio.record.start` / `audio.record.stop`：通过 AudioRecord 录制 PCM 到 Companion App sandbox；
 - `clipboard.read` / `clipboard.write`：读取和写入文本剪贴板；
@@ -68,7 +68,7 @@ Android Companion App 已新增 `features` 执行层和 `AndroidFeatureDispatche
 
 仍明确未假装完成的部分：
 
-- 屏幕帧 ImageReader/encoder surface 抽取；
+- 屏幕 H.264/AV1 实时编码流；
 - 相机预览/编码 surface 绑定；
 - 音频实时 QUIC media stream 推送；
 - 真实网络 QUIC socket。
