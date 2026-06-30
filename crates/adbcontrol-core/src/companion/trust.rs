@@ -114,7 +114,9 @@ impl CompanionTrustStore {
         for device in file.trusted_devices {
             validate_device_id(&device.device_id)?;
             validate_fingerprint(&device.certificate_fingerprint_sha256)?;
-            store.trusted_devices.insert(device.device_id.clone(), device);
+            store
+                .trusted_devices
+                .insert(device.device_id.clone(), device);
         }
         Ok(store)
     }
@@ -172,7 +174,9 @@ impl CompanionTrustStore {
             pairing_id: format!("pair-{:016x}", rand::rng().random::<u64>()),
             device_id: request.device_id,
             device_name: request.device_name,
-            certificate_fingerprint_sha256: normalize_fingerprint(&request.certificate_fingerprint_sha256),
+            certificate_fingerprint_sha256: normalize_fingerprint(
+                &request.certificate_fingerprint_sha256,
+            ),
             short_code: format!("{:06}", rand::random_range(0..1_000_000_u32)),
             created_at_unix_ms: now_unix_ms,
             expires_at_unix_ms: now_unix_ms + PAIRING_TTL_MS,
@@ -221,9 +225,7 @@ impl CompanionTrustStore {
                 "companion.trust",
                 true,
             )
-            .with_suggestion(format!(
-                "Pairing attempts remaining: {attempts_remaining}"
-            )));
+            .with_suggestion(format!("Pairing attempts remaining: {attempts_remaining}")));
         }
 
         let challenge = self
@@ -299,7 +301,11 @@ fn validate_device_id(device_id: &str) -> Result<(), AppError> {
 
 fn validate_fingerprint(fingerprint: &str) -> Result<(), AppError> {
     let normalized = normalize_fingerprint(fingerprint);
-    if normalized.len() != 64 || !normalized.chars().all(|character| character.is_ascii_hexdigit()) {
+    if normalized.len() != 64
+        || !normalized
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
         return Err(AppError::new(
             "COMPANION_CERT_FINGERPRINT_INVALID",
             "Companion certificate fingerprint must be a SHA-256 hex string.",
@@ -325,8 +331,7 @@ mod tests {
     use super::*;
 
     const NOW: u64 = 1_700_000_000_000;
-    const FINGERPRINT: &str =
-        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const FINGERPRINT: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     #[test]
     fn pairing_confirmation_trusts_certificate_fingerprint() {
@@ -378,7 +383,11 @@ mod tests {
         fs::remove_file(&path).ok();
 
         assert!(!loaded.is_trusted("device-1", FINGERPRINT, NOW + 3_000));
-        assert!(loaded.trusted_device("device-1").unwrap().revoked_at_unix_ms.is_some());
+        assert!(loaded
+            .trusted_device("device-1")
+            .unwrap()
+            .revoked_at_unix_ms
+            .is_some());
     }
 
     #[test]
@@ -441,7 +450,11 @@ mod tests {
         store.revoke_device("device-1", NOW + 2_000).unwrap();
 
         assert!(!store.is_trusted("device-1", FINGERPRINT, NOW + 3_000));
-        assert!(store.trusted_device("device-1").unwrap().revoked_at_unix_ms.is_some());
+        assert!(store
+            .trusted_device("device-1")
+            .unwrap()
+            .revoked_at_unix_ms
+            .is_some());
     }
 
     #[test]

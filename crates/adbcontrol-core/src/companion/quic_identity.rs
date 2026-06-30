@@ -15,14 +15,16 @@ pub struct CoreQuicIdentity {
 
 impl CoreQuicIdentity {
     pub fn generate_self_signed(subject_alt_names: Vec<String>) -> Result<Self, AppError> {
-        let CertifiedKey { cert, key_pair } = generate_simple_self_signed(subject_alt_names).map_err(|error| {
-            AppError::new(
-                "COMPANION_QUIC_CERT_GENERATE_FAILED",
-                "Core failed to generate self-signed QUIC certificate.",
-                "companion.quic_identity",
-                false,
-            ).with_cause(error)
-        })?;
+        let CertifiedKey { cert, key_pair } = generate_simple_self_signed(subject_alt_names)
+            .map_err(|error| {
+                AppError::new(
+                    "COMPANION_QUIC_CERT_GENERATE_FAILED",
+                    "Core failed to generate self-signed QUIC certificate.",
+                    "companion.quic_identity",
+                    false,
+                )
+                .with_cause(error)
+            })?;
         let cert_der = cert.der().to_vec();
         let private_key_der = key_pair.serialize_der();
         Ok(Self::from_der(cert_der, private_key_der))
@@ -30,7 +32,11 @@ impl CoreQuicIdentity {
 
     pub fn from_der(cert_der: Vec<u8>, private_key_der: Vec<u8>) -> Self {
         let certificate_fingerprint_sha256 = hex::encode(Sha256::digest(&cert_der));
-        Self { cert_der, private_key_der, certificate_fingerprint_sha256 }
+        Self {
+            cert_der,
+            private_key_der,
+            certificate_fingerprint_sha256,
+        }
     }
 
     pub fn load_or_generate(
@@ -58,7 +64,8 @@ impl CoreQuicIdentity {
                 "Core failed to read QUIC certificate file.",
                 "companion.quic_identity",
                 true,
-            ).with_cause(error)
+            )
+            .with_cause(error)
         })?;
         let private_key_der = fs::read(key_path).map_err(|error| {
             AppError::new(
@@ -66,7 +73,8 @@ impl CoreQuicIdentity {
                 "Core failed to read QUIC private key file.",
                 "companion.quic_identity",
                 true,
-            ).with_cause(error)
+            )
+            .with_cause(error)
         })?;
         Ok(Self::from_der(cert_der, private_key_der))
     }
@@ -76,21 +84,31 @@ impl CoreQuicIdentity {
         cert_path: impl AsRef<Path>,
         key_path: impl AsRef<Path>,
     ) -> Result<(), AppError> {
-        write_file(cert_path, &self.cert_der, "COMPANION_QUIC_CERT_WRITE_FAILED")?;
-        write_file(key_path, &self.private_key_der, "COMPANION_QUIC_KEY_WRITE_FAILED")
+        write_file(
+            cert_path,
+            &self.cert_der,
+            "COMPANION_QUIC_CERT_WRITE_FAILED",
+        )?;
+        write_file(
+            key_path,
+            &self.private_key_der,
+            "COMPANION_QUIC_KEY_WRITE_FAILED",
+        )
     }
 
     pub fn server_config(&self) -> Result<quinn::ServerConfig, AppError> {
         quinn::ServerConfig::with_single_cert(
             vec![CertificateDer::from(self.cert_der.clone())],
             PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(self.private_key_der.clone())),
-        ).map_err(|error| {
+        )
+        .map_err(|error| {
             AppError::new(
                 "COMPANION_QUIC_SERVER_CONFIG_FAILED",
                 "Core failed to build Quinn ServerConfig from identity.",
                 "companion.quic_identity",
                 false,
-            ).with_cause(error)
+            )
+            .with_cause(error)
         })
     }
 }
@@ -105,7 +123,8 @@ fn write_file(path: impl AsRef<Path>, bytes: &[u8], error_code: &str) -> Result<
                     "Core failed to create QUIC identity directory.",
                     "companion.quic_identity",
                     true,
-                ).with_cause(error)
+                )
+                .with_cause(error)
             })?;
         }
     }
@@ -115,7 +134,8 @@ fn write_file(path: impl AsRef<Path>, bytes: &[u8], error_code: &str) -> Result<
             "Core failed to write QUIC identity file.",
             "companion.quic_identity",
             true,
-        ).with_cause(error)
+        )
+        .with_cause(error)
     })
 }
 
@@ -126,7 +146,8 @@ mod tests {
     #[test]
     fn generated_identity_builds_server_config() {
         // 场景：Core 首次启动时生成自签证书，并能立即构建 Quinn ServerConfig。
-        let identity = CoreQuicIdentity::generate_self_signed(vec![String::from("localhost")]).unwrap();
+        let identity =
+            CoreQuicIdentity::generate_self_signed(vec![String::from("localhost")]).unwrap();
         assert_eq!(identity.certificate_fingerprint_sha256.len(), 64);
         identity.server_config().unwrap();
     }
@@ -134,13 +155,29 @@ mod tests {
     #[test]
     fn identity_roundtrips_through_files() {
         // 场景：Core 重启后必须复用同一证书指纹，避免已配对 Android 设备失效。
-        let root = std::env::temp_dir().join(format!("adbcontrol-quic-identity-{}", rand::random::<u64>()));
+        let root = std::env::temp_dir().join(format!(
+            "adbcontrol-quic-identity-{}",
+            rand::random::<u64>()
+        ));
         let cert_path = root.join("core.cert.der");
         let key_path = root.join("core.key.der");
-        let created = CoreQuicIdentity::load_or_generate(&cert_path, &key_path, vec![String::from("localhost")]).unwrap();
-        let loaded = CoreQuicIdentity::load_or_generate(&cert_path, &key_path, vec![String::from("localhost")]).unwrap();
+        let created = CoreQuicIdentity::load_or_generate(
+            &cert_path,
+            &key_path,
+            vec![String::from("localhost")],
+        )
+        .unwrap();
+        let loaded = CoreQuicIdentity::load_or_generate(
+            &cert_path,
+            &key_path,
+            vec![String::from("localhost")],
+        )
+        .unwrap();
 
-        assert_eq!(created.certificate_fingerprint_sha256, loaded.certificate_fingerprint_sha256);
+        assert_eq!(
+            created.certificate_fingerprint_sha256,
+            loaded.certificate_fingerprint_sha256
+        );
         fs::remove_dir_all(root).ok();
     }
 }

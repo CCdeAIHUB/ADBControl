@@ -37,11 +37,11 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::companion::protocol::QuicChannel;
     use crate::companion::{
         protocol::CompanionHello, QuicEnvelope, QuicMessageKind, COMPANION_PROTOCOL,
         COMPANION_PROTOCOL_VERSION,
     };
-    use crate::companion::protocol::QuicChannel;
 
     #[test]
     fn control_listener_routes_hello_to_ingress() {
@@ -50,10 +50,15 @@ mod tests {
         let response = listener
             .accept_control_bytes(&serde_json::to_vec(&hello_envelope("device-1")).unwrap())
             .expect("listener should respond");
-        let envelope: QuicEnvelope = serde_json::from_slice(&response).expect("response should parse");
+        let envelope: QuicEnvelope =
+            serde_json::from_slice(&response).expect("response should parse");
 
         assert_eq!(envelope.kind, QuicMessageKind::HelloAck);
-        assert!(listener.ingress().session_manager().get_session("device-1").is_ok());
+        assert!(listener
+            .ingress()
+            .session_manager()
+            .get_session("device-1")
+            .is_ok());
     }
 
     #[test]
@@ -75,7 +80,8 @@ mod tests {
                 .unwrap(),
             )
             .expect("listener should respond");
-        let envelope: QuicEnvelope = serde_json::from_slice(&response).expect("response should parse");
+        let envelope: QuicEnvelope =
+            serde_json::from_slice(&response).expect("response should parse");
 
         assert_eq!(envelope.kind, QuicMessageKind::CommandResponse);
         assert_eq!(envelope.payload["receivedChunkCount"], 1);

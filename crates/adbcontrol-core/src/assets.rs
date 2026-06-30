@@ -62,10 +62,7 @@ pub fn parse_manifest_str(content: &str) -> Result<AdbManifest, AppError> {
     Ok(manifest)
 }
 
-pub fn find_adb_asset(
-    manifest: &AdbManifest,
-    target: &HostTarget,
-) -> Result<AdbAsset, AppError> {
+pub fn find_adb_asset(manifest: &AdbManifest, target: &HostTarget) -> Result<AdbAsset, AppError> {
     manifest
         .assets
         .iter()

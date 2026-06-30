@@ -21,14 +21,8 @@ impl HostTarget {
         let target_id = format!("{os}-{arch}");
 
         match target_id.as_str() {
-            "windows-x86_64"
-            | "windows-arm64"
-            | "macos-x86_64"
-            | "macos-arm64"
-            | "linux-x86_64"
-            | "linux-arm64"
-            | "android-x86_64"
-            | "android-arm64" => Ok(Self {
+            "windows-x86_64" | "windows-arm64" | "macos-x86_64" | "macos-arm64"
+            | "linux-x86_64" | "linux-arm64" | "android-x86_64" | "android-arm64" => Ok(Self {
                 os,
                 arch,
                 target_id,
@@ -80,8 +74,7 @@ mod tests {
 
     #[test]
     fn maps_linux_aarch64_to_linux_arm64() {
-        let target =
-            HostTarget::from_parts("linux", "aarch64").expect("linux arm64 is supported");
+        let target = HostTarget::from_parts("linux", "aarch64").expect("linux arm64 is supported");
 
         assert_eq!(target.os, "linux");
         assert_eq!(target.arch, "arm64");
@@ -90,8 +83,7 @@ mod tests {
 
     #[test]
     fn maps_macos_darwin_amd64_to_macos_x86_64() {
-        let target =
-            HostTarget::from_parts("darwin", "amd64").expect("macos x86_64 is supported");
+        let target = HostTarget::from_parts("darwin", "amd64").expect("macos x86_64 is supported");
 
         assert_eq!(target.os, "macos");
         assert_eq!(target.arch, "x86_64");
@@ -100,8 +92,8 @@ mod tests {
 
     #[test]
     fn rejects_unknown_os() {
-        let error = HostTarget::from_parts("freebsd", "x86_64")
-            .expect_err("freebsd is not supported yet");
+        let error =
+            HostTarget::from_parts("freebsd", "x86_64").expect_err("freebsd is not supported yet");
 
         assert_eq!(error.error_code, "PLATFORM_OS_UNSUPPORTED");
         assert_eq!(error.module, "platform.target");

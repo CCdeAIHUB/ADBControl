@@ -53,7 +53,9 @@ impl CompanionRegistry {
                     "companion.registry",
                     true,
                 )
-                .with_suggestion("Pair the Android companion app with Core before invoking capabilities.")
+                .with_suggestion(
+                    "Pair the Android companion app with Core before invoking capabilities.",
+                )
             })
     }
 }

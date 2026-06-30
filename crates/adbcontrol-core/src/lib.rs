@@ -1,3 +1,5 @@
+#![allow(clippy::result_large_err)]
+
 pub mod adb;
 pub mod assets;
 pub mod capability;

@@ -1,4 +1,7 @@
-use std::{fs, path::{Path, PathBuf}};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use base64::{engine::general_purpose, Engine as _};
 use serde_json::Value;
@@ -22,10 +25,15 @@ pub struct StoredMediaChunk {
 
 impl CompanionMediaStore {
     pub fn new(root_dir: impl Into<PathBuf>) -> Self {
-        Self { root_dir: root_dir.into() }
+        Self {
+            root_dir: root_dir.into(),
+        }
     }
 
-    pub fn store_envelope(&self, envelope: &QuicEnvelope) -> Result<Option<StoredMediaChunk>, AppError> {
+    pub fn store_envelope(
+        &self,
+        envelope: &QuicEnvelope,
+    ) -> Result<Option<StoredMediaChunk>, AppError> {
         if envelope.kind != QuicMessageKind::StreamChunk {
             return Ok(None);
         }
@@ -48,7 +56,8 @@ impl CompanionMediaStore {
                 "Core failed to decode base64 media chunk.",
                 "companion.media_store",
                 false,
-            ).with_cause(error)
+            )
+            .with_cause(error)
         })?;
         let chunk_index = next_chunk_index(&self.root_dir, session_id)?;
         let session_dir = self.root_dir.join(safe_path_segment(session_id));
@@ -58,7 +67,8 @@ impl CompanionMediaStore {
                 "Core failed to create media session directory.",
                 "companion.media_store",
                 true,
-            ).with_cause(error)
+            )
+            .with_cause(error)
         })?;
         let path = session_dir.join(format!("chunk-{chunk_index:020}.bin"));
         fs::write(&path, &bytes).map_err(|error| {
@@ -67,7 +77,8 @@ impl CompanionMediaStore {
                 "Core failed to write media chunk.",
                 "companion.media_store",
                 true,
-            ).with_cause(error)
+            )
+            .with_cause(error)
         })?;
 
         Ok(Some(StoredMediaChunk {
@@ -102,7 +113,8 @@ fn next_chunk_index(root_dir: &Path, session_id: &str) -> Result<u64, AppError> 
             "Core failed to read media session directory.",
             "companion.media_store",
             true,
-        ).with_cause(error)
+        )
+        .with_cause(error)
     })? {
         let entry = entry.map_err(|error| {
             AppError::new(
@@ -110,7 +122,8 @@ fn next_chunk_index(root_dir: &Path, session_id: &str) -> Result<u64, AppError> 
                 "Core failed to read media chunk entry.",
                 "companion.media_store",
                 true,
-            ).with_cause(error)
+            )
+            .with_cause(error)
         })?;
         if entry.file_name().to_string_lossy().starts_with("chunk-") {
             count += 1;
@@ -120,8 +133,15 @@ fn next_chunk_index(root_dir: &Path, session_id: &str) -> Result<u64, AppError> 
 }
 
 fn safe_path_segment(value: &str) -> String {
-    value.chars()
-        .map(|character| if character.is_ascii_alphanumeric() || character == '-' || character == '_' { character } else { '_' })
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -133,9 +153,13 @@ mod tests {
     #[test]
     fn stores_base64_stream_chunk_by_session() {
         // 场景：Core 收到 Android 伴侣 App 的 media streamChunk 后，必须按 sessionId 落盘，供后续 relay/读取。
-        let root = std::env::temp_dir().join(format!("adbcontrol-media-store-{}", rand::random::<u64>()));
+        let root =
+            std::env::temp_dir().join(format!("adbcontrol-media-store-{}", rand::random::<u64>()));
         let store = CompanionMediaStore::new(&root);
-        let stored = store.store_envelope(&chunk_envelope("stream-1", "AQIDBA==")).unwrap().unwrap();
+        let stored = store
+            .store_envelope(&chunk_envelope("stream-1", "AQIDBA=="))
+            .unwrap()
+            .unwrap();
 
         assert_eq!(stored.session_id, "stream-1");
         assert_eq!(stored.chunk_index, 0);
@@ -146,7 +170,8 @@ mod tests {
     #[test]
     fn unsupported_media_encoding_is_rejected() {
         // 场景：媒体 chunk 编码不明确时，Core 不能写入无法解析的内容。
-        let root = std::env::temp_dir().join(format!("adbcontrol-media-store-{}", rand::random::<u64>()));
+        let root =
+            std::env::temp_dir().join(format!("adbcontrol-media-store-{}", rand::random::<u64>()));
         let store = CompanionMediaStore::new(&root);
         let mut envelope = chunk_envelope("stream-1", "AQIDBA==");
         envelope.payload["encoding"] = Value::String(String::from("raw"));
