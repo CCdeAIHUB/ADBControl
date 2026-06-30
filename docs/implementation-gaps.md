@@ -59,10 +59,10 @@ This document tracks implementation gaps discovered from README, ADRs, specs, pr
    - Validation method: platform-gated unit tests or compile checks.
 
 10. Android Gradle Wrapper / repeatable Android CI build
-    - Status: `not-passed`
-    - Completion standard: the companion app can be built without relying on a preinstalled local Gradle command.
-    - Validation method: `./gradlew :app:assembleDebug` or CI workflow.
-    - Evidence: local validation found no `gradlew` in `android/companion-app`; `gradle -v` failed because `gradle` is not installed.
+    - Status: `passed`
+    - Completion standard: the companion app can be built without relying on a preinstalled local Gradle command, and the debug APK is published as a CI artifact.
+    - Validation method: GitHub Actions workflow using `gradle/actions/setup-gradle`, followed by ADB install and launch smoke test on a connected Android device.
+    - Evidence: Android Companion CI run `28413693562` passed for commit `d86e234`, uploaded `android-companion-debug-apk`, installed successfully on `SM-F926N` via `adb -s 192.168.3.123:35373 install -r`, launched `com.adbcontrol.companion/.MainActivity`, and produced no crash-buffer entries.
 
 11. Documentation/spec status consistency
     - Status: `passed`
