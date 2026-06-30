@@ -23,14 +23,15 @@ pub use protocol::{
 pub use quic_identity::CoreQuicIdentity;
 #[cfg(feature = "quinn-transport")]
 pub use quinn_transport::QuinnCompanionServer;
-pub use registry::{sample_android_companion_device, CompanionDevice, CompanionRegistry, ConnectionState};
+pub use registry::{
+    sample_android_companion_device, CompanionDevice, CompanionRegistry, ConnectionState,
+};
 pub use router::{
     build_command_request_envelope, CompanionCommandDispatch, CompanionCommandResponse,
-    CompanionCommandRouter, CompanionCommandStatus, DisconnectedCompanionCommandRouter,
-    InMemoryCompanionCommandRouter, InMemoryCompanionSession,
+    CompanionCommandRouter, CompanionCommandStatus, CompanionCommandTransport,
+    DisconnectedCompanionCommandRouter, InMemoryCompanionCommandRouter, InMemoryCompanionSession,
+    TransportCompanionCommandRouter,
 };
 pub use session::{CompanionSession, CompanionSessionManager};
-pub use trust::{
-    CompanionTrustStore, PairingChallenge, PairingRequest, TrustedDevice,
-};
+pub use trust::{CompanionTrustStore, PairingChallenge, PairingRequest, TrustedDevice};
 pub use trusted_ingress::TrustedCompanionIngress;

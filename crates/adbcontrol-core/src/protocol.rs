@@ -9,7 +9,7 @@ use crate::{
     capability::android_companion_capability_catalog,
     companion::{
         quic_protocol_descriptor, CompanionCommandDispatch, CompanionCommandRouter,
-        CompanionRegistry, DisconnectedCompanionCommandRouter,
+        CompanionRegistry, CompanionSessionManager, DisconnectedCompanionCommandRouter,
     },
     error::AppError,
     platform::HostTarget,
@@ -79,10 +79,8 @@ struct DeviceInvokeParams {
     args: Value,
 }
 
-pub struct CoreService<
-    R: AdbRunner,
-    Q: CompanionCommandRouter = DisconnectedCompanionCommandRouter,
-> {
+pub struct CoreService<R: AdbRunner, Q: CompanionCommandRouter = DisconnectedCompanionCommandRouter>
+{
     runner: R,
     manifest: AdbManifest,
     companion_registry: CompanionRegistry,
@@ -124,6 +122,20 @@ impl<R: AdbRunner, Q: CompanionCommandRouter> CoreService<R, Q> {
             runner,
             manifest,
             companion_registry,
+            companion_router,
+        }
+    }
+
+    pub fn new_with_companion_session_manager_and_router(
+        runner: R,
+        manifest: AdbManifest,
+        session_manager: CompanionSessionManager,
+        companion_router: Q,
+    ) -> Self {
+        Self {
+            runner,
+            manifest,
+            companion_registry: CompanionRegistry::new(session_manager.devices()),
             companion_router,
         }
     }
@@ -252,11 +264,9 @@ impl<R: AdbRunner, Q: CompanionCommandRouter> CoreService<R, Q> {
         }
 
         match self.companion_registry.get_device(&params.device_id) {
-            Ok(device) => response_from_serializable(
-                request.id,
-                &device.capabilities,
-                "companion.registry",
-            ),
+            Ok(device) => {
+                response_from_serializable(request.id, &device.capabilities, "companion.registry")
+            }
             Err(error) => IpcResponse::failure(Some(request.id), error),
         }
     }
@@ -472,11 +482,7 @@ mod tests {
     }
 
     impl AdbRunner for RecordingRunner {
-        fn run(
-            &self,
-            _adb_binary: &Path,
-            args: &[String],
-        ) -> Result<AdbCommandOutput, AppError> {
+        fn run(&self, _adb_binary: &Path, args: &[String]) -> Result<AdbCommandOutput, AppError> {
             self.calls
                 .lock()
                 .expect("lock should not be poisoned")
@@ -523,14 +529,86 @@ mod tests {
         )
     }
 
+    fn ready_session_manager() -> crate::companion::CompanionSessionManager {
+        use crate::{
+            capability::{android_companion_capability_catalog, CapabilityPermissionState},
+            companion::{
+                protocol::QuicChannel, CompanionHello, CompanionSessionManager, QuicEnvelope,
+                QuicMessageKind, COMPANION_PROTOCOL, COMPANION_PROTOCOL_VERSION,
+            },
+        };
+
+        let mut manager = CompanionSessionManager::default();
+        manager
+            .handle_envelope(QuicEnvelope {
+                protocol: String::from(COMPANION_PROTOCOL),
+                version: COMPANION_PROTOCOL_VERSION,
+                message_id: String::from("hello-device-1"),
+                trace_id: Some(String::from("trace-session")),
+                device_id: Some(String::from("device-1")),
+                channel: QuicChannel::Control,
+                kind: QuicMessageKind::Hello,
+                payload: serde_json::to_value(CompanionHello {
+                    app_version: String::from("0.1.0"),
+                    device_id: String::from("device-1"),
+                    device_name: String::from("Pixel Session"),
+                    android_sdk: 35,
+                    supported_protocol_versions: vec![COMPANION_PROTOCOL_VERSION],
+                })
+                .expect("hello should serialize"),
+            })
+            .expect("hello should create session");
+
+        let capabilities = android_companion_capability_catalog();
+        manager
+            .handle_envelope(QuicEnvelope {
+                protocol: String::from(COMPANION_PROTOCOL),
+                version: COMPANION_PROTOCOL_VERSION,
+                message_id: String::from("cap-list-device-1"),
+                trace_id: Some(String::from("trace-session")),
+                device_id: Some(String::from("device-1")),
+                channel: QuicChannel::Control,
+                kind: QuicMessageKind::CapabilityList,
+                payload: json!({"capabilities": capabilities}),
+            })
+            .expect("capability list should sync");
+
+        let states: Vec<CapabilityPermissionState> = android_companion_capability_catalog()
+            .into_iter()
+            .map(|capability| CapabilityPermissionState {
+                capability_id: capability.id,
+                granted: true,
+                android_permissions: capability.permission.android_permissions,
+                missing_permissions: Vec::new(),
+                special_grants: capability.permission.special_permissions,
+                missing_special_grants: Vec::new(),
+                user_consent_required: capability.permission.requires_user_consent,
+            })
+            .collect();
+        manager
+            .handle_envelope(QuicEnvelope {
+                protocol: String::from(COMPANION_PROTOCOL),
+                version: COMPANION_PROTOCOL_VERSION,
+                message_id: String::from("permission-device-1"),
+                trace_id: Some(String::from("trace-session")),
+                device_id: Some(String::from("device-1")),
+                channel: QuicChannel::Control,
+                kind: QuicMessageKind::PermissionState,
+                payload: json!({"states": states}),
+            })
+            .expect("permission state should sync");
+
+        manager
+    }
+
     #[test]
     fn invalid_json_returns_structured_error() {
         // 场景：前端发送非法 JSON 时，核心必须返回统一错误结构，不能 panic 或静默忽略。
         let service = service_with_recording_runner(Arc::new(Mutex::new(Vec::new())));
 
         let encoded = service.handle_json_line("{");
-        let response: IpcResponse = serde_json::from_str(encoded.as_str())
-            .expect("response should be valid JSON");
+        let response: IpcResponse =
+            serde_json::from_str(encoded.as_str()).expect("response should be valid JSON");
 
         assert!(!response.ok);
         assert_eq!(response.id, None);
@@ -545,11 +623,10 @@ mod tests {
         // 场景：前端调用未知 method 时，核心必须显式失败，不能假装成功。
         let service = service_with_recording_runner(Arc::new(Mutex::new(Vec::new())));
 
-        let encoded = service.handle_json_line(
-            r#"{"id":"1","method":"unknown.method","params":{}}"#,
-        );
-        let response: IpcResponse = serde_json::from_str(encoded.as_str())
-            .expect("response should be valid JSON");
+        let encoded =
+            service.handle_json_line(r#"{"id":"1","method":"unknown.method","params":{}}"#);
+        let response: IpcResponse =
+            serde_json::from_str(encoded.as_str()).expect("response should be valid JSON");
 
         assert!(!response.ok);
         assert_eq!(response.id, Some("1".to_string()));
@@ -568,8 +645,8 @@ mod tests {
         let encoded = service.handle_json_line(
             r#"{"id":"2","method":"adb.exec","params":{"args":["devices","-l"]}}"#,
         );
-        let response: IpcResponse = serde_json::from_str(encoded.as_str())
-            .expect("response should be valid JSON");
+        let response: IpcResponse =
+            serde_json::from_str(encoded.as_str()).expect("response should be valid JSON");
 
         assert!(response.ok);
         assert_eq!(
@@ -587,11 +664,10 @@ mod tests {
         // 场景：adb.exec 的 args 必须是 string[]，契约错误必须被协议层拦截。
         let service = service_with_recording_runner(Arc::new(Mutex::new(Vec::new())));
 
-        let encoded = service.handle_json_line(
-            r#"{"id":"3","method":"adb.exec","params":{"args":"devices"}}"#,
-        );
-        let response: IpcResponse = serde_json::from_str(encoded.as_str())
-            .expect("response should be valid JSON");
+        let encoded = service
+            .handle_json_line(r#"{"id":"3","method":"adb.exec","params":{"args":"devices"}}"#);
+        let response: IpcResponse =
+            serde_json::from_str(encoded.as_str()).expect("response should be valid JSON");
 
         assert!(!response.ok);
         assert_eq!(
@@ -605,11 +681,10 @@ mod tests {
         // 场景：前端需要发现 Core 与 Android 伴侣 App 之间的 QUIC 协议版本与消息类型。
         let service = service_with_recording_runner(Arc::new(Mutex::new(Vec::new())));
 
-        let encoded = service.handle_json_line(
-            r#"{"id":"4","method":"companion.protocol.info","params":{}}"#,
-        );
-        let response: IpcResponse = serde_json::from_str(encoded.as_str())
-            .expect("response should be valid JSON");
+        let encoded = service
+            .handle_json_line(r#"{"id":"4","method":"companion.protocol.info","params":{}}"#);
+        let response: IpcResponse =
+            serde_json::from_str(encoded.as_str()).expect("response should be valid JSON");
 
         assert!(response.ok);
         assert_eq!(
@@ -623,11 +698,10 @@ mod tests {
         // 场景：即使尚未连接设备，前端也可以读取 Core 支持的 Android Companion 能力目录。
         let service = service_with_recording_runner(Arc::new(Mutex::new(Vec::new())));
 
-        let encoded = service.handle_json_line(
-            r#"{"id":"5","method":"capability.list","params":{}}"#,
-        );
-        let response: IpcResponse = serde_json::from_str(encoded.as_str())
-            .expect("response should be valid JSON");
+        let encoded =
+            service.handle_json_line(r#"{"id":"5","method":"capability.list","params":{}}"#);
+        let response: IpcResponse =
+            serde_json::from_str(encoded.as_str()).expect("response should be valid JSON");
         let result = response.result.expect("result is required");
         let capabilities = result.as_array().expect("capabilities should be array");
 
@@ -642,11 +716,9 @@ mod tests {
         // 场景：Core 作为中间件必须能向前端列出已注册的 Android 伴侣设备。
         let service = service_with_sample_companion();
 
-        let encoded = service.handle_json_line(
-            r#"{"id":"6","method":"device.list","params":{}}"#,
-        );
-        let response: IpcResponse = serde_json::from_str(encoded.as_str())
-            .expect("response should be valid JSON");
+        let encoded = service.handle_json_line(r#"{"id":"6","method":"device.list","params":{}}"#);
+        let response: IpcResponse =
+            serde_json::from_str(encoded.as_str()).expect("response should be valid JSON");
         let result = response.result.expect("result is required");
         let devices = result.as_array().expect("devices should be array");
 
@@ -662,8 +734,8 @@ mod tests {
         let encoded = service.handle_json_line(
             r#"{"id":"7","method":"device.getCapabilities","params":{"deviceId":"missing"}}"#,
         );
-        let response: IpcResponse = serde_json::from_str(encoded.as_str())
-            .expect("response should be valid JSON");
+        let response: IpcResponse =
+            serde_json::from_str(encoded.as_str()).expect("response should be valid JSON");
 
         assert!(!response.ok);
         assert_eq!(
@@ -680,10 +752,12 @@ mod tests {
         let encoded = service.handle_json_line(
             r#"{"id":"8","method":"device.getPermissionState","params":{"deviceId":"android-companion-sample"}}"#,
         );
-        let response: IpcResponse = serde_json::from_str(encoded.as_str())
-            .expect("response should be valid JSON");
+        let response: IpcResponse =
+            serde_json::from_str(encoded.as_str()).expect("response should be valid JSON");
         let result = response.result.expect("result is required");
-        let states = result.as_array().expect("permission states should be array");
+        let states = result
+            .as_array()
+            .expect("permission states should be array");
 
         assert!(response.ok);
         assert!(states
@@ -699,8 +773,8 @@ mod tests {
         let encoded = service.handle_json_line(
             r#"{"id":"9","method":"device.invoke","params":{"deviceId":"android-companion-sample","capabilityId":"android.volume.media","operation":"volume.set","args":{"level":5}}}"#,
         );
-        let response: IpcResponse = serde_json::from_str(encoded.as_str())
-            .expect("response should be valid JSON");
+        let response: IpcResponse =
+            serde_json::from_str(encoded.as_str()).expect("response should be valid JSON");
 
         assert!(!response.ok);
         assert_eq!(
@@ -717,8 +791,8 @@ mod tests {
         let encoded = service.handle_json_line(
             r#"{"id":"10","method":"device.invoke","params":{"deviceId":"android-companion-sample","capabilityId":"android.volume.media","operation":"volume.set","args":{"level":5}}}"#,
         );
-        let response: IpcResponse = serde_json::from_str(encoded.as_str())
-            .expect("response should be valid JSON");
+        let response: IpcResponse =
+            serde_json::from_str(encoded.as_str()).expect("response should be valid JSON");
         let result = response.result.expect("result is required");
 
         assert!(response.ok);
@@ -731,5 +805,71 @@ mod tests {
         );
         assert_eq!(result["envelope"]["payload"]["operation"], "volume.set");
         assert_eq!(result["envelope"]["payload"]["args"]["level"], 5);
+    }
+
+    #[test]
+    fn ipc_device_methods_can_use_session_manager_devices() {
+        // 场景：真实 QUIC session 同步能力/权限后，IPC 设备查询必须来自 session manager，而不是静态 sample 设备。
+        let router =
+            InMemoryCompanionCommandRouter::new(vec![InMemoryCompanionSession::dispatch_only(
+                "device-1",
+            )]);
+        let service = CoreService::new_with_companion_session_manager_and_router(
+            RecordingRunner {
+                calls: Arc::new(Mutex::new(Vec::new())),
+            },
+            load_embedded_manifest().expect("embedded manifest must be valid"),
+            ready_session_manager(),
+            router,
+        );
+
+        let list_response: IpcResponse = serde_json::from_str(
+            &service
+                .handle_json_line(r#"{"id":"session-list","method":"device.list","params":{}}"#),
+        )
+        .expect("device.list response should be JSON");
+        assert_eq!(list_response.result.unwrap()[0]["deviceId"], "device-1");
+
+        let capabilities_response: IpcResponse = serde_json::from_str(
+            &service.handle_json_line(
+                r#"{"id":"session-cap","method":"device.getCapabilities","params":{"deviceId":"device-1"}}"#,
+            ),
+        )
+        .expect("device.getCapabilities response should be JSON");
+        assert!(capabilities_response
+            .result
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|capability| capability["id"] == "android.volume.media"));
+
+        let permission_response: IpcResponse = serde_json::from_str(
+            &service.handle_json_line(
+                r#"{"id":"session-perm","method":"device.getPermissionState","params":{"deviceId":"device-1"}}"#,
+            ),
+        )
+        .expect("device.getPermissionState response should be JSON");
+        assert!(permission_response
+            .result
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(
+                |state| state["capabilityId"] == "android.volume.media" && state["granted"] == true
+            ));
+
+        let invoke_response: IpcResponse = serde_json::from_str(
+            &service.handle_json_line(
+                r#"{"id":"session-invoke","method":"device.invoke","params":{"deviceId":"device-1","capabilityId":"android.volume.media","operation":"volume.set","args":{"level":4}}}"#,
+            ),
+        )
+        .expect("device.invoke response should be JSON");
+        let result = invoke_response.result.expect("invoke should succeed");
+
+        assert!(invoke_response.ok);
+        assert_eq!(result["envelope"]["deviceId"], "device-1");
+        assert_eq!(result["envelope"]["payload"]["args"]["level"], 4);
     }
 }

@@ -129,7 +129,7 @@
 通道：control  
 状态：已定义。
 
-用途：维持连接活性、测量延迟、发现断连。
+用途：维持连接活性、测量延迟、发现断连。Core 响应中的 `serverState` 必须反映当前 session 状态，不能在 handshaking 阶段固定返回 `ready`。
 
 ### 请求
 

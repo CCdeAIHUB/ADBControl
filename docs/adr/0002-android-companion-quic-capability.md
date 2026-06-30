@@ -47,7 +47,7 @@ ADBControl 除了 ADB Provider 之外，还需要一个独立 Android 伴侣 App
 
 ## 风险
 
-- 当前 `device.invoke` 只完成路由校验，真实 QUIC router 未接入时会返回 `COMPANION_COMMAND_ROUTER_NOT_READY`；
+- 当前 `device.invoke` 已能构建 `commandRequest` envelope；真实 QUIC session 未连接时会返回 `COMPANION_SESSION_NOT_CONNECTED`；
 - Android Companion 工程当前没有纳入 GitHub Actions 编译；
 - Manifest 声明的高敏感权限需要后续按功能逐一申请和解释，不能一次性强迫用户授权；
 - 部分权限如短信、电话、悬浮窗、后台启动、输入法服务受 Android 系统版本、厂商策略和应用商店政策限制。

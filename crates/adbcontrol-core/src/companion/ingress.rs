@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 use crate::error::AppError;
 
 use super::{
+    media_store::CompanionMediaStore,
     protocol::{
         validate_quic_envelope, QuicChannel, QuicEnvelope, QuicMessageKind, COMPANION_PROTOCOL,
         COMPANION_PROTOCOL_VERSION,
@@ -13,6 +14,7 @@ use super::{
 #[derive(Debug, Default, Clone)]
 pub struct CompanionIngress {
     session_manager: CompanionSessionManager,
+    media_store: Option<CompanionMediaStore>,
     media_chunk_count: usize,
 }
 
@@ -20,6 +22,18 @@ impl CompanionIngress {
     pub fn new(session_manager: CompanionSessionManager) -> Self {
         Self {
             session_manager,
+            media_store: None,
+            media_chunk_count: 0,
+        }
+    }
+
+    pub fn new_with_media_store(
+        session_manager: CompanionSessionManager,
+        media_store: CompanionMediaStore,
+    ) -> Self {
+        Self {
+            session_manager,
+            media_store: Some(media_store),
             media_chunk_count: 0,
         }
     }
@@ -109,20 +123,39 @@ impl CompanionIngress {
             ));
         }
 
-        if envelope.kind == QuicMessageKind::StreamChunk {
+        let stored_chunk = if envelope.kind == QuicMessageKind::StreamChunk {
             self.media_chunk_count += 1;
+            match &self.media_store {
+                Some(media_store) => media_store.store_envelope(&envelope)?,
+                None => None,
+            }
+        } else {
+            None
+        };
+
+        let mut payload = json!({
+            "accepted": true,
+            "media": true,
+            "receivedKind": envelope.kind,
+            "receivedChunkCount": self.media_chunk_count
+        });
+
+        if let Some(stored_chunk) = stored_chunk {
+            // Media persistence is optional at the ingress boundary. When enabled,
+            // ACK metadata must be explicit so a relay/debug caller can correlate
+            // transport chunks with durable Core-side artifacts.
+            payload["stored"] = json!(true);
+            payload["storedSessionId"] = json!(stored_chunk.session_id);
+            payload["storedChunkIndex"] = json!(stored_chunk.chunk_index);
+            payload["storedSizeBytes"] = json!(stored_chunk.size_bytes);
+            payload["storedPath"] = json!(stored_chunk.path.to_string_lossy());
         }
 
         Ok(ack_envelope(
             envelope.trace_id,
             envelope.device_id,
             envelope.message_id,
-            json!({
-                "accepted": true,
-                "media": true,
-                "receivedKind": envelope.kind,
-                "receivedChunkCount": self.media_chunk_count
-            }),
+            payload,
         ))
     }
 
@@ -186,8 +219,10 @@ fn error_envelope(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
-    use crate::companion::protocol::CompanionHello;
+    use crate::companion::{protocol::CompanionHello, CompanionMediaStore};
 
     #[test]
     fn valid_hello_json_returns_hello_ack() {
@@ -196,7 +231,8 @@ mod tests {
         let response = ingress.handle_json_bytes(
             &serde_json::to_vec(&hello_envelope("device-1")).expect("hello should serialize"),
         );
-        let envelope: QuicEnvelope = serde_json::from_slice(&response).expect("response should parse");
+        let envelope: QuicEnvelope =
+            serde_json::from_slice(&response).expect("response should parse");
 
         assert_eq!(envelope.kind, QuicMessageKind::HelloAck);
         assert!(ingress.session_manager().get_session("device-1").is_ok());
@@ -210,7 +246,10 @@ mod tests {
         let envelope: QuicEnvelope = serde_json::from_slice(&response).expect("error should parse");
 
         assert_eq!(envelope.kind, QuicMessageKind::Error);
-        assert_eq!(envelope.payload["errorCode"], "COMPANION_INGRESS_INVALID_JSON");
+        assert_eq!(
+            envelope.payload["errorCode"],
+            "COMPANION_INGRESS_INVALID_JSON"
+        );
     }
 
     #[test]
@@ -219,7 +258,9 @@ mod tests {
         let mut envelope = hello_envelope("device-1");
         envelope.protocol = String::from("other-protocol");
         let mut ingress = CompanionIngress::default();
-        let response = ingress.handle_envelope(envelope).expect("ingress converts errors to envelopes");
+        let response = ingress
+            .handle_envelope(envelope)
+            .expect("ingress converts errors to envelopes");
 
         assert_eq!(response.kind, QuicMessageKind::Error);
         assert_eq!(response.payload["errorCode"], "COMPANION_PROTOCOL_MISMATCH");
@@ -248,6 +289,50 @@ mod tests {
         assert!(ingress.session_manager().get_session("device-1").is_err());
     }
 
+    #[test]
+    fn media_chunk_is_stored_when_media_store_is_configured() {
+        // 场景：Core 配置 media store 后，streamChunk 必须在 ACK 前落盘，供后续 relay/读取。
+        let root = temp_media_root("ingress-store");
+        let store = CompanionMediaStore::new(&root);
+        let mut ingress =
+            CompanionIngress::new_with_media_store(CompanionSessionManager::default(), store);
+
+        let response = ingress
+            .handle_envelope(chunk_envelope("stream-1", "AQIDBA=="))
+            .expect("media chunk should be accepted");
+
+        assert_eq!(response.kind, QuicMessageKind::CommandResponse);
+        assert_eq!(response.payload["receivedChunkCount"], 1);
+        assert_eq!(response.payload["stored"], true);
+        assert_eq!(response.payload["storedChunkIndex"], 0);
+        assert_eq!(response.payload["storedSizeBytes"], 4);
+        assert_eq!(
+            fs::read(root.join("stream-1").join("chunk-00000000000000000000.bin")).unwrap(),
+            vec![1, 2, 3, 4]
+        );
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn media_store_error_returns_error_envelope() {
+        // 场景：启用 media store 后，无法解析的 streamChunk 不能被 ACK 为成功。
+        let root = temp_media_root("ingress-store-error");
+        let store = CompanionMediaStore::new(&root);
+        let mut ingress =
+            CompanionIngress::new_with_media_store(CompanionSessionManager::default(), store);
+
+        let response = ingress
+            .handle_envelope(chunk_envelope("stream-1", "not-base64"))
+            .expect("ingress converts store errors to envelopes");
+
+        assert_eq!(response.kind, QuicMessageKind::Error);
+        assert_eq!(
+            response.payload["errorCode"],
+            "COMPANION_MEDIA_CHUNK_BASE64_INVALID"
+        );
+        fs::remove_dir_all(root).ok();
+    }
+
     fn hello_envelope(device_id: &str) -> QuicEnvelope {
         QuicEnvelope {
             protocol: String::from(COMPANION_PROTOCOL),
@@ -266,5 +351,28 @@ mod tests {
             })
             .expect("hello should serialize"),
         }
+    }
+
+    fn chunk_envelope(session_id: &str, data: &str) -> QuicEnvelope {
+        QuicEnvelope {
+            protocol: String::from(COMPANION_PROTOCOL),
+            version: COMPANION_PROTOCOL_VERSION,
+            message_id: String::from("chunk-1"),
+            trace_id: Some(String::from(session_id)),
+            device_id: Some(String::from("device-1")),
+            channel: QuicChannel::Media,
+            kind: QuicMessageKind::StreamChunk,
+            payload: json!({
+                "sessionId": session_id,
+                "chunkType": "media",
+                "encoding": "base64",
+                "data": data,
+                "sizeBytes": 4
+            }),
+        }
+    }
+
+    fn temp_media_root(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("adbcontrol-{name}-{}", rand::random::<u64>()))
     }
 }

@@ -62,6 +62,14 @@ jobs:
             android/companion-app/android-build.log
           if-no-files-found: warn
 
+      - name: Upload Android debug APK
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-companion-debug-apk
+          path: android/companion-app/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: warn
+
       - name: Fail on Android diagnostics
         if: steps.android_sdk.outputs.status != '0' || steps.android_build.outputs.status != '0'
         run: exit 1

@@ -73,15 +73,21 @@ impl CompanionSessionManager {
                 "companion.session",
                 true,
             )
-            .with_suggestion("Complete companion hello/helloAck before synchronizing capability state.")
+            .with_suggestion(
+                "Complete companion hello/helloAck before synchronizing capability state.",
+            )
         })
     }
 
     pub fn devices(&self) -> Vec<CompanionDevice> {
-        self.sessions.values().map(CompanionSession::to_device).collect()
+        self.sessions
+            .values()
+            .map(CompanionSession::to_device)
+            .collect()
     }
 
     fn handle_hello(&mut self, envelope: QuicEnvelope) -> Result<QuicEnvelope, AppError> {
+        let envelope_device_id = envelope.device_id.clone();
         let hello: CompanionHello = serde_json::from_value(envelope.payload).map_err(|error| {
             AppError::new(
                 "COMPANION_HELLO_INVALID",
@@ -91,6 +97,19 @@ impl CompanionSessionManager {
             )
             .with_cause(error)
         })?;
+
+        if let Some(envelope_device_id) =
+            envelope_device_id.filter(|device_id| !device_id.trim().is_empty())
+        {
+            if envelope_device_id != hello.device_id {
+                return Err(AppError::new(
+                    "COMPANION_HELLO_DEVICE_ID_MISMATCH",
+                    "Companion hello envelope deviceId must match payload deviceId.",
+                    "companion.session",
+                    false,
+                ));
+            }
+        }
 
         if !hello
             .supported_protocol_versions
@@ -139,22 +158,12 @@ impl CompanionSessionManager {
 
     fn handle_capability_list(&mut self, envelope: QuicEnvelope) -> Result<QuicEnvelope, AppError> {
         let device_id = require_device_id(&envelope)?;
-        let capabilities: Vec<Capability> = serde_json::from_value(
-            envelope
-                .payload
-                .get("capabilities")
-                .cloned()
-                .unwrap_or_else(|| json!([])),
-        )
-        .map_err(|error| {
-            AppError::new(
-                "COMPANION_CAPABILITY_SCHEMA_INVALID",
-                "Companion capabilityList payload is invalid.",
-                "companion.session",
-                false,
-            )
-            .with_cause(error)
-        })?;
+        let capabilities: Vec<Capability> = parse_required_payload_field(
+            &envelope.payload,
+            "capabilities",
+            "COMPANION_CAPABILITY_SCHEMA_INVALID",
+            "Companion capabilityList payload is invalid.",
+        )?;
 
         let session = self.sessions.get_mut(&device_id).ok_or_else(|| {
             AppError::new(
@@ -169,30 +178,28 @@ impl CompanionSessionManager {
             session.connection_state = ConnectionState::Ready;
         }
 
-        Ok(ack(envelope.trace_id, device_id, envelope.message_id, json!({
-            "accepted": true,
-            "registeredCapabilityCount": session.capabilities.len()
-        })))
+        Ok(ack(
+            envelope.trace_id,
+            device_id,
+            envelope.message_id,
+            json!({
+                "accepted": true,
+                "registeredCapabilityCount": session.capabilities.len()
+            }),
+        ))
     }
 
-    fn handle_permission_state(&mut self, envelope: QuicEnvelope) -> Result<QuicEnvelope, AppError> {
+    fn handle_permission_state(
+        &mut self,
+        envelope: QuicEnvelope,
+    ) -> Result<QuicEnvelope, AppError> {
         let device_id = require_device_id(&envelope)?;
-        let states: Vec<CapabilityPermissionState> = serde_json::from_value(
-            envelope
-                .payload
-                .get("states")
-                .cloned()
-                .unwrap_or_else(|| json!([])),
-        )
-        .map_err(|error| {
-            AppError::new(
-                "COMPANION_PERMISSION_STATE_INVALID",
-                "Companion permissionState payload is invalid.",
-                "companion.session",
-                false,
-            )
-            .with_cause(error)
-        })?;
+        let states: Vec<CapabilityPermissionState> = parse_required_payload_field(
+            &envelope.payload,
+            "states",
+            "COMPANION_PERMISSION_STATE_INVALID",
+            "Companion permissionState payload is invalid.",
+        )?;
 
         let session = self.sessions.get_mut(&device_id).ok_or_else(|| {
             AppError::new(
@@ -207,15 +214,20 @@ impl CompanionSessionManager {
             session.connection_state = ConnectionState::Ready;
         }
 
-        Ok(ack(envelope.trace_id, device_id, envelope.message_id, json!({
-            "accepted": true,
-            "updatedStateCount": session.permission_states.len()
-        })))
+        Ok(ack(
+            envelope.trace_id,
+            device_id,
+            envelope.message_id,
+            json!({
+                "accepted": true,
+                "updatedStateCount": session.permission_states.len()
+            }),
+        ))
     }
 
     fn handle_heartbeat(&self, envelope: QuicEnvelope) -> Result<QuicEnvelope, AppError> {
         let device_id = require_device_id(&envelope)?;
-        self.get_session(&device_id)?;
+        let session = self.get_session(&device_id)?;
 
         Ok(QuicEnvelope {
             protocol: String::from(COMPANION_PROTOCOL),
@@ -227,13 +239,34 @@ impl CompanionSessionManager {
             kind: QuicMessageKind::Heartbeat,
             payload: json!({
                 "receivedMessageId": envelope.message_id,
-                "serverState": "ready"
+                "serverState": session.connection_state
             }),
         })
     }
 }
 
-fn ack(trace_id: Option<String>, device_id: String, source_message_id: String, payload: Value) -> QuicEnvelope {
+fn parse_required_payload_field<T: for<'de> Deserialize<'de>>(
+    payload: &Value,
+    field_name: &str,
+    error_code: &'static str,
+    message: &'static str,
+) -> Result<T, AppError> {
+    let value = payload.get(field_name).cloned().ok_or_else(|| {
+        AppError::new(error_code, message, "companion.session", false)
+            .with_suggestion(format!("Missing required payload field: {field_name}."))
+    })?;
+
+    serde_json::from_value(value).map_err(|error| {
+        AppError::new(error_code, message, "companion.session", false).with_cause(error)
+    })
+}
+
+fn ack(
+    trace_id: Option<String>,
+    device_id: String,
+    source_message_id: String,
+    payload: Value,
+) -> QuicEnvelope {
     QuicEnvelope {
         protocol: String::from(COMPANION_PROTOCOL),
         version: COMPANION_PROTOCOL_VERSION,
@@ -277,9 +310,15 @@ mod tests {
             .expect("hello should create session");
 
         assert_eq!(ack.kind, QuicMessageKind::HelloAck);
-        assert_eq!(ack.payload["selectedProtocolVersion"], COMPANION_PROTOCOL_VERSION);
         assert_eq!(
-            manager.get_session("device-1").expect("session exists").connection_state,
+            ack.payload["selectedProtocolVersion"],
+            COMPANION_PROTOCOL_VERSION
+        );
+        assert_eq!(
+            manager
+                .get_session("device-1")
+                .expect("session exists")
+                .connection_state,
             ConnectionState::Handshaking
         );
     }
@@ -294,6 +333,80 @@ mod tests {
             .expect_err("state before hello should fail");
 
         assert_eq!(error.error_code, "COMPANION_SESSION_NOT_CONNECTED");
+    }
+
+    #[test]
+    fn hello_rejects_envelope_payload_device_id_mismatch() {
+        // 场景：hello 外层 deviceId 与 payload deviceId 不一致时必须失败，防止连接身份被混淆。
+        let mut manager = CompanionSessionManager::default();
+        let mut envelope = hello_envelope("device-1");
+        envelope.device_id = Some(String::from("different-device"));
+
+        let error = manager
+            .handle_envelope(envelope)
+            .expect_err("mismatched hello device id should fail");
+
+        assert_eq!(error.error_code, "COMPANION_HELLO_DEVICE_ID_MISMATCH");
+        assert!(manager.get_session("device-1").is_err());
+    }
+
+    #[test]
+    fn capability_list_requires_capabilities_field() {
+        // 场景：capabilityList 缺少 capabilities 字段时必须协议失败，不能静默注册空能力。
+        let mut manager = CompanionSessionManager::default();
+        manager
+            .handle_envelope(hello_envelope("device-1"))
+            .expect("hello should create session");
+        let mut envelope = capability_list_envelope("device-1", Vec::new());
+        envelope.payload = json!({});
+
+        let error = manager
+            .handle_envelope(envelope)
+            .expect_err("missing capabilities should fail");
+
+        assert_eq!(error.error_code, "COMPANION_CAPABILITY_SCHEMA_INVALID");
+        assert!(manager
+            .get_session("device-1")
+            .unwrap()
+            .capabilities
+            .is_empty());
+    }
+
+    #[test]
+    fn permission_state_requires_states_field() {
+        // 场景：permissionState 缺少 states 字段时必须协议失败，不能静默注册空权限矩阵。
+        let mut manager = CompanionSessionManager::default();
+        manager
+            .handle_envelope(hello_envelope("device-1"))
+            .expect("hello should create session");
+        let mut envelope = permission_state_envelope("device-1", Vec::new());
+        envelope.payload = json!({});
+
+        let error = manager
+            .handle_envelope(envelope)
+            .expect_err("missing states should fail");
+
+        assert_eq!(error.error_code, "COMPANION_PERMISSION_STATE_INVALID");
+        assert!(manager
+            .get_session("device-1")
+            .unwrap()
+            .permission_states
+            .is_empty());
+    }
+
+    #[test]
+    fn heartbeat_reports_actual_session_state() {
+        // 场景：hello 后尚未同步能力/权限时 heartbeat 不能谎报 ready，应返回当前 handshaking 状态。
+        let mut manager = CompanionSessionManager::default();
+        manager
+            .handle_envelope(hello_envelope("device-1"))
+            .expect("hello should create session");
+
+        let response = manager
+            .handle_envelope(heartbeat_envelope("device-1"))
+            .expect("heartbeat should be accepted for existing session");
+
+        assert_eq!(response.payload["serverState"], "handshaking");
     }
 
     #[test]
@@ -378,6 +491,19 @@ mod tests {
             channel: QuicChannel::Control,
             kind: QuicMessageKind::PermissionState,
             payload: json!({"states": states}),
+        }
+    }
+
+    fn heartbeat_envelope(device_id: &str) -> QuicEnvelope {
+        QuicEnvelope {
+            protocol: String::from(COMPANION_PROTOCOL),
+            version: COMPANION_PROTOCOL_VERSION,
+            message_id: format!("heartbeat-{device_id}"),
+            trace_id: Some(String::from("trace-heartbeat")),
+            device_id: Some(String::from(device_id)),
+            channel: QuicChannel::Control,
+            kind: QuicMessageKind::Heartbeat,
+            payload: json!({"sentAtEpochMs": 1_700_000_000_000_u64}),
         }
     }
 }

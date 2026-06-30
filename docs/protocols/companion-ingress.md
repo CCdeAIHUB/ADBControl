@@ -88,7 +88,7 @@ let response_bytes = ingress.handle_json_bytes(request_bytes);
 
 ### `capabilityList`
 
-同步 Android Companion 实际能力列表。必须在 `hello` 之后发送。
+同步 Android Companion 实际能力列表。必须在 `hello` 之后发送，且 payload 必须包含 `capabilities` 字段；显式空数组表示设备当前没有可暴露能力，缺字段表示协议错误。
 
 成功：
 
@@ -129,7 +129,7 @@ let response_bytes = ingress.handle_json_bytes(request_bytes);
 
 ### `permissionState`
 
-同步 Android Companion 权限矩阵。必须在 `hello` 之后发送。
+同步 Android Companion 权限矩阵。必须在 `hello` 之后发送，且 payload 必须包含 `states` 字段；显式空数组表示暂无权限状态，缺字段表示协议错误。
 
 成功：
 
@@ -169,7 +169,7 @@ let response_bytes = ingress.handle_json_bytes(request_bytes);
 
 ### `heartbeat`
 
-用于保持 session 活跃。
+用于保持 session 活跃。`serverState` 返回 Core 当前记录的实际 session 状态，例如 `handshaking`、`ready`、`degraded`。
 
 成功：
 
@@ -209,7 +209,7 @@ let response_bytes = ingress.handle_json_bytes(request_bytes);
 
 ### `streamOpen` / `streamChunk` / `streamClose`
 
-媒体消息必须使用 `media` channel。当前 ingress 会 ACK 媒体消息并记录 chunk 数量，但不把媒体 bytes 写入最终存储；后续 Core media store / decoder / relay 可在这个分支接入。
+媒体消息必须使用 `media` channel。当前 ingress 会 ACK 媒体消息并记录 chunk 数量；当 Core 为 `CompanionIngress` 配置 `CompanionMediaStore` 时，`streamChunk` 会先按 `sessionId` 写入 Core media store，再返回 ACK。未配置 media store 时保持只 ACK 的网络入口行为，方便测试和无持久化运行模式。
 
 请求：
 
@@ -247,7 +247,12 @@ let response_bytes = ingress.handle_json_bytes(request_bytes);
     "accepted": true,
     "media": true,
     "receivedKind": "streamChunk",
-    "receivedChunkCount": 1
+    "receivedChunkCount": 1,
+    "stored": true,
+    "storedSessionId": "stream-1",
+    "storedChunkIndex": 0,
+    "storedSizeBytes": 4,
+    "storedPath": "/core-media-root/stream-1/chunk-00000000000000000000.bin"
   }
 }
 ```
@@ -311,5 +316,5 @@ let response_bytes = ingress.handle_json_bytes(request_bytes);
 
 ## 当前边界
 
-- 已完成：网络无关 ingress、session 分发、media ACK、error envelope 化、单元测试。
-- 未完成：真实纯 QUIC listener、TLS 证书、设备配对、媒体落盘 / relay。
+- 已完成：网络无关 ingress、session 分发、media ACK、可选 media store 落盘、error envelope 化、单元测试。
+- 未完成：真实纯 QUIC listener、TLS 证书、设备配对、媒体 relay / decoder。

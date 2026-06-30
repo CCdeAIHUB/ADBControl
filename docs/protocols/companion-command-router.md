@@ -7,8 +7,9 @@
 - 已实现 Core 侧 `CompanionCommandRouter` trait；
 - 已实现未连接 router：无 QUIC session 时返回结构化错误；
 - 已实现 in-memory session：用于测试 IPC → QUIC envelope 转换；
+- 已实现 `CompanionCommandTransport` 和 `TransportCompanionCommandRouter`：用于把 commandRequest envelope 发送到真实网络/session transport 边界；
 - `device.invoke` 已不再固定返回 `COMPANION_COMMAND_ROUTER_NOT_READY`；
-- 真实网络 QUIC socket / session manager 尚未接入。
+- 真实网络 QUIC socket 写入和响应等待尚未接入。
 
 ## 调用链
 
@@ -143,20 +144,23 @@ Frontend
 2. Android API 执行仍由 Android Companion `features` handler 完成。
 3. 无 session 时必须返回 `COMPANION_SESSION_NOT_CONNECTED`，不能假装分发成功。
 4. In-memory session 只用于测试协议闭环，不代表真实网络 QUIC transport。
-5. 后续真实 QUIC transport 只需要实现同一个 `CompanionCommandRouter` trait。
+5. 后续真实 QUIC transport 应优先实现 `CompanionCommandTransport`，再交给 `TransportCompanionCommandRouter` 复用 IPC → commandRequest 转换逻辑。
 
 ## 后续接入点
 
 真实 QUIC transport 接入时应实现：
 
 ```rust
-impl CompanionCommandRouter for QuicCompanionCommandRouter {
-    fn dispatch(&self, command: CompanionCommandDispatch) -> Result<CompanionCommandResponse, AppError> {
+impl CompanionCommandTransport for QuicCompanionCommandTransport {
+    fn send_command_envelope(
+        &self,
+        device_id: &str,
+        envelope: &QuicEnvelope,
+    ) -> Result<Value, AppError> {
         // 1. 查询 deviceId 对应 QUIC session；
-        // 2. build_command_request_envelope(&command)；
-        // 3. 写入 reliable control stream；
-        // 4. 等待 commandResponse/error 或返回 dispatched；
-        // 5. 将 Android Companion 响应转换为 CompanionCommandResponse。
+        // 2. 写入 reliable control stream；
+        // 3. 等待 commandResponse/error 或返回 dispatched；
+        // 4. 将 transport 结果作为 structured JSON 返回。
     }
 }
 ```

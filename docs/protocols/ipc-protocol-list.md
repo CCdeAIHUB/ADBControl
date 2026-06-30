@@ -471,7 +471,7 @@
 
 ## 10. `device.invoke`
 
-状态：协议校验已实现，真实 QUIC command router 预留。
+状态：协议校验与 commandRequest envelope 构建已实现；真实网络 QUIC session 未连接时返回可恢复 session 错误。
 
 用途：前端通过 Core 调用某个 Android Companion 能力。Core 先检查 device、capability、operation 是否存在，再由后续 QUIC router 转发给 Android App。
 
@@ -490,7 +490,7 @@
 }
 ```
 
-### 成功：后续真实 QUIC router 接入后的目标形态
+### 成功：session 已连接并已分发
 
 ```json
 {
@@ -501,23 +501,37 @@
     "deviceId":"android-companion-sample",
     "capabilityId":"android.volume.media",
     "operation":"volume.set",
-    "status":"completed"
+    "status":"dispatched",
+    "envelope":{
+      "protocol":"adbcontrol-companion-quic",
+      "version":1,
+      "messageId":"command-invoke-1",
+      "traceId":"invoke-1",
+      "deviceId":"android-companion-sample",
+      "channel":"control",
+      "kind":"commandRequest"
+    },
+    "result":{
+      "dispatched":true,
+      "transport":"quic-control",
+      "messageId":"command-invoke-1"
+    }
   }
 }
 ```
 
-### 当前阶段失败：router 未接入
+### 失败：设备已注册但 QUIC session 未连接
 
 ```json
 {
   "id":"invoke-1",
   "ok":false,
   "error":{
-    "errorCode":"COMPANION_COMMAND_ROUTER_NOT_READY",
-    "message":"Android companion command routing is not connected to a QUIC transport yet.",
+    "errorCode":"COMPANION_SESSION_NOT_CONNECTED",
+    "message":"Android companion QUIC session is not connected for device android-companion-sample.",
     "module":"companion.router",
     "recoverable":true,
-    "suggestion":"Start a QUIC companion session before invoking device capabilities."
+    "suggestion":"Complete companion pairing and QUIC hello/helloAck before invoking capabilities."
   }
 }
 ```

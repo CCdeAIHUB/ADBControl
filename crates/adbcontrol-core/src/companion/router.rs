@@ -43,14 +43,64 @@ pub enum CompanionCommandStatus {
 }
 
 pub trait CompanionCommandRouter: Send + Sync {
-    fn dispatch(&self, command: CompanionCommandDispatch) -> Result<CompanionCommandResponse, AppError>;
+    fn dispatch(
+        &self,
+        command: CompanionCommandDispatch,
+    ) -> Result<CompanionCommandResponse, AppError>;
+}
+
+pub trait CompanionCommandTransport: Send + Sync {
+    fn send_command_envelope(
+        &self,
+        device_id: &str,
+        envelope: &QuicEnvelope,
+    ) -> Result<Value, AppError>;
+}
+
+#[derive(Debug, Clone)]
+pub struct TransportCompanionCommandRouter<T: CompanionCommandTransport> {
+    transport: T,
+}
+
+impl<T: CompanionCommandTransport> TransportCompanionCommandRouter<T> {
+    pub fn new(transport: T) -> Self {
+        Self { transport }
+    }
+}
+
+impl<T: CompanionCommandTransport> CompanionCommandRouter for TransportCompanionCommandRouter<T> {
+    fn dispatch(
+        &self,
+        command: CompanionCommandDispatch,
+    ) -> Result<CompanionCommandResponse, AppError> {
+        let envelope = build_command_request_envelope(&command);
+        // The transport boundary is intentionally narrow: the router owns IPC ->
+        // commandRequest conversion, while the transport owns session lookup,
+        // socket writes, response waiting, and network-specific failure details.
+        let result = self
+            .transport
+            .send_command_envelope(&command.device_id, &envelope)?;
+
+        Ok(CompanionCommandResponse {
+            request_id: command.request_id,
+            device_id: command.device_id,
+            capability_id: command.capability_id,
+            operation: command.operation,
+            status: CompanionCommandStatus::Dispatched,
+            envelope: Some(envelope),
+            result,
+        })
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DisconnectedCompanionCommandRouter;
 
 impl CompanionCommandRouter for DisconnectedCompanionCommandRouter {
-    fn dispatch(&self, command: CompanionCommandDispatch) -> Result<CompanionCommandResponse, AppError> {
+    fn dispatch(
+        &self,
+        command: CompanionCommandDispatch,
+    ) -> Result<CompanionCommandResponse, AppError> {
         Err(AppError::new(
             "COMPANION_SESSION_NOT_CONNECTED",
             format!(
@@ -60,7 +110,9 @@ impl CompanionCommandRouter for DisconnectedCompanionCommandRouter {
             "companion.router",
             true,
         )
-        .with_suggestion("Complete companion pairing and QUIC hello/helloAck before invoking capabilities."))
+        .with_suggestion(
+            "Complete companion pairing and QUIC hello/helloAck before invoking capabilities.",
+        ))
     }
 }
 
@@ -80,7 +132,10 @@ impl InMemoryCompanionCommandRouter {
 }
 
 impl CompanionCommandRouter for InMemoryCompanionCommandRouter {
-    fn dispatch(&self, command: CompanionCommandDispatch) -> Result<CompanionCommandResponse, AppError> {
+    fn dispatch(
+        &self,
+        command: CompanionCommandDispatch,
+    ) -> Result<CompanionCommandResponse, AppError> {
         let session = self.sessions.get(&command.device_id).ok_or_else(|| {
             AppError::new(
                 "COMPANION_SESSION_NOT_CONNECTED",
@@ -91,7 +146,9 @@ impl CompanionCommandRouter for InMemoryCompanionCommandRouter {
                 "companion.router",
                 true,
             )
-            .with_suggestion("Complete companion pairing and QUIC hello/helloAck before invoking capabilities.")
+            .with_suggestion(
+                "Complete companion pairing and QUIC hello/helloAck before invoking capabilities.",
+            )
         })?;
 
         Ok(session.dispatch(command))
@@ -186,7 +243,41 @@ pub fn build_command_request_envelope(command: &CompanionCommandDispatch) -> Qui
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use super::*;
+
+    #[derive(Clone, Default)]
+    struct RecordingTransport {
+        sent: Arc<Mutex<Vec<QuicEnvelope>>>,
+        fail: bool,
+    }
+
+    impl CompanionCommandTransport for RecordingTransport {
+        fn send_command_envelope(
+            &self,
+            _device_id: &str,
+            envelope: &QuicEnvelope,
+        ) -> Result<Value, AppError> {
+            if self.fail {
+                return Err(AppError::new(
+                    "COMPANION_COMMAND_SEND_FAILED",
+                    "Companion command transport failed to send envelope.",
+                    "companion.router",
+                    true,
+                ));
+            }
+            self.sent
+                .lock()
+                .expect("sent lock should not be poisoned")
+                .push(envelope.clone());
+            Ok(json!({
+                "dispatched": true,
+                "transport": "test-command-transport",
+                "messageId": envelope.message_id
+            }))
+        }
+    }
 
     #[test]
     fn disconnected_router_returns_recoverable_session_error() {
@@ -209,9 +300,10 @@ mod tests {
     #[test]
     fn connected_router_builds_command_request_envelope() {
         // 场景：设备 session 已连接时，Core 必须生成 Android Companion 可消费的 QUIC commandRequest envelope。
-        let router = InMemoryCompanionCommandRouter::new(vec![
-            InMemoryCompanionSession::dispatch_only("android-companion-sample"),
-        ]);
+        let router =
+            InMemoryCompanionCommandRouter::new(vec![InMemoryCompanionSession::dispatch_only(
+                "android-companion-sample",
+            )]);
 
         let response = router
             .dispatch(CompanionCommandDispatch {
@@ -230,5 +322,52 @@ mod tests {
         assert_eq!(envelope.payload["capabilityId"], "android.volume.media");
         assert_eq!(envelope.payload["operation"], "volume.set");
         assert_eq!(envelope.payload["args"]["level"], 5);
+    }
+
+    #[test]
+    fn transport_router_sends_command_request_to_transport_boundary() {
+        // 场景：真实网络 router 接入前，Core 必须有非 in-memory 的传输边界承接 commandRequest。
+        let transport = RecordingTransport::default();
+        let sent = Arc::clone(&transport.sent);
+        let router = TransportCompanionCommandRouter::new(transport);
+
+        let response = router
+            .dispatch(CompanionCommandDispatch {
+                request_id: String::from("invoke-transport"),
+                device_id: String::from("device-1"),
+                capability_id: String::from("android.volume.media"),
+                operation: String::from("volume.set"),
+                args: json!({"level": 7}),
+            })
+            .expect("transport router should dispatch");
+
+        let sent = sent.lock().expect("sent lock should not be poisoned");
+        assert_eq!(sent.len(), 1);
+        assert_eq!(response.status, CompanionCommandStatus::Dispatched);
+        assert_eq!(sent[0].kind, QuicMessageKind::CommandRequest);
+        assert_eq!(sent[0].payload["requestId"], "invoke-transport");
+        assert_eq!(response.result["transport"], "test-command-transport");
+    }
+
+    #[test]
+    fn transport_router_returns_transport_error() {
+        // 场景：真实传输发送失败时，router 必须把结构化错误返回给 IPC 层，不能伪装已分发。
+        let router = TransportCompanionCommandRouter::new(RecordingTransport {
+            fail: true,
+            ..RecordingTransport::default()
+        });
+
+        let error = router
+            .dispatch(CompanionCommandDispatch {
+                request_id: String::from("invoke-fail"),
+                device_id: String::from("device-1"),
+                capability_id: String::from("android.volume.media"),
+                operation: String::from("volume.set"),
+                args: json!({"level": 7}),
+            })
+            .expect_err("transport failure should be returned");
+
+        assert_eq!(error.error_code, "COMPANION_COMMAND_SEND_FAILED");
+        assert_eq!(error.module, "companion.router");
     }
 }

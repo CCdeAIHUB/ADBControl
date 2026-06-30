@@ -13,18 +13,19 @@ pub use capability::{
     android_companion_capability_catalog, Capability, CapabilityPermissionRequirement,
     CapabilityPermissionState, CapabilityProvider, CapabilitySensitivity, CapabilityTransport,
 };
-pub use companion::{
-    build_command_request_envelope, quic_protocol_descriptor, sample_android_companion_device,
-    validate_quic_envelope, CompanionCommandDispatch, CompanionCommandResponse,
-    CompanionCommandRouter, CompanionCommandStatus, CompanionDevice, CompanionIngress,
-    CompanionQuicListener, CompanionRegistry, CompanionSession, CompanionSessionManager,
-    ConnectionState, DisconnectedCompanionCommandRouter, IngressBackedQuicListener,
-    InMemoryCompanionCommandRouter, InMemoryCompanionSession, QuicEnvelope, QuicMessageKind,
-    COMPANION_PROTOCOL, COMPANION_PROTOCOL_VERSION,
-};
 pub use companion::trust::{CompanionTrustStore, PairingChallenge, PairingRequest, TrustedDevice};
 #[cfg(feature = "quinn-transport")]
 pub use companion::QuinnCompanionServer;
+pub use companion::{
+    build_command_request_envelope, quic_protocol_descriptor, sample_android_companion_device,
+    validate_quic_envelope, CompanionCommandDispatch, CompanionCommandResponse,
+    CompanionCommandRouter, CompanionCommandStatus, CompanionCommandTransport, CompanionDevice,
+    CompanionIngress, CompanionQuicListener, CompanionRegistry, CompanionSession,
+    CompanionSessionManager, ConnectionState, DisconnectedCompanionCommandRouter,
+    InMemoryCompanionCommandRouter, InMemoryCompanionSession, IngressBackedQuicListener,
+    QuicEnvelope, QuicMessageKind, TransportCompanionCommandRouter, COMPANION_PROTOCOL,
+    COMPANION_PROTOCOL_VERSION,
+};
 pub use error::AppError;
 pub use platform::HostTarget;
 pub use protocol::{CoreService, IpcRequest, IpcResponse};
