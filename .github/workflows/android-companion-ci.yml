@@ -67,7 +67,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: android-companion-debug-apk
-          path: android/companion-app/app/build/outputs/apk/debug/*.apk
+          path: android/companion-app/app/build/outputs/apk/**/*.apk
           if-no-files-found: warn
 
       - name: Fail on Android diagnostics
