@@ -32,11 +32,16 @@ jobs:
         continue-on-error: true
         shell: bash
         run: |
+          rm -f android-sdk.failed
           {
             yes | sdkmanager --licenses >/dev/null || true
             sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
           } 2>&1 | tee android-sdk.log
-          echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          if [ "$status" -ne 0 ]; then
+            touch android-sdk.failed
+          fi
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -49,8 +54,13 @@ jobs:
         shell: bash
         working-directory: android/companion-app
         run: |
+          rm -f android-build.failed
           gradle :app:assembleDebug --stacktrace 2>&1 | tee android-build.log
-          echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          if [ "$status" -ne 0 ]; then
+            touch android-build.failed
+          fi
 
       - name: Upload Android diagnostics
         if: always()
@@ -59,7 +69,9 @@ jobs:
           name: android-companion-diagnostics
           path: |
             android-sdk.log
+            android-sdk.failed
             android/companion-app/android-build.log
+            android/companion-app/android-build.failed
           if-no-files-found: warn
 
       - name: Upload Android debug APK
@@ -71,5 +83,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Fail on Android diagnostics
-        if: steps.android_sdk.outputs.status != '0' || steps.android_build.outputs.status != '0'
-        run: exit 1
+        run: |
+          if [ -f android-sdk.failed ] || [ -f android/companion-app/android-build.failed ]; then
+            exit 1
+          fi

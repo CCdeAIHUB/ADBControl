@@ -25,11 +25,17 @@ object ScreenCaptureState {
     fun setProjection(context: Context, streamId: String, resultCode: Int, data: Intent) {
         val manager = context.getSystemService(MediaProjectionManager::class.java)
         projection?.stop()
-        projection = manager.getMediaProjection(resultCode, data).also { mediaProjection ->
-            mediaProjection.registerCallback(
+        val mediaProjection = manager.getMediaProjection(resultCode, data) ?: throw ScreenCaptureException(
+            errorCode = "COMPANION_MEDIA_PROJECTION_UNAVAILABLE",
+            message = "Android did not return a MediaProjection instance for the approved consent result.",
+            recoverable = true,
+            suggestion = "Retry stream.open and approve the Android screen capture consent dialog.",
+        )
+        projection = mediaProjection.also { grantedProjection ->
+            grantedProjection.registerCallback(
                 object : MediaProjection.Callback() {
                     override fun onStop() {
-                        if (projection === mediaProjection) {
+                        if (projection === grantedProjection) {
                             stopAllVideoSessions()
                             stopAllRealtimeSessions()
                             projection = null
@@ -77,7 +83,10 @@ object ScreenCaptureState {
             inputSurface,
             null,
             null,
-        )
+        ) ?: run {
+            encoder.stop()
+            throw virtualDisplayUnavailable("realtime screen video")
+        }
         realtimeSessions[encoder.sessionId()] = ScreenRealtimeSession(encoder.sessionId(), encoder, display)
         return ScreenVideoResult(
             sessionId = encoder.sessionId(),
@@ -125,7 +134,11 @@ object ScreenCaptureState {
             recorder.surface,
             null,
             null,
-        )
+        ) ?: run {
+            runCatching { recorder.reset() }
+            runCatching { recorder.release() }
+            throw virtualDisplayUnavailable("screen video recording")
+        }
         recorder.start()
         videoSessions[sessionId] = ScreenVideoSession(sessionId, recorder, virtualDisplay, outputFile)
 
@@ -188,7 +201,10 @@ object ScreenCaptureState {
             imageReader.surface,
             null,
             null,
-        )
+        ) ?: run {
+            imageReader.close()
+            throw virtualDisplayUnavailable("screenshot capture")
+        }
 
         try {
             val image = acquireImage(imageReader, safeTimeoutMs) ?: throw ScreenCaptureException(
@@ -229,6 +245,15 @@ object ScreenCaptureState {
             message = "Screen video stream requires Android MediaProjection user consent.",
             recoverable = true,
             suggestion = "Call stream.open and approve the Android screen capture consent dialog first.",
+        )
+    }
+
+    private fun virtualDisplayUnavailable(operation: String): ScreenCaptureException {
+        return ScreenCaptureException(
+            errorCode = "COMPANION_VIRTUAL_DISPLAY_UNAVAILABLE",
+            message = "Android could not create a virtual display for $operation.",
+            recoverable = true,
+            suggestion = "Stop active screen capture sessions, keep the screen unlocked, and retry.",
         )
     }
 
