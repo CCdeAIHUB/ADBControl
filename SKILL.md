@@ -875,7 +875,37 @@ Codex 在本 Skill 启用时，禁止以下行为：
 
 ---
 
-## 25. 最终执行口令
+## 25. PowerShell 调用约束（项目强制规则）
+
+本项目运行在 Windows 环境。系统自带的 Windows PowerShell 5.1（`powershell.exe`）存在以下问题：
+
+- 默认编码为 GBK / UTF-16 LE 混合，`Get-Content` / `Set-Content` 在处理 UTF-8 文件时容易产生乱码；
+- 部分模块（如 `Microsoft.PowerShell.Utility` 中的 `ConvertFrom-Json -AsHashtable`、`Invoke-WebRequest -SkipCertificateCheck` 等）在 v5.1 不可用；
+- 跨平台脚本兼容性差，与项目其他平台（macOS / Linux 使用 `pwsh`）行为不一致。
+
+因此项目内所有 AI Agent（Codex / Claude / Cursor / CodeBuddy 等）在调用 PowerShell 时必须遵守：
+
+1. **必须使用 PowerShell 7+（`pwsh.exe`），禁止使用系统自带的 `powershell.exe`（v5.1）**。
+   - 任何需要执行 PowerShell 语法的 shell 命令，都必须显式通过 `pwsh` / `pwsh.exe` 启动；不得直接依赖系统默认 shell。
+2. 调用方式：
+   - 在终端直接执行命令时，使用 `pwsh -Command "..."`；
+   - 执行脚本文件时，使用 `pwsh -File script.ps1`；
+   - 配置集成终端 / 任务 / CI 步骤时，显式指定 `pwsh` 而非 `powershell`。
+3. 若当前环境未安装 PowerShell 7+，AI 必须先提示用户安装（`winget install Microsoft.PowerShell`），不得退回到 v5.1。
+4. 在 PowerShell 7+ 中读取 / 写入文件时，显式指定 `-Encoding utf8` 或使用 `-AsByteStream`，避免依赖默认编码。
+5. 在 PowerShell 7+ 中处理 JSON 时，使用 `ConvertFrom-Json -AsHashtable`（v5.1 不支持此参数，是判断是否使用 v7+ 的特征之一）。
+
+禁止行为：
+
+- 使用 `powershell.exe` 执行任何脚本或命令；
+- 在 CI / 自动化 / 自动任务配置中使用 `powershell` 作为 shell；
+- 假设系统默认 `powershell` 即为 PowerShell 7+（系统默认始终是 v5.1，PowerShell 7+ 的可执行文件名为 `pwsh`）。
+
+本规则适用于项目内所有 AI Agent，不限于 Codex。
+
+---
+
+## 26. 最终执行口令
 
 当本 Skill 启用时，Codex 必须始终遵守以下执行顺序：
 

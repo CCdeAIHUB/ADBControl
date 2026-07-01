@@ -1,5 +1,8 @@
 /target/
 **/*.rs.bk
+**/bin/
+**/obj/
+client/publish/
 .DS_Store
 .idea/
 .vscode/
