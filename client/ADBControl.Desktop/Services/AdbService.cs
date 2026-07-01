@@ -30,6 +30,31 @@ public sealed class AdbService
         return await RunAsync("tcpip", port.ToString());
     }
 
+    public async Task<AdbCommandResult> ShellAsync(string deviceId, string command)
+    {
+        return await RunAsync("-s", deviceId, "shell", command);
+    }
+
+    public async Task<AdbCommandResult> InstallAsync(string deviceId, string apkPath)
+    {
+        return await RunAsync("-s", deviceId, "install", "-r", apkPath);
+    }
+
+    public async Task<AdbCommandResult> PushAsync(string deviceId, string localPath, string remotePath)
+    {
+        return await RunAsync("-s", deviceId, "push", localPath, remotePath);
+    }
+
+    public async Task<AdbCommandResult> PullAsync(string deviceId, string remotePath, string localPath)
+    {
+        return await RunAsync("-s", deviceId, "pull", remotePath, localPath);
+    }
+
+    public async Task<byte[]> ScreencapPngAsync(string deviceId)
+    {
+        return await RunBytesAsync("-s", deviceId, "exec-out", "screencap", "-p");
+    }
+
     private static async Task<AdbCommandResult> RunAsync(params string[] args)
     {
         var startInfo = new ProcessStartInfo
@@ -54,5 +79,34 @@ public sealed class AdbService
         await process.WaitForExitAsync();
 
         return new AdbCommandResult(process.ExitCode, stdout, stderr);
+    }
+
+    private static async Task<byte[]> RunBytesAsync(params string[] args)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "adb",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+
+        foreach (var arg in args)
+            startInfo.ArgumentList.Add(arg);
+
+        using var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("无法启动 adb，请确认 Android Platform Tools 已加入 PATH。");
+        await using var memory = new MemoryStream();
+        await process.StandardOutput.BaseStream.CopyToAsync(memory);
+        await process.WaitForExitAsync();
+
+        if (process.ExitCode != 0)
+        {
+            var stderr = await process.StandardError.ReadToEndAsync();
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(stderr) ? $"adb 退出码 {process.ExitCode}" : stderr.Trim());
+        }
+
+        return memory.ToArray();
     }
 }

@@ -28,6 +28,11 @@ public sealed class MainWindow : Window
     private readonly List<AiAttachment> _pendingAttachments = new();
     private readonly List<Button> _navButtons = new();
 
+    private GridBackground? _background;
+    private Border? _navDock;
+    private Border? _aiDock;
+    private DispatcherTimer? _devicePreviewTimer;
+    private static bool s_darkTheme = true;
     private string _currentPage = "总览";
 
     public MainWindow()
@@ -72,14 +77,14 @@ public sealed class MainWindow : Window
         _root.RowDefinitions.Add(new RowDefinition());
         _root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(80) });
 
-        var background = new GridBackground
+        _background = new GridBackground
         {
             Fill = AppBrush(),
             GridLineBrush = GridLineBrush(),
             GridSize = 24,
         };
-        Grid.SetRowSpan(background, 3);
-        _root.Children.Add(background);
+        Grid.SetRowSpan(_background, 3);
+        _root.Children.Add(_background);
 
         var titleBar = BuildTitleBar();
         Grid.SetRow(titleBar, 0);
@@ -119,7 +124,7 @@ public sealed class MainWindow : Window
             },
         };
 
-        var dock = new Border
+        _navDock = new Border
         {
             CornerRadius = new CornerRadius(20),
             BorderBrush = BorderLightBrush(),
@@ -139,11 +144,11 @@ public sealed class MainWindow : Window
         nav.Children.Add(NavButton("任务", Symbol.List));
         nav.Children.Add(NavButton("设置", Symbol.Setting));
 
-        dock.Child = nav;
-        Grid.SetColumn(dock, 1);
-        shell.Children.Add(dock);
+        _navDock.Child = nav;
+        Grid.SetColumn(_navDock, 1);
+        shell.Children.Add(_navDock);
 
-        var aiDock = new Border
+        _aiDock = new Border
         {
             CornerRadius = new CornerRadius(20),
             BorderBrush = BorderLightBrush(),
@@ -155,9 +160,9 @@ public sealed class MainWindow : Window
         };
         var ai = IconTextButton("AI", Symbol.Message);
         ai.Click += (_, _) => ToggleAiPanel();
-        aiDock.Child = ai;
-        Grid.SetColumn(aiDock, 2);
-        shell.Children.Add(aiDock);
+        _aiDock.Child = ai;
+        Grid.SetColumn(_aiDock, 2);
+        shell.Children.Add(_aiDock);
         return shell;
     }
 
@@ -198,8 +203,10 @@ public sealed class MainWindow : Window
 
     private void Navigate(string page)
     {
+        StopDevicePreview();
         _currentPage = page;
         _aiPanel.Visibility = Visibility.Collapsed;
+        _root.Background = AppBrush();
         foreach (var button in _navButtons)
         {
             var active = string.Equals(button.Tag as string, page, StringComparison.Ordinal);
@@ -417,6 +424,7 @@ public sealed class MainWindow : Window
 
     private void ShowDeviceDetail(DeviceModel device)
     {
+        StopDevicePreview();
         _contentHost.Children.Clear();
         var panel = PageStack();
         var back = new Button
@@ -433,28 +441,447 @@ public sealed class MainWindow : Window
         panel.Children.Add(back);
         panel.Children.Add(Header(device.DisplayName, device.ConnectionKind == "usb" ? "有线 ADB 设备详情" : "无线 ADB 设备详情"));
 
-        var details = new Grid { ColumnSpacing = 12, RowSpacing = 12 };
-        details.ColumnDefinitions.Add(new ColumnDefinition());
-        details.ColumnDefinitions.Add(new ColumnDefinition());
-        details.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        details.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        details.Children.Add(InfoCard("连接方式", device.ConnectionKind == "usb" ? "有线 ADB" : "无线 ADB", 0, 0));
-        details.Children.Add(InfoCard("设备 ID", device.DeviceId, 1, 0));
-        details.Children.Add(InfoCard("地址", device.ConnectionKind == "usb" ? "-" : $"{device.IpAddress}:{device.Port}", 0, 1));
-        details.Children.Add(InfoCard("状态", device.IsConnected ? "已连接" : "未连接", 1, 1));
-        panel.Children.Add(details);
-
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
-        var remove = new Button { Content = "删除设备", Padding = new Thickness(14, 8, 14, 8) };
-        remove.Click += (_, _) =>
+        var layout = new Grid
         {
-            _devices.Remove(device);
-            Notify("已删除设备", device.DisplayName, InfoBarSeverity.Informational);
-            ShowDevices();
+            ColumnSpacing = 16,
+            RowSpacing = 16,
+            ColumnDefinitions =
+            {
+                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+                new ColumnDefinition { Width = new GridLength(420) },
+            },
         };
-        actions.Children.Add(remove);
-        panel.Children.Add(Card(actions));
+
+        var previewImage = new Image
+        {
+            Stretch = Stretch.Uniform,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+        };
+        var previewStatus = new TextBlock
+        {
+            Text = "正在获取设备截图...",
+            Foreground = SecondaryTextBrush(),
+            FontSize = 13,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var previewLayer = new Grid
+        {
+            MinHeight = 520,
+            Children =
+            {
+                previewImage,
+                previewStatus,
+            },
+        };
+        var previewCard = Card(new Grid
+        {
+            RowDefinitions =
+            {
+                new RowDefinition { Height = GridLength.Auto },
+                new RowDefinition(),
+            },
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = "设备预览",
+                    FontSize = 18,
+                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                    Foreground = PrimaryTextBrush(),
+                    Margin = new Thickness(0, 0, 0, 12),
+                },
+                previewLayer,
+            },
+        });
+        Grid.SetColumn(previewLayer, 0);
+        Grid.SetRow(previewLayer, 1);
+        Grid.SetColumn(previewCard, 0);
+        layout.Children.Add(previewCard);
+
+        var tools = new TabView
+        {
+            IsAddTabButtonVisible = false,
+            CanDragTabs = false,
+            TabWidthMode = TabViewWidthMode.SizeToContent,
+            MinHeight = 580,
+        };
+        tools.TabItems.Add(new TabViewItem { Header = "快捷操作", Content = BuildQuickActions(device) });
+        tools.TabItems.Add(new TabViewItem { Header = "ADB 终端", Content = BuildAdbTerminal(device) });
+        tools.TabItems.Add(new TabViewItem { Header = "软件管理", Content = BuildPackageManager(device) });
+        tools.TabItems.Add(new TabViewItem { Header = "文件管理", Content = BuildFileManager(device) });
+        tools.TabItems.Add(new TabViewItem { Header = "硬件信息", Content = BuildHardwareInfo(device) });
+        tools.TabItems.Add(new TabViewItem { Header = "快速重启", Content = BuildRebootActions(device) });
+        var toolsCard = Card(tools);
+        Grid.SetColumn(toolsCard, 1);
+        layout.Children.Add(toolsCard);
+        panel.Children.Add(layout);
         _contentHost.Children.Add(new ScrollViewer { Content = panel });
+        StartDevicePreview(device, previewImage, previewStatus);
+    }
+
+    private UIElement BuildQuickActions(DeviceModel device)
+    {
+        var stack = ToolStack();
+        stack.Children.Add(BodyText("最近使用的高频 ADB 操作。"));
+        stack.Children.Add(ActionGrid(
+            DeviceActionButton("截屏刷新", async () => await _adb.ScreencapPngAsync(device.DeviceId), "截图命令已执行。"),
+            DeviceActionButton("返回", async () => await _adb.ShellAsync(device.DeviceId, "input keyevent KEYCODE_BACK")),
+            DeviceActionButton("主页", async () => await _adb.ShellAsync(device.DeviceId, "input keyevent KEYCODE_HOME")),
+            DeviceActionButton("任务视图", async () => await _adb.ShellAsync(device.DeviceId, "input keyevent KEYCODE_APP_SWITCH")),
+            DeviceActionButton("点亮屏幕", async () => await _adb.ShellAsync(device.DeviceId, "input keyevent KEYCODE_WAKEUP")),
+            DeviceActionButton("锁屏", async () => await _adb.ShellAsync(device.DeviceId, "input keyevent KEYCODE_SLEEP"))));
+        return stack;
+    }
+
+    private UIElement BuildAdbTerminal(DeviceModel device)
+    {
+        var input = RoundedTextBox("例如：wm size 或 pm list packages");
+        var output = new TextBox
+        {
+            IsReadOnly = true,
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+            MinHeight = 320,
+            Background = SurfaceAltBrush(),
+            BorderBrush = BorderBrush(),
+            CornerRadius = new CornerRadius(12),
+        };
+        var run = PrimaryButton("执行");
+        run.Click += async (_, _) =>
+        {
+            if (string.IsNullOrWhiteSpace(input.Text))
+                return;
+            output.Text = "执行中...";
+            var result = await _adb.ShellAsync(device.DeviceId, input.Text.Trim());
+            output.Text = FormatCommandResult(result);
+        };
+
+        var stack = ToolStack();
+        stack.Children.Add(BodyText("命令会以 adb shell 在当前设备上执行，并显示 stdout/stderr。"));
+        stack.Children.Add(input);
+        stack.Children.Add(run);
+        stack.Children.Add(output);
+        return stack;
+    }
+
+    private UIElement BuildPackageManager(DeviceModel device)
+    {
+        var packages = new ListView { MinHeight = 250, MaxHeight = 280 };
+        var status = BodyText("点击刷新获取已安装软件包。");
+        var refresh = PrimaryButton("刷新软件包");
+        refresh.Click += async (_, _) => await LoadPackagesAsync(device, packages, status);
+        var install = SecondaryButton("安装 APK");
+        install.Click += async (_, _) => await InstallApkAsync(device);
+
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { refresh, install } };
+        var actions = ActionGrid(
+            DevicePackageButton("运行", packages, packageName => _adb.ShellAsync(device.DeviceId, $"monkey -p {packageName} 1")),
+            DevicePackageButton("强制停止", packages, packageName => _adb.ShellAsync(device.DeviceId, $"am force-stop {packageName}")),
+            DevicePackageButton("禁用", packages, packageName => _adb.ShellAsync(device.DeviceId, $"pm disable-user {packageName}")),
+            DevicePackageButton("启用", packages, packageName => _adb.ShellAsync(device.DeviceId, $"pm enable {packageName}")),
+            DevicePackageButton("提取 APK", packages, packageName => PullPackageApkAsync(device, packageName)),
+            DevicePackageButton("清除数据", packages, packageName => _adb.ShellAsync(device.DeviceId, $"pm clear {packageName}")));
+        var detail = SecondaryButton("查看软件信息");
+        detail.Click += async (_, _) =>
+        {
+            if (packages.SelectedItem is not string packageName)
+            {
+                Notify("请选择软件包", "先在列表中选择一个软件包。", InfoBarSeverity.Warning);
+                return;
+            }
+
+            var result = await _adb.ShellAsync(device.DeviceId, $"dumpsys package {packageName}");
+            await ShowTextDialogAsync($"软件信息 - {packageName}", FormatCommandResult(result));
+        };
+
+        var stack = ToolStack();
+        stack.Children.Add(BodyText("ADB 可稳定读取包名；友好应用名和图标需要 Companion/系统权限补充，当前先保证包级操作可用。"));
+        stack.Children.Add(row);
+        stack.Children.Add(packages);
+        stack.Children.Add(status);
+        stack.Children.Add(actions);
+        stack.Children.Add(detail);
+        return stack;
+    }
+
+    private UIElement BuildFileManager(DeviceModel device)
+    {
+        var path = RoundedTextBox("/sdcard/");
+        var listing = new TextBox
+        {
+            IsReadOnly = true,
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+            MinHeight = 260,
+            Background = SurfaceAltBrush(),
+            BorderBrush = BorderBrush(),
+            CornerRadius = new CornerRadius(12),
+        };
+        var list = PrimaryButton("查看目录");
+        list.Click += async (_, _) =>
+        {
+            var result = await _adb.ShellAsync(device.DeviceId, $"ls -la \"{EscapeShell(path.Text)}\"");
+            listing.Text = FormatCommandResult(result);
+        };
+        var send = SecondaryButton("发送文件到此目录");
+        send.Click += async (_, _) => await PushFileAsync(device, path.Text.Trim());
+        var delete = SecondaryButton("删除路径");
+        delete.Click += async (_, _) =>
+        {
+            var result = await _adb.ShellAsync(device.DeviceId, $"rm -rf \"{EscapeShell(path.Text)}\"");
+            Notify(result.Success ? "删除命令已执行" : "删除失败", FormatCommandResult(result), result.Success ? InfoBarSeverity.Success : InfoBarSeverity.Error);
+        };
+
+        var stack = ToolStack();
+        stack.Children.Add(BodyText("输入设备端路径后可以查看、上传文件或删除该路径。删除会直接作用于设备文件系统。"));
+        stack.Children.Add(path);
+        stack.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { list, send, delete } });
+        stack.Children.Add(listing);
+        return stack;
+    }
+
+    private UIElement BuildHardwareInfo(DeviceModel device)
+    {
+        var output = new TextBox
+        {
+            IsReadOnly = true,
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+            MinHeight = 420,
+            Background = SurfaceAltBrush(),
+            BorderBrush = BorderBrush(),
+            CornerRadius = new CornerRadius(12),
+        };
+        var refresh = PrimaryButton("刷新硬件信息");
+        refresh.Click += async (_, _) =>
+        {
+            var command = "printf '品牌: '; getprop ro.product.brand; printf '型号: '; getprop ro.product.model; printf '系统: '; getprop ro.build.version.release; printf 'SDK: '; getprop ro.build.version.sdk; printf 'CPU ABI: '; getprop ro.product.cpu.abi; printf 'CPU 型号: '; cat /proc/cpuinfo | grep -m 1 'Hardware\\|model name\\|Processor'; printf '\\n电池:\\n'; dumpsys battery | head -n 20; printf '\\n内存:\\n'; cat /proc/meminfo | head -n 8; printf '\\nCPU 负载:\\n'; cat /proc/loadavg";
+            var result = await _adb.ShellAsync(device.DeviceId, command);
+            output.Text = FormatCommandResult(result);
+        };
+
+        var stack = ToolStack();
+        stack.Children.Add(BodyText("通过 getprop、dumpsys battery、/proc 信息读取品牌、型号、系统、CPU、电池、内存和负载。"));
+        stack.Children.Add(refresh);
+        stack.Children.Add(output);
+        return stack;
+    }
+
+    private UIElement BuildRebootActions(DeviceModel device)
+    {
+        var stack = ToolStack();
+        stack.Children.Add(BodyText("这些操作会改变设备启动状态，请确认设备可恢复后再执行。"));
+        stack.Children.Add(ActionGrid(
+            DeviceActionButton("重启系统", async () => await _adb.ShellAsync(device.DeviceId, "reboot")),
+            DeviceActionButton("Fastboot", async () => await _adb.ShellAsync(device.DeviceId, "reboot bootloader")),
+            DeviceActionButton("Fastbootd", async () => await _adb.ShellAsync(device.DeviceId, "reboot fastboot")),
+            DeviceActionButton("Recovery", async () => await _adb.ShellAsync(device.DeviceId, "reboot recovery")),
+            DeviceActionButton("EDL", async () => await _adb.ShellAsync(device.DeviceId, "reboot edl")),
+            DeviceActionButton("关机", async () => await _adb.ShellAsync(device.DeviceId, "reboot -p"))));
+        return stack;
+    }
+
+    private static StackPanel ToolStack()
+    {
+        return new StackPanel
+        {
+            Spacing = 12,
+            Padding = new Thickness(2, 12, 2, 2),
+        };
+    }
+
+    private static WrapPanel ActionGrid(params UIElement[] actions)
+    {
+        var panel = new WrapPanel();
+        foreach (var action in actions)
+            panel.Children.Add(action);
+        return panel;
+    }
+
+    private Button DeviceActionButton(string text, Func<Task<AdbCommandResult>> action)
+    {
+        var button = SecondaryButton(text);
+        button.Margin = new Thickness(0, 0, 8, 8);
+        button.Click += async (_, _) =>
+        {
+            var result = await action();
+            Notify(result.Success ? "操作已执行" : "操作失败", FormatCommandResult(result), result.Success ? InfoBarSeverity.Success : InfoBarSeverity.Error);
+        };
+        return button;
+    }
+
+    private Button DeviceActionButton(string text, Func<Task<byte[]>> action, string successMessage)
+    {
+        var button = SecondaryButton(text);
+        button.Margin = new Thickness(0, 0, 8, 8);
+        button.Click += async (_, _) =>
+        {
+            await action();
+            Notify("操作已执行", successMessage, InfoBarSeverity.Success);
+        };
+        return button;
+    }
+
+    private Button DevicePackageButton(string text, ListView packages, Func<string, Task<AdbCommandResult>> action)
+    {
+        var button = SecondaryButton(text);
+        button.Margin = new Thickness(0, 0, 8, 8);
+        button.Click += async (_, _) =>
+        {
+            if (packages.SelectedItem is not string packageName)
+            {
+                Notify("请选择软件包", "先在列表中选择一个软件包。", InfoBarSeverity.Warning);
+                return;
+            }
+
+            var result = await action(packageName);
+            Notify(result.Success ? "操作已执行" : "操作失败", FormatCommandResult(result), result.Success ? InfoBarSeverity.Success : InfoBarSeverity.Error);
+        };
+        return button;
+    }
+
+    private async Task LoadPackagesAsync(DeviceModel device, ListView packages, TextBlock status)
+    {
+        status.Text = "正在读取软件包...";
+        var result = await _adb.ShellAsync(device.DeviceId, "pm list packages -3");
+        if (!result.Success)
+        {
+            status.Text = FormatCommandResult(result);
+            return;
+        }
+
+        var items = result.Stdout
+            .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => line.Replace("package:", string.Empty, StringComparison.OrdinalIgnoreCase).Trim())
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .OrderBy(line => line, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        packages.ItemsSource = items;
+        status.Text = items.Count == 0 ? "未读取到第三方软件包。" : $"已读取 {items.Count} 个第三方软件包。";
+    }
+
+    private async Task InstallApkAsync(DeviceModel device)
+    {
+        var picker = new FileOpenPicker();
+        InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(this));
+        picker.FileTypeFilter.Add(".apk");
+        var file = await picker.PickSingleFileAsync();
+        if (file is null)
+            return;
+
+        var result = await _adb.InstallAsync(device.DeviceId, file.Path);
+        Notify(result.Success ? "APK 已安装" : "安装失败", FormatCommandResult(result), result.Success ? InfoBarSeverity.Success : InfoBarSeverity.Error);
+    }
+
+    private async Task<AdbCommandResult> PullPackageApkAsync(DeviceModel device, string packageName)
+    {
+        var pathResult = await _adb.ShellAsync(device.DeviceId, $"pm path {packageName}");
+        if (!pathResult.Success)
+            return pathResult;
+
+        var remote = pathResult.Stdout
+            .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+            .FirstOrDefault()?.Replace("package:", string.Empty, StringComparison.OrdinalIgnoreCase).Trim();
+        if (string.IsNullOrWhiteSpace(remote))
+            return new AdbCommandResult(1, string.Empty, "未找到 APK 路径。");
+
+        var picker = new FolderPicker();
+        InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(this));
+        picker.FileTypeFilter.Add("*");
+        var folder = await picker.PickSingleFolderAsync();
+        if (folder is null)
+            return new AdbCommandResult(0, "已取消提取。", string.Empty);
+
+        var local = Path.Combine(folder.Path, $"{packageName}.apk");
+        return await _adb.PullAsync(device.DeviceId, remote, local);
+    }
+
+    private async Task PushFileAsync(DeviceModel device, string remoteDirectory)
+    {
+        var picker = new FileOpenPicker();
+        InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(this));
+        picker.FileTypeFilter.Add("*");
+        var file = await picker.PickSingleFileAsync();
+        if (file is null)
+            return;
+
+        var remote = $"{remoteDirectory.TrimEnd('/')}/{file.Name}";
+        var result = await _adb.PushAsync(device.DeviceId, file.Path, remote);
+        Notify(result.Success ? "文件已发送" : "发送失败", FormatCommandResult(result), result.Success ? InfoBarSeverity.Success : InfoBarSeverity.Error);
+    }
+
+    private void StartDevicePreview(DeviceModel device, Image previewImage, TextBlock status)
+    {
+        async void Tick()
+        {
+            try
+            {
+                var png = await _adb.ScreencapPngAsync(device.DeviceId);
+                var path = Path.Combine(Path.GetTempPath(), $"adbcontrol-preview-{SanitizeFileName(device.DeviceId)}.png");
+                await File.WriteAllBytesAsync(path, png);
+                previewImage.Source = new BitmapImage(new Uri(path));
+                status.Visibility = Visibility.Collapsed;
+            }
+            catch (Exception ex)
+            {
+                status.Visibility = Visibility.Visible;
+                status.Text = $"截图失败：{ex.Message}";
+            }
+        }
+
+        _devicePreviewTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+        _devicePreviewTimer.Tick += (_, _) => Tick();
+        _devicePreviewTimer.Start();
+        Tick();
+    }
+
+    private void StopDevicePreview()
+    {
+        _devicePreviewTimer?.Stop();
+        _devicePreviewTimer = null;
+    }
+
+    private async Task ShowTextDialogAsync(string title, string text)
+    {
+        var box = new TextBox
+        {
+            Text = text,
+            IsReadOnly = true,
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+            MinHeight = 420,
+            MaxHeight = 520,
+            Background = SurfaceAltBrush(),
+            BorderBrush = BorderBrush(),
+            CornerRadius = new CornerRadius(12),
+        };
+        await Dialog(title, box, "关闭").ShowAsync();
+    }
+
+    private static string FormatCommandResult(AdbCommandResult result)
+    {
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(result.Stdout))
+            parts.Add(result.Stdout.Trim());
+        if (!string.IsNullOrWhiteSpace(result.Stderr))
+            parts.Add(result.Stderr.Trim());
+        if (parts.Count == 0)
+            parts.Add($"adb 退出码 {result.ExitCode}");
+        return string.Join(Environment.NewLine, parts);
+    }
+
+    private static string EscapeShell(string value)
+    {
+        return value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal);
+    }
+
+    private static string SanitizeFileName(string value)
+    {
+        foreach (var c in Path.GetInvalidFileNameChars())
+            value = value.Replace(c, '_');
+        return value.Replace(':', '_');
     }
 
     private static UIElement InfoCard(string title, string value, int column, int row)
@@ -509,7 +936,7 @@ public sealed class MainWindow : Window
             {
                 SettingToggleRow("开机启动", "系统启动时自动运行"),
                 new Border { Height = 1, Background = BorderBrush(), Margin = new Thickness(0, 4, 0, 4) },
-                SettingToggleRow("深色模式", "关闭则跟随系统"),
+                ThemeToggleRow(),
             },
         }));
         panel.Children.Add(SettingsCard());
@@ -558,6 +985,51 @@ public sealed class MainWindow : Window
         Grid.SetColumn(toggle, 1);
         row.Children.Add(toggle);
         return row;
+    }
+
+    private Grid ThemeToggleRow()
+    {
+        var row = new Grid
+        {
+            ColumnDefinitions =
+            {
+                new ColumnDefinition(),
+                new ColumnDefinition { Width = GridLength.Auto },
+            },
+        };
+        var text = new StackPanel { Spacing = 2 };
+        text.Children.Add(new TextBlock { Text = "深色模式", FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = PrimaryTextBrush() });
+        text.Children.Add(new TextBlock { Text = "切换后立即刷新窗口色板", FontSize = 12, Foreground = SecondaryTextBrush() });
+        row.Children.Add(text);
+        var toggle = new ToggleSwitch { IsOn = s_darkTheme };
+        toggle.Toggled += (_, _) =>
+        {
+            s_darkTheme = toggle.IsOn;
+            _root.RequestedTheme = s_darkTheme ? ElementTheme.Dark : ElementTheme.Light;
+            BuildShellTheme();
+            Navigate("设置");
+        };
+        Grid.SetColumn(toggle, 1);
+        row.Children.Add(toggle);
+        return row;
+    }
+
+    private void BuildShellTheme()
+    {
+        _root.Background = AppBrush();
+        if (_background is not null)
+        {
+            _background.Fill = AppBrush();
+            _background.GridLineBrush = GridLineBrush();
+            _background.Refresh();
+        }
+        foreach (var dock in new[] { _navDock, _aiDock })
+        {
+            if (dock is null)
+                continue;
+            dock.Background = NavBrush();
+            dock.BorderBrush = BorderLightBrush();
+        }
     }
 
     private UIElement SettingsCard()
@@ -1270,11 +1742,15 @@ public sealed class MainWindow : Window
         return new ContentDialog
         {
             XamlRoot = _root.XamlRoot,
-            Title = title,
+            Title = string.IsNullOrWhiteSpace(title) ? null : title,
             Content = content,
             PrimaryButtonText = primary,
             CloseButtonText = "取消",
             DefaultButton = ContentDialogButton.Primary,
+            RequestedTheme = s_darkTheme ? ElementTheme.Dark : ElementTheme.Light,
+            Background = SurfaceBrush(),
+            BorderBrush = BorderBrush(),
+            Foreground = PrimaryTextBrush(),
         };
     }
 
@@ -1467,18 +1943,38 @@ public sealed class MainWindow : Window
         };
     }
 
-    private static SolidColorBrush AppBrush() => new(ColorHelper.FromArgb(255, 15, 23, 42));
-    private static SolidColorBrush GridLineBrush() => new(ColorHelper.FromArgb(24, 148, 163, 184));
-    private static SolidColorBrush SurfaceBrush() => new(ColorHelper.FromArgb(232, 30, 41, 59));
-    private static SolidColorBrush SurfaceAltBrush() => new(ColorHelper.FromArgb(232, 51, 65, 85));
-    private static SolidColorBrush NavBrush() => new(ColorHelper.FromArgb(184, 30, 41, 59));
+    private static SolidColorBrush AppBrush() => s_darkTheme
+        ? new SolidColorBrush(ColorHelper.FromArgb(255, 15, 23, 42))
+        : new SolidColorBrush(ColorHelper.FromArgb(255, 241, 245, 249));
+    private static SolidColorBrush GridLineBrush() => s_darkTheme
+        ? new SolidColorBrush(ColorHelper.FromArgb(24, 148, 163, 184))
+        : new SolidColorBrush(ColorHelper.FromArgb(80, 148, 163, 184));
+    private static SolidColorBrush SurfaceBrush() => s_darkTheme
+        ? new SolidColorBrush(ColorHelper.FromArgb(232, 30, 41, 59))
+        : new SolidColorBrush(ColorHelper.FromArgb(238, 255, 255, 255));
+    private static SolidColorBrush SurfaceAltBrush() => s_darkTheme
+        ? new SolidColorBrush(ColorHelper.FromArgb(232, 51, 65, 85))
+        : new SolidColorBrush(ColorHelper.FromArgb(255, 226, 232, 240));
+    private static SolidColorBrush NavBrush() => s_darkTheme
+        ? new SolidColorBrush(ColorHelper.FromArgb(184, 30, 41, 59))
+        : new SolidColorBrush(ColorHelper.FromArgb(204, 255, 255, 255));
     private static SolidColorBrush PrimaryBrush() => new(ColorHelper.FromArgb(255, 34, 197, 94));
     private static SolidColorBrush PrimaryLightBrush() => new(ColorHelper.FromArgb(40, 34, 197, 94));
     private static SolidColorBrush OnPrimaryBrush() => new(Colors.White);
-    private static SolidColorBrush PrimaryTextBrush() => new(ColorHelper.FromArgb(255, 248, 250, 252));
-    private static SolidColorBrush SecondaryTextBrush() => new(ColorHelper.FromArgb(255, 203, 213, 225));
-    private static SolidColorBrush MutedBrush() => new(ColorHelper.FromArgb(255, 148, 163, 184));
-    private static SolidColorBrush BorderBrush() => new(ColorHelper.FromArgb(255, 51, 65, 85));
-    private static SolidColorBrush BorderLightBrush() => new(ColorHelper.FromArgb(102, 148, 163, 184));
+    private static SolidColorBrush PrimaryTextBrush() => s_darkTheme
+        ? new SolidColorBrush(ColorHelper.FromArgb(255, 248, 250, 252))
+        : new SolidColorBrush(ColorHelper.FromArgb(255, 15, 23, 42));
+    private static SolidColorBrush SecondaryTextBrush() => s_darkTheme
+        ? new SolidColorBrush(ColorHelper.FromArgb(255, 203, 213, 225))
+        : new SolidColorBrush(ColorHelper.FromArgb(255, 71, 85, 105));
+    private static SolidColorBrush MutedBrush() => s_darkTheme
+        ? new SolidColorBrush(ColorHelper.FromArgb(255, 148, 163, 184))
+        : new SolidColorBrush(ColorHelper.FromArgb(255, 100, 116, 139));
+    private static SolidColorBrush BorderBrush() => s_darkTheme
+        ? new SolidColorBrush(ColorHelper.FromArgb(255, 51, 65, 85))
+        : new SolidColorBrush(ColorHelper.FromArgb(255, 203, 213, 225));
+    private static SolidColorBrush BorderLightBrush() => s_darkTheme
+        ? new SolidColorBrush(ColorHelper.FromArgb(102, 148, 163, 184))
+        : new SolidColorBrush(ColorHelper.FromArgb(180, 203, 213, 225));
     private static SolidColorBrush TransparentBrush() => new(Colors.Transparent);
 }

@@ -19,6 +19,11 @@ public sealed class GridBackground : Canvas
 
     public Brush? Fill { get; set; }
 
+    public void Refresh()
+    {
+        DrawGrid();
+    }
+
     private void DrawGrid()
     {
         Children.Clear();
