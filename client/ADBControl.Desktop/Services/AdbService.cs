@@ -25,6 +25,11 @@ public sealed class AdbService
         return await RunAsync("devices", "-l");
     }
 
+    public async Task<AdbCommandResult> TcpIpAsync(int port)
+    {
+        return await RunAsync("tcpip", port.ToString());
+    }
+
     private static async Task<AdbCommandResult> RunAsync(params string[] args)
     {
         var startInfo = new ProcessStartInfo
