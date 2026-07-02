@@ -1180,10 +1180,15 @@ public sealed class MainWindow : Window
             s_darkTheme = toggle.IsOn;
             _root.RequestedTheme = s_darkTheme ? ElementTheme.Dark : ElementTheme.Light;
             BuildShellTheme();
-            if (_currentDetailDevice is not null)
-                ShowDeviceDetail(_currentDetailDevice);
-            else
-                Navigate("设置");
+            // WinUI can crash if the current visual tree is replaced while ToggleSwitch
+            // is still raising Toggled, so page refresh is deferred to the UI queue.
+            _ = DispatcherQueue.TryEnqueue(() =>
+            {
+                if (_currentDetailDevice is not null)
+                    ShowDeviceDetail(_currentDetailDevice);
+                else
+                    Navigate("设置");
+            });
         };
         Grid.SetColumn(toggle, 1);
         row.Children.Add(toggle);
@@ -1213,7 +1218,7 @@ public sealed class MainWindow : Window
             ApplyNavButtonState(_deviceNavButton, _currentDetailDevice is not null);
         if (_aiButton is not null)
             ApplyNavButtonState(_aiButton, _aiPanel.Visibility == Visibility.Visible);
-        BuildAiPanel();
+        RefreshAiPanelTheme();
     }
 
     private UIElement SettingsCard()
@@ -1383,6 +1388,68 @@ public sealed class MainWindow : Window
         _aiPanel.Visibility = wasVisible ? Visibility.Visible : Visibility.Collapsed;
     }
 
+    private void RefreshAiPanelTheme()
+    {
+        _aiPanel.Background = SurfaceBrush();
+        _aiPanel.BorderBrush = BorderLightBrush();
+        _aiInput.Background = SurfaceAltBrush();
+        _aiInput.BorderBrush = BorderLightBrush();
+        _permissionCombo.Background = TransparentBrush();
+        _permissionCombo.BorderBrush = BorderLightBrush();
+        _modelCombo.Background = TransparentBrush();
+        _modelCombo.BorderBrush = BorderLightBrush();
+
+        if (_aiPanel.Child is UIElement child)
+            RefreshThemeBrushes(child);
+    }
+
+    private static void RefreshThemeBrushes(UIElement element)
+    {
+        switch (element)
+        {
+            case TextBlock text:
+                text.Foreground = text.FontSize <= 12 ? SecondaryTextBrush() : PrimaryTextBrush();
+                break;
+            case Border border:
+                if (Equals(border.Tag, "ai-bubble"))
+                    border.Background = SurfaceAltBrush();
+                else if (Equals(border.Tag, "ai-surface"))
+                    border.Background = SurfaceBrush();
+                if (border.BorderThickness.Left > 0 || border.BorderThickness.Top > 0)
+                    border.BorderBrush = BorderLightBrush();
+                if (border.Child is not null)
+                    RefreshThemeBrushes(border.Child);
+                break;
+            case Button button:
+                if (Equals(button.Tag, "primary-action"))
+                {
+                    button.Background = PrimaryBrush();
+                    button.Foreground = OnPrimaryBrush();
+                }
+                else
+                {
+                    button.Foreground = SecondaryTextBrush();
+                    button.Background = TransparentBrush();
+                }
+                if (button.Content is UIElement buttonContent)
+                    RefreshThemeBrushes(buttonContent);
+                break;
+            case IconElement icon:
+                icon.Foreground = SecondaryTextBrush();
+                break;
+            case Panel panel:
+                foreach (var child in panel.Children)
+                    RefreshThemeBrushes(child);
+                break;
+            case ContentControl contentControl when contentControl.Content is UIElement controlContent:
+                RefreshThemeBrushes(controlContent);
+                break;
+            case ScrollViewer scrollViewer when scrollViewer.Content is UIElement scrollContent:
+                RefreshThemeBrushes(scrollContent);
+                break;
+        }
+    }
+
     private FrameworkElement BuildAiToolbar()
     {
         var tools = new Grid { ColumnSpacing = 10, Padding = new Thickness(10, 6, 10, 10) };
@@ -1429,6 +1496,7 @@ public sealed class MainWindow : Window
 
         var send = new Button
         {
+            Tag = "primary-action",
             Content = new SymbolIcon(Symbol.Upload),
             Width = 34,
             Height = 34,
