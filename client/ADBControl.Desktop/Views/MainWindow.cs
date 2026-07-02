@@ -31,6 +31,7 @@ public sealed class MainWindow : Window
     private readonly List<AiAttachment> _pendingAttachments = new();
     private readonly List<Button> _navButtons = new();
 
+    private ScrollViewer? _activePageScroller;
     private GridBackground? _background;
     private Border? _navDock;
     private Border? _deviceDock;
@@ -89,6 +90,7 @@ public sealed class MainWindow : Window
     private void BuildShell()
     {
         _root.Background = AppBrush();
+        _root.AddHandler(UIElement.PointerWheelChangedEvent, new PointerEventHandler(OnRootPointerWheelChanged), true);
         _root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(36) });
         _root.RowDefinitions.Add(new RowDefinition());
         _root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(88) });
@@ -486,6 +488,7 @@ public sealed class MainWindow : Window
 
     private void ShowOverview()
     {
+        _activePageScroller = null;
         _contentHost.Children.Clear();
         _deviceCardPreviews.Clear();
         var panel = PageStack();
@@ -764,6 +767,7 @@ public sealed class MainWindow : Window
 
     private void ShowDeviceDetail(DeviceModel device)
     {
+        _activePageScroller = null;
         StopDevicePreview();
         StopDeviceListPreview();
         _currentDetailDevice = device;
@@ -1425,6 +1429,7 @@ public sealed class MainWindow : Window
 
     private void ShowTasks()
     {
+        _activePageScroller = null;
         _contentHost.Children.Clear();
         var panel = PageStack();
         panel.Children.Add(Header("任务", "批量任务和自动化队列将在这里显示。"));
@@ -3018,7 +3023,7 @@ public sealed class MainWindow : Window
         button.Resources["ButtonBorderBrushPressed"] = border;
     }
 
-    private static ScrollViewer PageScroller(UIElement content)
+    private ScrollViewer PageScroller(UIElement content)
     {
         var viewer = new ScrollViewer
         {
@@ -3030,14 +3035,33 @@ public sealed class MainWindow : Window
             IsTabStop = true,
             Padding = new Thickness(0),
         };
+        _activePageScroller = viewer;
         PointerEventHandler wheelHandler = (_, e) =>
         {
-            var delta = e.GetCurrentPoint(viewer).Properties.MouseWheelDelta;
-            viewer.ChangeView(null, Math.Max(0, viewer.VerticalOffset - delta), null, true);
+            ScrollPageByWheelDelta(viewer, e.GetCurrentPoint(viewer).Properties.MouseWheelDelta);
             e.Handled = true;
         };
         viewer.AddHandler(UIElement.PointerWheelChangedEvent, wheelHandler, true);
         return viewer;
+    }
+
+    private void OnRootPointerWheelChanged(object sender, PointerRoutedEventArgs e)
+    {
+        if (_activePageScroller is null || _activePageScroller.Visibility != Visibility.Visible)
+            return;
+
+        var delta = e.GetCurrentPoint(_root).Properties.MouseWheelDelta;
+        if (delta == 0)
+            return;
+
+        ScrollPageByWheelDelta(_activePageScroller, delta);
+        e.Handled = true;
+    }
+
+    private static void ScrollPageByWheelDelta(ScrollViewer viewer, int delta)
+    {
+        var target = Math.Clamp(viewer.VerticalOffset - delta, 0, viewer.ScrollableHeight);
+        viewer.ChangeView(null, target, null, true);
     }
 
     private static TextBlock BodyText(string text)
