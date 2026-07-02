@@ -38,6 +38,7 @@ public sealed class MainWindow : Window
     private Button? _deviceNavButton;
     private DispatcherTimer? _devicePreviewTimer;
     private DeviceModel? _currentDetailDevice;
+    private DeviceModel? _pinnedDeviceNavDevice;
     private static bool s_darkTheme = true;
     private static bool s_followSystemTheme;
     private string _currentPage = "总览";
@@ -246,6 +247,10 @@ public sealed class MainWindow : Window
             },
         };
         ApplyButtonResources(button, TransparentBrush(), SecondaryTextBrush(), HoverBrush(), SurfaceAltBrush(), BorderLightBrush(), new Thickness(0));
+        button.PointerEntered += (_, _) => ReapplyNavPointerState(button);
+        button.PointerMoved += (_, _) => ReapplyNavPointerState(button);
+        button.PointerExited += (_, _) => ReapplyNavPointerState(button);
+        button.PointerReleased += (_, _) => ReapplyNavPointerState(button);
         return button;
     }
 
@@ -321,7 +326,7 @@ public sealed class MainWindow : Window
     {
         StopDevicePreview();
         _currentDetailDevice = null;
-        UpdateDeviceNav(null);
+        UpdateDeviceNav(_pinnedDeviceNavDevice);
         _currentPage = page;
         _aiPanel.Visibility = Visibility.Collapsed;
         _root.Background = AppBrush();
@@ -352,6 +357,7 @@ public sealed class MainWindow : Window
 
     private static void ApplyNavButtonState(Button button, bool active)
     {
+        button.Resources["NavActive"] = active;
         var background = active ? PrimaryBrush() : TransparentBrush();
         var foreground = active ? OnPrimaryBrush() : SecondaryTextBrush();
         button.Background = background;
@@ -369,6 +375,12 @@ public sealed class MainWindow : Window
         if (button.Content is UIElement content)
             ApplyForeground(content, foreground);
         button.UpdateLayout();
+    }
+
+    private static void ReapplyNavPointerState(Button button)
+    {
+        if (button.Resources.TryGetValue("NavActive", out var value) && value is true)
+            button.DispatcherQueue.TryEnqueue(() => ApplyNavButtonState(button, true));
     }
 
     private static UIElement NavButtonContent(NavButtonInfo info, bool active, Brush foreground)
@@ -616,6 +628,7 @@ public sealed class MainWindow : Window
     {
         StopDevicePreview();
         _currentDetailDevice = device;
+        _pinnedDeviceNavDevice = device;
         UpdateDeviceNav(device);
         foreach (var button in _navButtons)
             ApplyNavButtonState(button, false);
@@ -631,10 +644,9 @@ public sealed class MainWindow : Window
                 new ColumnDefinition(),
             },
         };
-        var back = SecondaryButton("返回");
+        var back = IconSquareButton("‹", 56);
         back.HorizontalAlignment = HorizontalAlignment.Left;
-        back.MinWidth = 72;
-        back.Click += (_, _) => ShowDevices();
+        back.Click += (_, _) => Navigate("设备");
         headerRow.Children.Add(back);
         var detailHeader = (FrameworkElement)Header(device.DisplayName, device.ConnectionKind == "usb" ? "有线 ADB 设备详情" : "无线 ADB 设备详情");
         Grid.SetColumn(detailHeader, 1);
@@ -712,23 +724,27 @@ public sealed class MainWindow : Window
     {
         var contentHost = new Border
         {
-            Background = TransparentBrush(),
-            Padding = new Thickness(0),
+            Background = SurfaceAltBrush(),
+            BorderBrush = BorderLightBrush(),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(14, 0, 0, 14),
+            Padding = new Thickness(12),
         };
         var tabs = new StackPanel
         {
             Spacing = 8,
             VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(8, 0, 0, 0),
         };
         var buttons = new List<Button>();
-        var items = new (string Title, Func<UIElement> Build)[]
+        var items = new (string Title, Symbol Icon, Func<UIElement> Build)[]
         {
-            ("快捷", () => BuildQuickActions(device)),
-            ("终端", () => BuildAdbTerminal(device)),
-            ("软件", () => BuildPackageManager(device)),
-            ("文件", () => BuildFileManager(device)),
-            ("硬件", () => BuildHardwareInfo(device)),
-            ("重启", () => BuildRebootActions(device)),
+            ("快捷", Symbol.Favorite, () => BuildQuickActions(device)),
+            ("终端", Symbol.Keyboard, () => BuildAdbTerminal(device)),
+            ("软件", Symbol.AllApps, () => BuildPackageManager(device)),
+            ("文件", Symbol.Folder, () => BuildFileManager(device)),
+            ("硬件", Symbol.Setting, () => BuildHardwareInfo(device)),
+            ("重启", Symbol.Refresh, () => BuildRebootActions(device)),
         };
 
         void Select(int index)
@@ -741,7 +757,7 @@ public sealed class MainWindow : Window
         for (var i = 0; i < items.Length; i++)
         {
             var index = i;
-            var tab = DeviceToolTabButton(items[i].Title);
+            var tab = DeviceToolTabButton(items[i].Title, items[i].Icon);
             tab.Click += (_, _) => Select(index);
             buttons.Add(tab);
             tabs.Children.Add(tab);
@@ -749,7 +765,7 @@ public sealed class MainWindow : Window
 
         var root = new Grid
         {
-            ColumnSpacing = 10,
+            ColumnSpacing = 0,
             ColumnDefinitions =
             {
                 new ColumnDefinition(),
@@ -781,13 +797,13 @@ public sealed class MainWindow : Window
         _deviceNavButton.DataContext = new NavButtonInfo(ShortDeviceName(device.DisplayName), Symbol.CellPhone, true, IsTabletDevice(device));
         _deviceNavButton.Click -= DeviceNavButtonClick;
         _deviceNavButton.Click += DeviceNavButtonClick;
-        ApplyNavButtonState(_deviceNavButton, true);
+        ApplyNavButtonState(_deviceNavButton, _currentDetailDevice is not null);
     }
 
     private void DeviceNavButtonClick(object sender, RoutedEventArgs e)
     {
-        if (_currentDetailDevice is not null)
-            ShowDeviceDetail(_currentDetailDevice);
+        if (_pinnedDeviceNavDevice is not null)
+            ShowDeviceDetail(_pinnedDeviceNavDevice);
     }
 
     private static bool IsTabletDevice(DeviceModel device)
@@ -1297,6 +1313,7 @@ public sealed class MainWindow : Window
 
     private static Grid SettingToggleRow(string title, string description)
     {
+        var isOn = false;
         var row = new Grid
         {
             ColumnDefinitions =
@@ -1309,7 +1326,12 @@ public sealed class MainWindow : Window
         text.Children.Add(new TextBlock { Text = title, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = PrimaryTextBrush() });
         text.Children.Add(new TextBlock { Text = description, FontSize = 12, Foreground = SecondaryTextBrush() });
         row.Children.Add(text);
-        var toggle = SwitchButton(false);
+        var toggle = SwitchButton(isOn);
+        toggle.Click += (_, _) =>
+        {
+            isOn = !isOn;
+            ApplySwitchState(toggle, isOn);
+        };
         Grid.SetColumn(toggle, 1);
         row.Children.Add(toggle);
         return row;
@@ -1323,6 +1345,7 @@ public sealed class MainWindow : Window
             toggle.Click += (_, _) =>
             {
                 s_followSystemTheme = !s_followSystemTheme;
+                ApplySwitchState(toggle, s_followSystemTheme);
                 if (s_followSystemTheme)
                     s_darkTheme = Application.Current.RequestedTheme != ApplicationTheme.Light;
                 ApplyThemeAndRefreshSettings();
@@ -1341,6 +1364,7 @@ public sealed class MainWindow : Window
             toggle.Click += (_, _) =>
             {
                 s_darkTheme = !s_darkTheme;
+                ApplySwitchState(toggle, s_darkTheme);
                 ApplyThemeAndRefreshSettings();
             };
         }
@@ -1511,6 +1535,7 @@ public sealed class MainWindow : Window
         top.Children.Add(title);
         var close = new Button
         {
+            Tag = "ai-close",
             Content = new SymbolIcon(Symbol.Cancel),
             Width = 34,
             Height = 34,
@@ -1601,10 +1626,20 @@ public sealed class MainWindow : Window
         _aiPanel.BorderBrush = BorderLightBrush();
         _aiInput.Background = TransparentBrush();
         _aiInput.BorderBrush = TransparentBrush();
+        _aiInput.Foreground = PrimaryTextBrush();
+        _aiInput.PlaceholderForeground = MutedBrush();
+        _aiInput.Resources["TextControlBackground"] = TransparentBrush();
+        _aiInput.Resources["TextControlBackgroundPointerOver"] = TransparentBrush();
+        _aiInput.Resources["TextControlBackgroundFocused"] = TransparentBrush();
+        _aiInput.Resources["TextControlForeground"] = PrimaryTextBrush();
+        _aiInput.Resources["TextControlBorderBrush"] = TransparentBrush();
+        _aiInput.Resources["TextControlBorderBrushFocused"] = TransparentBrush();
         _permissionCombo.Background = TransparentBrush();
         _permissionCombo.BorderBrush = BorderLightBrush();
         _modelCombo.Background = TransparentBrush();
         _modelCombo.BorderBrush = BorderLightBrush();
+        StyleComboBox(_permissionCombo);
+        StyleComboBox(_modelCombo);
 
         if (_aiPanel.Child is UIElement child)
             RefreshThemeBrushes(child);
@@ -1637,6 +1672,10 @@ public sealed class MainWindow : Window
                     button.Background = PrimaryBrush();
                     button.Foreground = OnPrimaryBrush();
                 }
+                else if (Equals(button.Tag, "ai-close"))
+                {
+                    ApplyButtonResources(button, TransparentBrush(), SecondaryTextBrush(), HoverBrush(), SurfaceAltBrush(), BorderLightBrush(), new Thickness(0));
+                }
                 else
                 {
                     button.Foreground = SecondaryTextBrush();
@@ -1647,6 +1686,21 @@ public sealed class MainWindow : Window
                 break;
             case IconElement icon:
                 icon.Foreground = SecondaryTextBrush();
+                break;
+            case Grid grid:
+                if (Equals(grid.Tag, "ai-input-shell"))
+                    grid.Background = SurfaceAltBrush();
+                foreach (var child in grid.Children)
+                    RefreshThemeBrushes(child);
+                break;
+            case TextBox textBox:
+                textBox.Foreground = PrimaryTextBrush();
+                textBox.PlaceholderForeground = MutedBrush();
+                textBox.Background = TransparentBrush();
+                textBox.BorderBrush = TransparentBrush();
+                break;
+            case ComboBox comboBox:
+                StyleComboBox(comboBox);
                 break;
             case Panel panel:
                 foreach (var child in panel.Children)
@@ -2017,7 +2071,6 @@ public sealed class MainWindow : Window
         var pairCode = RoundedTextBox("123456");
         var connectIp = RoundedTextBox("192.168.1.100");
         var connectPort = RoundedTextBox("5555");
-        var deviceNote = RoundedTextBox("为设备添加备注名...");
         var wirelessStatus = new TextBlock { Foreground = MutedBrush(), TextWrapping = TextWrapping.Wrap };
         var pairStagePanel = new StackPanel { Spacing = 12 };
         var connectStagePanel = new StackPanel { Spacing = 12, Visibility = Visibility.Collapsed };
@@ -2143,15 +2196,6 @@ public sealed class MainWindow : Window
         stack.Children.Add(mode);
         stack.Children.Add(wirelessPanel);
         stack.Children.Add(usbPanel);
-        stack.Children.Add(new StackPanel
-        {
-            Spacing = 6,
-            Children =
-            {
-                SectionTitle("设备备注（可选）"),
-                deviceNote,
-            },
-        });
         SelectMode("wireless");
         SelectWirelessStage("new");
 
@@ -2176,7 +2220,7 @@ public sealed class MainWindow : Window
                         usbStatus.Text = "请先扫描并选择一台 USB ADB 设备。";
                         return;
                     }
-                    _devices.SaveUsbDevice(selectedUsbDevice, deviceNote.Text.Trim());
+                    _devices.SaveUsbDevice(selectedUsbDevice, string.Empty);
                     Notify("设备已添加", selectedUsbDevice.DisplayName, InfoBarSeverity.Success);
                     dialog.Hide();
                     ShowDevices();
@@ -2189,7 +2233,7 @@ public sealed class MainWindow : Window
                     return;
                 }
 
-                var addResult = await _devices.ConnectAndSaveAsync(connectIp.Text.Trim(), port, deviceNote.Text.Trim());
+                var addResult = await _devices.ConnectAndSaveAsync(connectIp.Text.Trim(), port, string.Empty);
                 if (addResult.Success || addResult.Stdout.Contains("connected", StringComparison.OrdinalIgnoreCase))
                 {
                     Notify("设备已添加", $"{connectIp.Text}:{port}", InfoBarSeverity.Success);
@@ -2245,29 +2289,49 @@ public sealed class MainWindow : Window
         stack.Children.Add(LabeledField("API URL", apiUrl));
         stack.Children.Add(LabeledControl("API 密钥", apiKey));
 
-        var dialog = Dialog(string.Empty, stack, "添加模型");
-        var response = await dialog.ShowAsync();
-        if (response != ContentDialogResult.Primary)
-            return;
-
-        if (string.IsNullOrWhiteSpace(name.Text) || string.IsNullOrWhiteSpace(modelId.Text))
+        ContentDialog? dialog = null;
+        var actions = new Grid
         {
-            Notify("添加失败", "模型名称和模型标识不能为空。", InfoBarSeverity.Error);
-            return;
-        }
-
-        _settings.Current.AiModels.Add(new AiModelSettings
+            ColumnSpacing = 10,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            ColumnDefinitions =
+            {
+                new ColumnDefinition { Width = GridLength.Auto },
+                new ColumnDefinition { Width = GridLength.Auto },
+            },
+        };
+        var cancel = SecondaryButton("取消");
+        var add = PrimaryButton("添加模型");
+        cancel.Click += (_, _) => dialog?.Hide();
+        add.Click += (_, _) =>
         {
-            Name = name.Text.Trim(),
-            ModelId = modelId.Text.Trim(),
-            ApiUrl = apiUrl.Text.Trim(),
-            ApiKey = apiKey.Password,
-        });
-        _settings.Save();
-        RefreshModelCombo();
-        if (_currentPage == "设置")
-            ShowSettings();
-        Notify("模型已添加", name.Text.Trim(), InfoBarSeverity.Success);
+            if (string.IsNullOrWhiteSpace(name.Text) || string.IsNullOrWhiteSpace(modelId.Text))
+            {
+                Notify("添加失败", "模型名称和模型标识不能为空。", InfoBarSeverity.Error);
+                return;
+            }
+
+            _settings.Current.AiModels.Add(new AiModelSettings
+            {
+                Name = name.Text.Trim(),
+                ModelId = modelId.Text.Trim(),
+                ApiUrl = apiUrl.Text.Trim(),
+                ApiKey = apiKey.Password,
+            });
+            _settings.Save();
+            RefreshModelCombo();
+            if (_currentPage == "设置")
+                ShowSettings();
+            Notify("模型已添加", name.Text.Trim(), InfoBarSeverity.Success);
+            dialog?.Hide();
+        };
+        actions.Children.Add(cancel);
+        Grid.SetColumn(add, 1);
+        actions.Children.Add(add);
+        stack.Children.Add(actions);
+
+        dialog = DialogChrome(string.Empty, stack);
+        await dialog.ShowAsync();
     }
 
     private void ToggleAiPanel()
@@ -2335,6 +2399,20 @@ public sealed class MainWindow : Window
             PrimaryButtonText = primary,
             CloseButtonText = "取消",
             DefaultButton = ContentDialogButton.Primary,
+            RequestedTheme = s_darkTheme ? ElementTheme.Dark : ElementTheme.Light,
+            Background = SurfaceBrush(),
+            BorderBrush = BorderBrush(),
+            Foreground = PrimaryTextBrush(),
+        };
+    }
+
+    private ContentDialog DialogChrome(string title, UIElement content)
+    {
+        return new ContentDialog
+        {
+            XamlRoot = _root.XamlRoot,
+            Title = string.IsNullOrWhiteSpace(title) ? null : title,
+            Content = content,
             RequestedTheme = s_darkTheme ? ElementTheme.Dark : ElementTheme.Light,
             Background = SurfaceBrush(),
             BorderBrush = BorderBrush(),
@@ -2455,6 +2533,32 @@ public sealed class MainWindow : Window
         return button;
     }
 
+    private static Button IconSquareButton(string glyph, double size)
+    {
+        var button = new Button
+        {
+            Width = size,
+            Height = size,
+            MinWidth = size,
+            MinHeight = size,
+            Padding = new Thickness(0),
+            CornerRadius = new CornerRadius(size / 2.8),
+            Content = new TextBlock
+            {
+                Text = glyph,
+                FontSize = size * 0.58,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                LineHeight = size * 0.74,
+            },
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center,
+        };
+        ApplyButtonResources(button, TransparentBrush(), SecondaryTextBrush(), HoverBrush(), SurfaceAltBrush(), BorderLightBrush(), new Thickness(0));
+        return button;
+    }
+
     private static Button SegmentButton(string text)
     {
         var button = SecondaryButton(text);
@@ -2478,14 +2582,26 @@ public sealed class MainWindow : Window
         button.BorderBrush = active ? PrimaryBrush() : BorderBrush();
     }
 
-    private static Button DeviceToolTabButton(string text)
+    private static Button DeviceToolTabButton(string text, Symbol icon)
     {
-        var button = SecondaryButton(text);
-        button.Width = 50;
-        button.MinWidth = 50;
-        button.Height = 64;
-        button.Padding = new Thickness(8, 10, 8, 10);
-        button.CornerRadius = new CornerRadius(14, 0, 0, 14);
+        var button = SecondaryButton(string.Empty);
+        button.Width = 60;
+        button.MinWidth = 60;
+        button.Height = 56;
+        button.Padding = new Thickness(0);
+        button.CornerRadius = new CornerRadius(14);
+        button.Content = new StackPanel
+        {
+            Orientation = Orientation.Vertical,
+            Spacing = 3,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                new SymbolIcon(icon) { Width = 18, Height = 18 },
+                new TextBlock { Text = text, FontSize = 10, HorizontalAlignment = HorizontalAlignment.Center },
+            },
+        };
         return button;
     }
 
@@ -2502,6 +2618,8 @@ public sealed class MainWindow : Window
         button.Background = active ? PrimaryBrush() : SurfaceBrush();
         button.Foreground = active ? OnPrimaryBrush() : SecondaryTextBrush();
         button.BorderBrush = active ? PrimaryBrush() : BorderBrush();
+        if (button.Content is UIElement content)
+            ApplyForeground(content, active ? OnPrimaryBrush() : SecondaryTextBrush());
     }
 
     private static Button SwitchButton(bool isOn)
@@ -2515,6 +2633,12 @@ public sealed class MainWindow : Window
             HorizontalAlignment = isOn ? HorizontalAlignment.Right : HorizontalAlignment.Left,
             Margin = new Thickness(3),
         };
+        var track = new Grid
+        {
+            Width = 44,
+            Height = 24,
+            Children = { knob },
+        };
         var button = new Button
         {
             Width = 46,
@@ -2524,8 +2648,15 @@ public sealed class MainWindow : Window
             Padding = new Thickness(0),
             CornerRadius = new CornerRadius(13),
             BorderThickness = new Thickness(1),
-            Content = new Grid { Children = { knob } },
+            Content = track,
         };
+        ApplySwitchState(button, isOn);
+        return button;
+    }
+
+    private static void ApplySwitchState(Button button, bool isOn)
+    {
+        button.Resources["SwitchIsOn"] = isOn;
         ApplyButtonResources(
             button,
             isOn ? PrimaryBrush() : SurfaceAltBrush(),
@@ -2536,7 +2667,11 @@ public sealed class MainWindow : Window
             new Thickness(1));
         button.Background = isOn ? PrimaryBrush() : SurfaceAltBrush();
         button.BorderBrush = isOn ? PrimaryBrush() : BorderBrush();
-        return button;
+        if (button.Content is Grid track && track.Children.FirstOrDefault() is Border knob)
+        {
+            knob.HorizontalAlignment = isOn ? HorizontalAlignment.Right : HorizontalAlignment.Left;
+            knob.Background = OnPrimaryBrush();
+        }
     }
 
     private static NumberBox StyledNumberBox(double value, double min, double max, double width)
