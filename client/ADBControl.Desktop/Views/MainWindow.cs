@@ -3,6 +3,7 @@ using ADBControl.Desktop.Services;
 using Microsoft.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Media.Imaging;
@@ -37,8 +38,12 @@ public sealed class MainWindow : Window
     private Button? _aiButton;
     private Button? _deviceNavButton;
     private DispatcherTimer? _devicePreviewTimer;
+    private DispatcherTimer? _deviceListPreviewTimer;
+    private readonly Dictionary<string, (Image Image, TextBlock Status)> _deviceCardPreviews = new();
     private DeviceModel? _currentDetailDevice;
     private DeviceModel? _pinnedDeviceNavDevice;
+    private bool _deviceListPreviewEnabled;
+    private int _deviceListPreviewSeconds = 3;
     private static bool s_darkTheme = true;
     private static bool s_followSystemTheme;
     private string _currentPage = "总览";
@@ -90,8 +95,8 @@ public sealed class MainWindow : Window
         _background = new GridBackground
         {
             Fill = AppBrush(),
-            GridLineBrush = GridLineBrush(),
-            GridSize = 24,
+            GridLineBrush = null,
+            GridSize = 0,
         };
         Grid.SetRowSpan(_background, 3);
         _root.Children.Add(_background);
@@ -325,6 +330,7 @@ public sealed class MainWindow : Window
     private void Navigate(string page)
     {
         StopDevicePreview();
+        StopDeviceListPreview();
         _currentDetailDevice = null;
         UpdateDeviceNav(_pinnedDeviceNavDevice);
         _currentPage = page;
@@ -358,20 +364,20 @@ public sealed class MainWindow : Window
     private static void ApplyNavButtonState(Button button, bool active)
     {
         button.Resources["NavActive"] = active;
-        var background = active ? PrimaryBrush() : TransparentBrush();
         var foreground = active ? OnPrimaryBrush() : SecondaryTextBrush();
-        button.Background = background;
+        button.Background = TransparentBrush();
         button.Foreground = foreground;
         ApplyButtonResources(
             button,
-            background,
+            TransparentBrush(),
             foreground,
-            active ? background : HoverBrush(),
-            active ? background : SurfaceAltBrush(),
-            BorderLightBrush(),
+            TransparentBrush(),
+            TransparentBrush(),
+            TransparentBrush(),
             new Thickness(0));
         if (button.DataContext is NavButtonInfo info)
             button.Content = NavButtonContent(info, active, foreground);
+        SetTaggedBorder(button.Content as UIElement, "selection-surface", active ? PrimaryBrush() : TransparentBrush());
         if (button.Content is UIElement content)
             ApplyForeground(content, foreground);
         button.UpdateLayout();
@@ -388,25 +394,59 @@ public sealed class MainWindow : Window
         var icon = info.UsesDeviceGlyph
             ? DeviceSolarIcon(info.IsTablet, foreground, active)
             : NavIcon(info.Symbol, active, foreground);
-        return new StackPanel
+        return new Grid
         {
-            Orientation = Orientation.Vertical,
-            Spacing = 4,
-            VerticalAlignment = VerticalAlignment.Center,
-            HorizontalAlignment = HorizontalAlignment.Center,
+            Width = 56,
+            Height = 56,
             Children =
             {
-                icon,
-                new TextBlock
+                new Border
                 {
-                    Text = info.Text,
-                    FontSize = 10,
+                    Tag = "selection-surface",
+                    CornerRadius = new CornerRadius(16),
+                    Background = active ? PrimaryBrush() : TransparentBrush(),
+                },
+                new StackPanel
+                {
+                    Orientation = Orientation.Vertical,
+                    Spacing = 4,
+                    VerticalAlignment = VerticalAlignment.Center,
                     HorizontalAlignment = HorizontalAlignment.Center,
-                    TextTrimming = TextTrimming.CharacterEllipsis,
-                    MaxWidth = 50,
+                    Children =
+                    {
+                        icon,
+                        new TextBlock
+                        {
+                            Text = info.Text,
+                            FontSize = 10,
+                            HorizontalAlignment = HorizontalAlignment.Center,
+                            TextTrimming = TextTrimming.CharacterEllipsis,
+                            MaxWidth = 50,
+                        },
+                    },
                 },
             },
         };
+    }
+
+    private static void SetTaggedBorder(UIElement? element, object tag, Brush background)
+    {
+        switch (element)
+        {
+            case Border border when Equals(border.Tag, tag):
+                border.Background = background;
+                break;
+            case Border border when border.Child is not null:
+                SetTaggedBorder(border.Child, tag, background);
+                break;
+            case Panel panel:
+                foreach (var child in panel.Children)
+                    SetTaggedBorder(child, tag, background);
+                break;
+            case ContentControl control when control.Content is UIElement child:
+                SetTaggedBorder(child, tag, background);
+                break;
+        }
     }
 
     private static void ApplyForeground(UIElement element, Brush foreground)
@@ -446,6 +486,7 @@ public sealed class MainWindow : Window
     private void ShowOverview()
     {
         _contentHost.Children.Clear();
+        _deviceCardPreviews.Clear();
         var panel = PageStack();
         panel.Children.Add(Header("欢迎使用 ADBControl", "设备连接、任务执行与 AI Agent 都可以从底部导航进入。"));
         var cards = new Grid { ColumnSpacing = 12 };
@@ -462,12 +503,15 @@ public sealed class MainWindow : Window
     private void ShowDevices()
     {
         _contentHost.Children.Clear();
+        _deviceCardPreviews.Clear();
         var panel = PageStack();
         var toolbar = new Grid
         {
+            ColumnSpacing = 10,
             ColumnDefinitions =
             {
                 new ColumnDefinition(),
+                new ColumnDefinition { Width = GridLength.Auto },
                 new ColumnDefinition { Width = GridLength.Auto },
             },
         };
@@ -483,9 +527,39 @@ public sealed class MainWindow : Window
         filters.Children.Add(SecondaryButton("仅伴侣 APK"));
         toolbar.Children.Add(filters);
 
+        var previewControls = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var previewSeconds = RoundedTextBox("3");
+        previewSeconds.Text = _deviceListPreviewSeconds.ToString();
+        previewSeconds.Width = 72;
+        previewSeconds.InputScope = new InputScope
+        {
+            Names = { new InputScopeName(InputScopeNameValue.Number) },
+        };
+        previewSeconds.BeforeTextChanging += (_, args) =>
+        {
+            args.Cancel = args.NewText.Any(ch => !char.IsDigit(ch));
+        };
+        previewControls.Children.Add(previewSeconds);
+        var previewToggle = SecondaryButton(_deviceListPreviewEnabled ? "关闭预览" : "开启预览");
+        previewToggle.Click += (_, _) =>
+        {
+            if (int.TryParse(previewSeconds.Text, out var seconds) && seconds > 0)
+                _deviceListPreviewSeconds = seconds;
+            _deviceListPreviewEnabled = !_deviceListPreviewEnabled;
+            ShowDevices();
+        };
+        previewControls.Children.Add(previewToggle);
+        Grid.SetColumn(previewControls, 1);
+        toolbar.Children.Add(previewControls);
+
         var add = PrimaryButton("+ 添加设备");
         add.Click += async (_, _) => await ShowAddDeviceDialogAsync();
-        Grid.SetColumn(add, 1);
+        Grid.SetColumn(add, 2);
         toolbar.Children.Add(add);
         panel.Children.Add(toolbar);
 
@@ -533,6 +607,10 @@ public sealed class MainWindow : Window
             foreach (var device in _devices.Devices)
                 list.Children.Add(DeviceCard(device));
             panel.Children.Add(list);
+            if (_deviceListPreviewEnabled)
+                StartDeviceListPreview();
+            else
+                StopDeviceListPreview();
         }
 
         _contentHost.Children.Add(PageScroller(panel));
@@ -587,6 +665,44 @@ public sealed class MainWindow : Window
         head.Children.Add(status);
         root.Children.Add(head);
 
+        if (_deviceListPreviewEnabled && device.IsConnected)
+        {
+            var previewImage = new Image
+            {
+                Stretch = Stretch.UniformToFill,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                VerticalAlignment = VerticalAlignment.Stretch,
+            };
+            var previewStatus = new TextBlock
+            {
+                Text = "等待截图...",
+                FontSize = 12,
+                Foreground = SecondaryTextBrush(),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            var preview = new Border
+            {
+                Width = 132,
+                Height = 286,
+                CornerRadius = new CornerRadius(18),
+                BorderBrush = BorderLightBrush(),
+                BorderThickness = new Thickness(1),
+                Background = ShellBrush(),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Child = new Grid
+                {
+                    Children =
+                    {
+                        previewImage,
+                        previewStatus,
+                    },
+                },
+            };
+            root.Children.Add(preview);
+            _deviceCardPreviews[device.DeviceId] = (previewImage, previewStatus);
+        }
+
         var meta = new StackPanel { Spacing = 4 };
         meta.Children.Add(BodyText($"品牌: {device.Brand}"));
         meta.Children.Add(BodyText($"型号: {device.Model}"));
@@ -607,19 +723,40 @@ public sealed class MainWindow : Window
         });
         root.Children.Add(meta);
 
+        var card = new Border
+        {
+            CornerRadius = new CornerRadius(20),
+            BorderBrush = BorderBrush(),
+            BorderThickness = new Thickness(1),
+            Background = SurfaceBrush(),
+            Padding = new Thickness(20),
+            Child = root,
+        };
         var button = new Button
         {
-            Width = 280,
+            Width = 320,
             Margin = new Thickness(0, 0, 16, 16),
-            Background = SurfaceBrush(),
-            BorderBrush = BorderBrush(),
+            Background = TransparentBrush(),
+            BorderBrush = TransparentBrush(),
             CornerRadius = new CornerRadius(20),
-            Padding = new Thickness(20),
+            Padding = new Thickness(0),
             HorizontalContentAlignment = HorizontalAlignment.Stretch,
-            BorderThickness = new Thickness(1),
-            Content = root,
+            BorderThickness = new Thickness(0),
+            Content = card,
         };
-        ApplyButtonResources(button, SurfaceBrush(), PrimaryTextBrush(), HoverBrush(), SurfaceAltBrush(), BorderBrush(), new Thickness(1));
+        ApplyButtonResources(button, TransparentBrush(), PrimaryTextBrush(), TransparentBrush(), TransparentBrush(), TransparentBrush(), new Thickness(0));
+        button.PointerEntered += (_, _) =>
+        {
+            card.BorderBrush = TransparentBrush();
+            card.Shadow = new ThemeShadow();
+            card.Translation = new System.Numerics.Vector3(0, 0, 24);
+        };
+        button.PointerExited += (_, _) =>
+        {
+            card.BorderBrush = BorderBrush();
+            card.Shadow = null;
+            card.Translation = System.Numerics.Vector3.Zero;
+        };
         button.Click += (_, _) => ShowDeviceDetail(device);
         return button;
     }
@@ -627,6 +764,7 @@ public sealed class MainWindow : Window
     private void ShowDeviceDetail(DeviceModel device)
     {
         StopDevicePreview();
+        StopDeviceListPreview();
         _currentDetailDevice = device;
         _pinnedDeviceNavDevice = device;
         UpdateDeviceNav(device);
@@ -634,7 +772,6 @@ public sealed class MainWindow : Window
             ApplyNavButtonState(button, false);
         _contentHost.Children.Clear();
         var panel = PageStack();
-        panel.Margin = new Thickness(20);
         var headerRow = new Grid
         {
             ColumnSpacing = 14,
@@ -660,7 +797,7 @@ public sealed class MainWindow : Window
             ColumnDefinitions =
             {
                 new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
-                new ColumnDefinition { Width = new GridLength(420) },
+                new ColumnDefinition { Width = new GridLength(400) },
             },
         };
 
@@ -680,7 +817,7 @@ public sealed class MainWindow : Window
         };
         var previewLayer = new Grid
         {
-            MinHeight = 520,
+            MinHeight = 420,
             Children =
             {
                 previewImage,
@@ -724,11 +861,10 @@ public sealed class MainWindow : Window
     {
         var contentHost = new Border
         {
-            Background = SurfaceAltBrush(),
-            BorderBrush = BorderLightBrush(),
-            BorderThickness = new Thickness(1),
+            Background = TransparentBrush(),
+            BorderThickness = new Thickness(0),
             CornerRadius = new CornerRadius(14, 0, 0, 14),
-            Padding = new Thickness(12),
+            Padding = new Thickness(0),
         };
         var tabs = new StackPanel
         {
@@ -1184,6 +1320,55 @@ public sealed class MainWindow : Window
         _devicePreviewTimer = null;
     }
 
+    private void StartDeviceListPreview()
+    {
+        StopDeviceListPreview();
+        if (_deviceCardPreviews.Count == 0)
+            return;
+
+        _deviceListPreviewTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(Math.Max(1, _deviceListPreviewSeconds)),
+        };
+        _deviceListPreviewTimer.Tick += async (_, _) => await RefreshDeviceListPreviewsAsync();
+        _deviceListPreviewTimer.Start();
+        _ = RefreshDeviceListPreviewsAsync();
+    }
+
+    private void StopDeviceListPreview()
+    {
+        _deviceListPreviewTimer?.Stop();
+        _deviceListPreviewTimer = null;
+    }
+
+    private async Task RefreshDeviceListPreviewsAsync()
+    {
+        foreach (var device in _devices.Devices.Where(device => _deviceCardPreviews.ContainsKey(device.DeviceId)).ToList())
+            await RefreshDeviceCardPreviewAsync(device);
+    }
+
+    private async Task RefreshDeviceCardPreviewAsync(DeviceModel device)
+    {
+        if (!_deviceCardPreviews.TryGetValue(device.DeviceId, out var target))
+            return;
+
+        try
+        {
+            target.Status.Text = "刷新中...";
+            target.Status.Visibility = Visibility.Visible;
+            var png = await _adb.ScreencapPngAsync(device.DeviceId);
+            var path = Path.Combine(Path.GetTempPath(), $"adbcontrol-card-preview-{SanitizeFileName(device.DeviceId)}.png");
+            await File.WriteAllBytesAsync(path, png);
+            target.Image.Source = new BitmapImage(new Uri(path));
+            target.Status.Visibility = Visibility.Collapsed;
+        }
+        catch (Exception ex)
+        {
+            target.Status.Visibility = Visibility.Visible;
+            target.Status.Text = $"截图失败：{ex.Message}";
+        }
+    }
+
     private async Task ShowTextDialogAsync(string title, string text)
     {
         var box = new TextBox
@@ -1411,7 +1596,8 @@ public sealed class MainWindow : Window
         if (_background is not null)
         {
             _background.Fill = AppBrush();
-            _background.GridLineBrush = GridLineBrush();
+            _background.GridLineBrush = null;
+            _background.GridSize = 0;
             _background.Refresh();
         }
         foreach (var dock in new[] { _navDock, _deviceDock, _aiDock })
@@ -1490,7 +1676,7 @@ public sealed class MainWindow : Window
         _aiPanel.CornerRadius = new CornerRadius(20);
         _aiPanel.BorderBrush = BorderLightBrush();
         _aiPanel.BorderThickness = new Thickness(1);
-        _aiPanel.Background = SurfaceBrush();
+        _aiPanel.Background = FrostedSurfaceBrush();
         _aiPanel.RenderTransform = new TranslateTransform { X = 32 };
         _aiPanel.Opacity = 0;
         Canvas.SetZIndex(_aiPanel, 20);
@@ -1622,7 +1808,7 @@ public sealed class MainWindow : Window
 
     private void RefreshAiPanelTheme()
     {
-        _aiPanel.Background = SurfaceBrush();
+        _aiPanel.Background = FrostedSurfaceBrush();
         _aiPanel.BorderBrush = BorderLightBrush();
         _aiInput.Background = TransparentBrush();
         _aiInput.BorderBrush = TransparentBrush();
@@ -2199,57 +2385,73 @@ public sealed class MainWindow : Window
         SelectMode("wireless");
         SelectWirelessStage("new");
 
-        var dialog = Dialog(string.Empty, new ScrollViewer
+        ContentDialog? dialog = null;
+        var body = new StackPanel
+        {
+            Width = 432,
+            Spacing = 14,
+        };
+        body.Children.Add(new ScrollViewer
         {
             Content = stack,
             MaxHeight = 456,
             Padding = new Thickness(0, 0, 12, 0),
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-        }, "立即添加");
-        dialog.PrimaryButtonClick += async (_, args) =>
+        });
+        var actions = new Grid
         {
-            var deferral = args.GetDeferral();
-            try
+            ColumnSpacing = 10,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            ColumnDefinitions =
             {
-                args.Cancel = true;
-                if (selectedMode == "usb")
+                new ColumnDefinition { Width = GridLength.Auto },
+                new ColumnDefinition { Width = GridLength.Auto },
+            },
+        };
+        var cancel = SecondaryButton("取消");
+        var submit = PrimaryButton("立即添加");
+        actions.Children.Add(cancel);
+        Grid.SetColumn(submit, 1);
+        actions.Children.Add(submit);
+        body.Children.Add(actions);
+
+        cancel.Click += (_, _) => dialog?.Hide();
+        submit.Click += async (_, _) =>
+        {
+            if (selectedMode == "usb")
+            {
+                if (selectedUsbDevice is null)
                 {
-                    if (selectedUsbDevice is null)
-                    {
-                        usbStatus.Text = "请先扫描并选择一台 USB ADB 设备。";
-                        return;
-                    }
-                    _devices.SaveUsbDevice(selectedUsbDevice, string.Empty);
-                    Notify("设备已添加", selectedUsbDevice.DisplayName, InfoBarSeverity.Success);
-                    dialog.Hide();
-                    ShowDevices();
+                    usbStatus.Text = "请先扫描并选择一台 USB ADB 设备。";
                     return;
                 }
-
-                if (!int.TryParse(connectPort.Text, out var port))
-                {
-                    wirelessStatus.Text = "请填写有效连接端口。";
-                    return;
-                }
-
-                var addResult = await _devices.ConnectAndSaveAsync(connectIp.Text.Trim(), port, string.Empty);
-                if (addResult.Success || addResult.Stdout.Contains("connected", StringComparison.OrdinalIgnoreCase))
-                {
-                    Notify("设备已添加", $"{connectIp.Text}:{port}", InfoBarSeverity.Success);
-                    dialog.Hide();
-                    ShowDevices();
-                }
-                else
-                {
-                    wirelessStatus.Text = FailureText(addResult);
-                }
+                _devices.SaveUsbDevice(selectedUsbDevice, string.Empty);
+                Notify("设备已添加", selectedUsbDevice.DisplayName, InfoBarSeverity.Success);
+                dialog?.Hide();
+                ShowDevices();
+                return;
             }
-            finally
+
+            if (!int.TryParse(connectPort.Text, out var port))
             {
-                deferral.Complete();
+                wirelessStatus.Text = "请填写有效连接端口。";
+                return;
+            }
+
+            var addResult = await _devices.ConnectAndSaveAsync(connectIp.Text.Trim(), port, string.Empty);
+            if (addResult.Success || addResult.Stdout.Contains("connected", StringComparison.OrdinalIgnoreCase))
+            {
+                Notify("设备已添加", $"{connectIp.Text}:{port}", InfoBarSeverity.Success);
+                dialog?.Hide();
+                ShowDevices();
+            }
+            else
+            {
+                wirelessStatus.Text = FailureText(addResult);
             }
         };
+        dialog = DialogChrome(string.Empty, body);
         await dialog.ShowAsync();
     }
 
@@ -2449,7 +2651,7 @@ public sealed class MainWindow : Window
         return new StackPanel
         {
             Spacing = 16,
-            Margin = new Thickness(24),
+            Margin = new Thickness(16, 12, 16, 16),
         };
     }
 
@@ -2590,18 +2792,33 @@ public sealed class MainWindow : Window
         button.Height = 56;
         button.Padding = new Thickness(0);
         button.CornerRadius = new CornerRadius(14);
-        button.Content = new StackPanel
+        button.Content = new Grid
         {
-            Orientation = Orientation.Vertical,
-            Spacing = 3,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
+            Width = 60,
+            Height = 56,
             Children =
             {
-                new SymbolIcon(icon) { Width = 18, Height = 18 },
-                new TextBlock { Text = text, FontSize = 10, HorizontalAlignment = HorizontalAlignment.Center },
+                new Border
+                {
+                    Tag = "selection-surface",
+                    CornerRadius = new CornerRadius(14),
+                    Background = TransparentBrush(),
+                },
+                new StackPanel
+                {
+                    Orientation = Orientation.Vertical,
+                    Spacing = 3,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Children =
+                    {
+                        new SymbolIcon(icon) { Width = 18, Height = 18 },
+                        new TextBlock { Text = text, FontSize = 10, HorizontalAlignment = HorizontalAlignment.Center },
+                    },
+                },
             },
         };
+        ApplyButtonResources(button, TransparentBrush(), SecondaryTextBrush(), TransparentBrush(), TransparentBrush(), TransparentBrush(), new Thickness(0));
         return button;
     }
 
@@ -2609,15 +2826,16 @@ public sealed class MainWindow : Window
     {
         ApplyButtonResources(
             button,
-            active ? PrimaryBrush() : SurfaceBrush(),
+            TransparentBrush(),
             active ? OnPrimaryBrush() : SecondaryTextBrush(),
-            active ? PrimaryBrush() : HoverBrush(),
-            active ? PrimaryBrush() : SurfaceAltBrush(),
-            active ? PrimaryBrush() : BorderBrush(),
-            new Thickness(1));
-        button.Background = active ? PrimaryBrush() : SurfaceBrush();
+            TransparentBrush(),
+            TransparentBrush(),
+            TransparentBrush(),
+            new Thickness(0));
+        button.Background = TransparentBrush();
         button.Foreground = active ? OnPrimaryBrush() : SecondaryTextBrush();
-        button.BorderBrush = active ? PrimaryBrush() : BorderBrush();
+        button.BorderBrush = TransparentBrush();
+        SetTaggedBorder(button.Content as UIElement, "selection-surface", active ? PrimaryBrush() : TransparentBrush());
         if (button.Content is UIElement content)
             ApplyForeground(content, active ? OnPrimaryBrush() : SecondaryTextBrush());
     }
@@ -2777,7 +2995,7 @@ public sealed class MainWindow : Window
 
     private static ScrollViewer PageScroller(UIElement content)
     {
-        return new ScrollViewer
+        var viewer = new ScrollViewer
         {
             Content = content,
             VerticalScrollMode = ScrollMode.Enabled,
@@ -2787,6 +3005,13 @@ public sealed class MainWindow : Window
             IsTabStop = true,
             Padding = new Thickness(0),
         };
+        viewer.PointerWheelChanged += (_, e) =>
+        {
+            var delta = e.GetCurrentPoint(viewer).Properties.MouseWheelDelta;
+            viewer.ChangeView(null, Math.Max(0, viewer.VerticalOffset - delta), null, true);
+            e.Handled = true;
+        };
+        return viewer;
     }
 
     private static TextBlock BodyText(string text)
@@ -2894,6 +3119,13 @@ public sealed class MainWindow : Window
         TintOpacity = s_darkTheme ? 0.34 : 0.58,
         TintLuminosityOpacity = s_darkTheme ? 0.38 : 0.72,
         FallbackColor = s_darkTheme ? ColorHelper.FromArgb(218, 30, 41, 59) : ColorHelper.FromArgb(226, 255, 255, 255),
+    };
+    private static Brush FrostedSurfaceBrush() => new AcrylicBrush
+    {
+        TintColor = s_darkTheme ? ColorHelper.FromArgb(255, 30, 41, 59) : Colors.White,
+        TintOpacity = s_darkTheme ? 0.62 : 0.72,
+        TintLuminosityOpacity = s_darkTheme ? 0.55 : 0.85,
+        FallbackColor = s_darkTheme ? ColorHelper.FromArgb(238, 30, 41, 59) : ColorHelper.FromArgb(244, 255, 255, 255),
     };
     private static SolidColorBrush PrimaryBrush() => new(ColorHelper.FromArgb(255, 34, 197, 94));
     private static SolidColorBrush PrimaryHoverBrush() => new(ColorHelper.FromArgb(255, 22, 163, 74));
