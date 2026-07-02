@@ -59,6 +59,7 @@ public sealed class MainWindow : Window
         ExtendsContentIntoTitleBar = true;
         Content = _root;
         BuildShell();
+        ApplyTitleBarTheme();
         Navigate("总览");
     }
 
@@ -95,8 +96,8 @@ public sealed class MainWindow : Window
         _background = new GridBackground
         {
             Fill = AppBrush(),
-            GridLineBrush = null,
-            GridSize = 0,
+            GridLineBrush = GridLineBrush(),
+            GridSize = 56,
         };
         Grid.SetRowSpan(_background, 3);
         _root.Children.Add(_background);
@@ -1596,10 +1597,11 @@ public sealed class MainWindow : Window
         if (_background is not null)
         {
             _background.Fill = AppBrush();
-            _background.GridLineBrush = null;
-            _background.GridSize = 0;
+            _background.GridLineBrush = GridLineBrush();
+            _background.GridSize = 56;
             _background.Refresh();
         }
+        ApplyTitleBarTheme();
         foreach (var dock in new[] { _navDock, _deviceDock, _aiDock })
         {
             if (dock is null)
@@ -1614,6 +1616,29 @@ public sealed class MainWindow : Window
         if (_aiButton is not null)
             ApplyNavButtonState(_aiButton, _aiPanel.Visibility == Visibility.Visible);
         RefreshAiPanelTheme();
+    }
+
+    private void ApplyTitleBarTheme()
+    {
+        var titleBar = AppWindow.TitleBar;
+        var foreground = s_darkTheme
+            ? ColorHelper.FromArgb(255, 248, 250, 252)
+            : ColorHelper.FromArgb(255, 15, 23, 42);
+        var hoverBackground = s_darkTheme
+            ? ColorHelper.FromArgb(90, 51, 65, 85)
+            : ColorHelper.FromArgb(120, 226, 232, 240);
+        var pressedBackground = s_darkTheme
+            ? ColorHelper.FromArgb(150, 51, 65, 85)
+            : ColorHelper.FromArgb(190, 203, 213, 225);
+
+        titleBar.ButtonForegroundColor = foreground;
+        titleBar.ButtonHoverForegroundColor = foreground;
+        titleBar.ButtonPressedForegroundColor = foreground;
+        titleBar.ButtonInactiveForegroundColor = foreground;
+        titleBar.ButtonBackgroundColor = Colors.Transparent;
+        titleBar.ButtonInactiveBackgroundColor = Colors.Transparent;
+        titleBar.ButtonHoverBackgroundColor = hoverBackground;
+        titleBar.ButtonPressedBackgroundColor = pressedBackground;
     }
 
     private UIElement SettingsCard()
@@ -3005,12 +3030,13 @@ public sealed class MainWindow : Window
             IsTabStop = true,
             Padding = new Thickness(0),
         };
-        viewer.PointerWheelChanged += (_, e) =>
+        PointerEventHandler wheelHandler = (_, e) =>
         {
             var delta = e.GetCurrentPoint(viewer).Properties.MouseWheelDelta;
             viewer.ChangeView(null, Math.Max(0, viewer.VerticalOffset - delta), null, true);
             e.Handled = true;
         };
+        viewer.AddHandler(UIElement.PointerWheelChangedEvent, wheelHandler, true);
         return viewer;
     }
 
