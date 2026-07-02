@@ -7,6 +7,7 @@ using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Media.Imaging;
+using System.Runtime.InteropServices;
 using Windows.Storage.Pickers;
 using WinRT.Interop;
 
@@ -32,6 +33,9 @@ public sealed class MainWindow : Window
     private readonly List<Button> _navButtons = new();
 
     private ScrollViewer? _activePageScroller;
+    private IntPtr _windowHandle;
+    private IntPtr _originalWndProc;
+    private WndProcDelegate? _wndProcDelegate;
     private GridBackground? _background;
     private Border? _navDock;
     private Border? _deviceDock;
@@ -60,8 +64,10 @@ public sealed class MainWindow : Window
         ExtendsContentIntoTitleBar = true;
         Content = _root;
         BuildShell();
+        InstallNativeWheelHook();
         ApplyTitleBarTheme();
         Navigate("总览");
+        Closed += (_, _) => RestoreNativeWheelHook();
     }
 
     private FrameworkElement BuildTitleBar()
@@ -3058,11 +3064,58 @@ public sealed class MainWindow : Window
         e.Handled = true;
     }
 
+    private void InstallNativeWheelHook()
+    {
+        _windowHandle = WindowNative.GetWindowHandle(this);
+        if (_windowHandle == IntPtr.Zero || _originalWndProc != IntPtr.Zero)
+            return;
+
+        _wndProcDelegate = NativeWindowProc;
+        var newProc = Marshal.GetFunctionPointerForDelegate(_wndProcDelegate);
+        _originalWndProc = SetWindowLongPtr(_windowHandle, GwlWndProc, newProc);
+    }
+
+    private void RestoreNativeWheelHook()
+    {
+        if (_windowHandle == IntPtr.Zero || _originalWndProc == IntPtr.Zero)
+            return;
+
+        SetWindowLongPtr(_windowHandle, GwlWndProc, _originalWndProc);
+        _originalWndProc = IntPtr.Zero;
+        _wndProcDelegate = null;
+    }
+
+    private IntPtr NativeWindowProc(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam)
+    {
+        if (message == WmMouseWheel && _activePageScroller is not null)
+        {
+            var delta = unchecked((short)((wParam.ToInt64() >> 16) & 0xffff));
+            if (delta != 0)
+            {
+                ScrollPageByWheelDelta(_activePageScroller, delta);
+                return IntPtr.Zero;
+            }
+        }
+
+        return CallWindowProc(_originalWndProc, hwnd, message, wParam, lParam);
+    }
+
     private static void ScrollPageByWheelDelta(ScrollViewer viewer, int delta)
     {
         var target = Math.Clamp(viewer.VerticalOffset - delta, 0, viewer.ScrollableHeight);
         viewer.ChangeView(null, target, null, true);
     }
+
+    private const int GwlWndProc = -4;
+    private const uint WmMouseWheel = 0x020A;
+
+    private delegate IntPtr WndProcDelegate(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
+    private static extern IntPtr SetWindowLongPtr(IntPtr hwnd, int index, IntPtr newLong);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr CallWindowProc(IntPtr previousProc, IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
 
     private static TextBlock BodyText(string text)
     {
