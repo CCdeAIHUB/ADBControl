@@ -18,6 +18,7 @@ public sealed class MainWindow : Window
 
     private readonly Grid _root = new();
     private readonly Grid _contentHost = new();
+    private readonly Border _contentFrame = new();
     private readonly Border _aiPanel = new();
     private readonly StackPanel _messageList = new();
     private readonly StackPanel _pendingAttachmentList = new();
@@ -30,8 +31,12 @@ public sealed class MainWindow : Window
 
     private GridBackground? _background;
     private Border? _navDock;
+    private Border? _deviceDock;
     private Border? _aiDock;
+    private Button? _aiButton;
+    private Button? _deviceNavButton;
     private DispatcherTimer? _devicePreviewTimer;
+    private DeviceModel? _currentDetailDevice;
     private static bool s_darkTheme = true;
     private string _currentPage = "总览";
 
@@ -91,9 +96,13 @@ public sealed class MainWindow : Window
         _root.Children.Add(titleBar);
         SetTitleBar(titleBar);
 
+        _contentFrame.Margin = new Thickness(10, 8, 10, 8);
+        _contentFrame.CornerRadius = new CornerRadius(16);
+        _contentFrame.Background = AppBrush();
+        _contentFrame.Child = _contentHost;
         _contentHost.Padding = new Thickness(0);
-        Grid.SetRow(_contentHost, 1);
-        _root.Children.Add(_contentHost);
+        Grid.SetRow(_contentFrame, 1);
+        _root.Children.Add(_contentFrame);
 
         var bottomBar = BuildBottomNavigation();
         Grid.SetRow(bottomBar, 2);
@@ -115,10 +124,12 @@ public sealed class MainWindow : Window
     {
         var shell = new Grid
         {
-            Padding = new Thickness(12, 0, 12, 12),
+            Padding = new Thickness(12, 2, 12, 12),
             ColumnDefinitions =
             {
                 new ColumnDefinition(),
+                new ColumnDefinition { Width = GridLength.Auto },
+                new ColumnDefinition { Width = GridLength.Auto },
                 new ColumnDefinition { Width = GridLength.Auto },
                 new ColumnDefinition(),
             },
@@ -148,6 +159,21 @@ public sealed class MainWindow : Window
         Grid.SetColumn(_navDock, 1);
         shell.Children.Add(_navDock);
 
+        _deviceDock = new Border
+        {
+            CornerRadius = new CornerRadius(20),
+            BorderBrush = BorderLightBrush(),
+            BorderThickness = new Thickness(1),
+            Background = NavBrush(),
+            Padding = new Thickness(8, 6, 8, 6),
+            Margin = new Thickness(8, 0, 0, 0),
+            Visibility = Visibility.Collapsed,
+        };
+        _deviceNavButton = IconTextButton("设备", DeviceSolarIcon(false));
+        _deviceDock.Child = _deviceNavButton;
+        Grid.SetColumn(_deviceDock, 2);
+        shell.Children.Add(_deviceDock);
+
         _aiDock = new Border
         {
             CornerRadius = new CornerRadius(20),
@@ -158,10 +184,10 @@ public sealed class MainWindow : Window
             Margin = new Thickness(8, 0, 0, 0),
             HorizontalAlignment = HorizontalAlignment.Left,
         };
-        var ai = IconTextButton("AI", Symbol.Message);
-        ai.Click += (_, _) => ToggleAiPanel();
-        _aiDock.Child = ai;
-        Grid.SetColumn(_aiDock, 2);
+        _aiButton = IconTextButton("AI", Symbol.Message);
+        _aiButton.Click += (_, _) => ToggleAiPanel();
+        _aiDock.Child = _aiButton;
+        Grid.SetColumn(_aiDock, 3);
         shell.Children.Add(_aiDock);
         return shell;
     }
@@ -176,6 +202,11 @@ public sealed class MainWindow : Window
     }
 
     private static Button IconTextButton(string text, Symbol symbol)
+    {
+        return IconTextButton(text, new SymbolIcon(symbol) { Width = 22, Height = 22 });
+    }
+
+    private static Button IconTextButton(string text, UIElement icon)
     {
         return new Button
         {
@@ -194,27 +225,66 @@ public sealed class MainWindow : Window
                 HorizontalAlignment = HorizontalAlignment.Center,
                 Children =
                 {
-                    new SymbolIcon(symbol) { Width = 22, Height = 22 },
+                    icon,
                     new TextBlock { Text = text, FontSize = 10, HorizontalAlignment = HorizontalAlignment.Center },
                 },
             },
         };
     }
 
+    private static UIElement DeviceSolarIcon(bool tablet, Brush? foreground = null)
+    {
+        var brush = foreground ?? SecondaryTextBrush();
+        var shell = new Grid
+        {
+            Width = 22,
+            Height = 22,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var outline = new Border
+        {
+            Tag = "solar-icon",
+            Width = tablet ? 18 : 12,
+            Height = 20,
+            CornerRadius = new CornerRadius(tablet ? 3 : 4),
+            BorderBrush = brush,
+            BorderThickness = new Thickness(1.6),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var inner = new Grid();
+        inner.Children.Add(new Border
+        {
+            Tag = "solar-icon",
+            Width = tablet ? 4 : 3,
+            Height = 1.5,
+            CornerRadius = new CornerRadius(1),
+            Background = brush,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Margin = new Thickness(0, 0, 0, 2.4),
+        });
+        outline.Child = inner;
+        shell.Children.Add(outline);
+        return shell;
+    }
+
     private void Navigate(string page)
     {
         StopDevicePreview();
+        _currentDetailDevice = null;
+        UpdateDeviceNav(null);
         _currentPage = page;
         _aiPanel.Visibility = Visibility.Collapsed;
         _root.Background = AppBrush();
         foreach (var button in _navButtons)
         {
             var active = string.Equals(button.Tag as string, page, StringComparison.Ordinal);
-            button.Background = new SolidColorBrush(active
-                ? ColorHelper.FromArgb(255, 34, 197, 94)
-                : Colors.Transparent);
-            button.Foreground = active ? OnPrimaryBrush() : SecondaryTextBrush();
+            ApplyNavButtonState(button, active);
         }
+        if (_aiButton is not null)
+            ApplyNavButtonState(_aiButton, false);
 
         switch (page)
         {
@@ -229,6 +299,54 @@ public sealed class MainWindow : Window
                 break;
             case "设置":
                 ShowSettings();
+                break;
+        }
+    }
+
+    private static void ApplyNavButtonState(Button button, bool active)
+    {
+        var background = active ? PrimaryBrush() : TransparentBrush();
+        var foreground = active ? OnPrimaryBrush() : SecondaryTextBrush();
+        button.Background = background;
+        button.Foreground = foreground;
+        button.Resources["ButtonBackgroundPointerOver"] = background;
+        button.Resources["ButtonBackgroundPressed"] = background;
+        button.Resources["ButtonForegroundPointerOver"] = foreground;
+        button.Resources["ButtonForegroundPressed"] = foreground;
+        if (button.Content is UIElement content)
+            ApplyForeground(content, foreground);
+    }
+
+    private static void ApplyForeground(UIElement element, Brush foreground)
+    {
+        switch (element)
+        {
+            case TextBlock text:
+                text.Foreground = foreground;
+                break;
+            case IconElement icon:
+                icon.Foreground = foreground;
+                break;
+            case Panel panel:
+                foreach (var child in panel.Children)
+                    ApplyForeground(child, foreground);
+                break;
+            case Border border when border.Child is not null:
+                if (Equals(border.Tag, "solar-icon"))
+                {
+                    border.BorderBrush = foreground;
+                    if (border.Background is not null)
+                        border.Background = foreground;
+                }
+                ApplyForeground(border.Child, foreground);
+                break;
+            case Border border:
+                if (Equals(border.Tag, "solar-icon"))
+                {
+                    border.BorderBrush = foreground;
+                    if (border.Background is not null)
+                        border.Background = foreground;
+                }
                 break;
         }
     }
@@ -349,13 +467,7 @@ public sealed class MainWindow : Window
             Height = 40,
             CornerRadius = new CornerRadius(20),
             Background = PrimaryLightBrush(),
-            Child = new TextBlock
-            {
-                Text = "📱",
-                FontSize = 18,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center,
-            },
+            Child = DeviceSolarIcon(IsTabletDevice(device), PrimaryBrush()),
         });
 
         var info = new StackPanel { Spacing = 2, Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
@@ -425,6 +537,10 @@ public sealed class MainWindow : Window
     private void ShowDeviceDetail(DeviceModel device)
     {
         StopDevicePreview();
+        _currentDetailDevice = device;
+        UpdateDeviceNav(device);
+        foreach (var button in _navButtons)
+            ApplyNavButtonState(button, false);
         _contentHost.Children.Clear();
         var panel = PageStack();
         var back = new Button
@@ -519,6 +635,63 @@ public sealed class MainWindow : Window
         panel.Children.Add(layout);
         _contentHost.Children.Add(new ScrollViewer { Content = panel });
         StartDevicePreview(device, previewImage, previewStatus);
+    }
+
+    private void UpdateDeviceNav(DeviceModel? device)
+    {
+        if (_deviceDock is null || _deviceNavButton is null)
+            return;
+
+        if (device is null)
+        {
+            _deviceDock.Visibility = Visibility.Collapsed;
+            ApplyNavButtonState(_deviceNavButton, false);
+            return;
+        }
+
+        _deviceDock.Visibility = Visibility.Visible;
+        _deviceDock.Background = NavBrush();
+        _deviceDock.BorderBrush = BorderLightBrush();
+        _deviceNavButton.Content = new StackPanel
+        {
+            Orientation = Orientation.Vertical,
+            Spacing = 4,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Children =
+            {
+                DeviceSolarIcon(IsTabletDevice(device)),
+                new TextBlock
+                {
+                    Text = ShortDeviceName(device.DisplayName),
+                    FontSize = 10,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                    MaxWidth = 76,
+                },
+            },
+        };
+        _deviceNavButton.Click -= DeviceNavButtonClick;
+        _deviceNavButton.Click += DeviceNavButtonClick;
+        ApplyNavButtonState(_deviceNavButton, true);
+    }
+
+    private void DeviceNavButtonClick(object sender, RoutedEventArgs e)
+    {
+        if (_currentDetailDevice is not null)
+            ShowDeviceDetail(_currentDetailDevice);
+    }
+
+    private static bool IsTabletDevice(DeviceModel device)
+    {
+        return device.Model.Contains("tablet", StringComparison.OrdinalIgnoreCase)
+            || device.DisplayName.Contains("pad", StringComparison.OrdinalIgnoreCase)
+            || device.DisplayName.Contains("tablet", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ShortDeviceName(string name)
+    {
+        return string.IsNullOrWhiteSpace(name) ? "设备" : name.Length <= 8 ? name : name[..8];
     }
 
     private UIElement BuildQuickActions(DeviceModel device)
@@ -1007,7 +1180,10 @@ public sealed class MainWindow : Window
             s_darkTheme = toggle.IsOn;
             _root.RequestedTheme = s_darkTheme ? ElementTheme.Dark : ElementTheme.Light;
             BuildShellTheme();
-            Navigate("设置");
+            if (_currentDetailDevice is not null)
+                ShowDeviceDetail(_currentDetailDevice);
+            else
+                Navigate("设置");
         };
         Grid.SetColumn(toggle, 1);
         row.Children.Add(toggle);
@@ -1017,19 +1193,27 @@ public sealed class MainWindow : Window
     private void BuildShellTheme()
     {
         _root.Background = AppBrush();
+        _contentFrame.Background = AppBrush();
         if (_background is not null)
         {
             _background.Fill = AppBrush();
             _background.GridLineBrush = GridLineBrush();
             _background.Refresh();
         }
-        foreach (var dock in new[] { _navDock, _aiDock })
+        foreach (var dock in new[] { _navDock, _deviceDock, _aiDock })
         {
             if (dock is null)
                 continue;
             dock.Background = NavBrush();
             dock.BorderBrush = BorderLightBrush();
         }
+        foreach (var button in _navButtons)
+            ApplyNavButtonState(button, string.Equals(button.Tag as string, _currentPage, StringComparison.Ordinal));
+        if (_deviceNavButton is not null)
+            ApplyNavButtonState(_deviceNavButton, _currentDetailDevice is not null);
+        if (_aiButton is not null)
+            ApplyNavButtonState(_aiButton, _aiPanel.Visibility == Visibility.Visible);
+        BuildAiPanel();
     }
 
     private UIElement SettingsCard()
@@ -1080,6 +1264,10 @@ public sealed class MainWindow : Window
 
     private void BuildAiPanel()
     {
+        var wasVisible = _aiPanel.Child is not null && _aiPanel.Visibility == Visibility.Visible;
+        _aiPanel.Child = null;
+        _messageList.Children.Clear();
+        _pendingAttachmentList.Children.Clear();
         _aiPanel.Visibility = Visibility.Collapsed;
         _aiPanel.Width = 400;
         _aiPanel.Margin = new Thickness(0, 0, 0, 80);
@@ -1192,6 +1380,7 @@ public sealed class MainWindow : Window
         Grid.SetRow(inputArea, 2);
         root.Children.Add(inputArea);
         _aiPanel.Child = root;
+        _aiPanel.Visibility = wasVisible ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private FrameworkElement BuildAiToolbar()
@@ -1221,6 +1410,7 @@ public sealed class MainWindow : Window
         _permissionCombo.CornerRadius = new CornerRadius(8);
         _permissionCombo.Background = TransparentBrush();
         _permissionCombo.BorderBrush = BorderLightBrush();
+        _permissionCombo.Items.Clear();
         _permissionCombo.Items.Add(PermissionItem("只读", Symbol.View, "只允许读取当前项目上下文"));
         _permissionCombo.Items.Add(PermissionItem("询问", Symbol.Help, "执行敏感操作前询问"));
         _permissionCombo.Items.Add(PermissionItem("允许", Symbol.Accept, "允许执行本地开发操作"));
@@ -1735,6 +1925,8 @@ public sealed class MainWindow : Window
     private void ToggleAiPanel()
     {
         _aiPanel.Visibility = _aiPanel.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
+        if (_aiButton is not null)
+            ApplyNavButtonState(_aiButton, _aiPanel.Visibility == Visibility.Visible);
     }
 
     private ContentDialog Dialog(string title, UIElement content, string primary)
@@ -1955,9 +2147,13 @@ public sealed class MainWindow : Window
     private static SolidColorBrush SurfaceAltBrush() => s_darkTheme
         ? new SolidColorBrush(ColorHelper.FromArgb(232, 51, 65, 85))
         : new SolidColorBrush(ColorHelper.FromArgb(255, 226, 232, 240));
-    private static SolidColorBrush NavBrush() => s_darkTheme
-        ? new SolidColorBrush(ColorHelper.FromArgb(184, 30, 41, 59))
-        : new SolidColorBrush(ColorHelper.FromArgb(204, 255, 255, 255));
+    private static Brush NavBrush() => new AcrylicBrush
+    {
+        TintColor = s_darkTheme ? ColorHelper.FromArgb(255, 30, 41, 59) : Colors.White,
+        TintOpacity = s_darkTheme ? 0.34 : 0.58,
+        TintLuminosityOpacity = s_darkTheme ? 0.38 : 0.72,
+        FallbackColor = s_darkTheme ? ColorHelper.FromArgb(218, 30, 41, 59) : ColorHelper.FromArgb(226, 255, 255, 255),
+    };
     private static SolidColorBrush PrimaryBrush() => new(ColorHelper.FromArgb(255, 34, 197, 94));
     private static SolidColorBrush PrimaryLightBrush() => new(ColorHelper.FromArgb(40, 34, 197, 94));
     private static SolidColorBrush OnPrimaryBrush() => new(Colors.White);
