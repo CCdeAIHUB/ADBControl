@@ -34,7 +34,7 @@ public sealed class MainWindow : Window
 
     private ScrollViewer? _activePageScroller;
     private IntPtr _windowHandle;
-    private IntPtr _originalWndProc;
+    private readonly Dictionary<IntPtr, IntPtr> _hookedWndProcs = new();
     private WndProcDelegate? _wndProcDelegate;
     private GridBackground? _background;
     private Border? _navDock;
@@ -65,6 +65,7 @@ public sealed class MainWindow : Window
         Content = _root;
         BuildShell();
         InstallNativeWheelHook();
+        _root.Loaded += (_, _) => RefreshNativeWheelHooks();
         ApplyTitleBarTheme();
         Navigate("总览");
         Closed += (_, _) => RestoreNativeWheelHook();
@@ -1786,6 +1787,7 @@ public sealed class MainWindow : Window
             Padding = new Thickness(16, 12, 16, 12),
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
+        AttachWheelScrolling(messageScroller);
         Grid.SetRow(messageScroller, 1);
         root.Children.Add(messageScroller);
 
@@ -2427,14 +2429,16 @@ public sealed class MainWindow : Window
             Width = 432,
             Spacing = 14,
         };
-        body.Children.Add(new ScrollViewer
+        var dialogScroller = new ScrollViewer
         {
             Content = stack,
             MaxHeight = 456,
             Padding = new Thickness(0, 0, 12, 0),
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-        });
+        };
+        AttachWheelScrolling(dialogScroller);
+        body.Children.Add(dialogScroller);
         var actions = new Grid
         {
             ColumnSpacing = 10,
@@ -3042,13 +3046,23 @@ public sealed class MainWindow : Window
             Padding = new Thickness(0),
         };
         _activePageScroller = viewer;
+        AttachWheelScrolling(viewer);
+        RefreshNativeWheelHooks();
+        return viewer;
+    }
+
+    private static void AttachWheelScrolling(ScrollViewer viewer)
+    {
         PointerEventHandler wheelHandler = (_, e) =>
         {
-            ScrollPageByWheelDelta(viewer, e.GetCurrentPoint(viewer).Properties.MouseWheelDelta);
+            var delta = e.GetCurrentPoint(viewer).Properties.MouseWheelDelta;
+            if (delta == 0)
+                return;
+
+            ScrollPageByWheelDelta(viewer, delta);
             e.Handled = true;
         };
         viewer.AddHandler(UIElement.PointerWheelChangedEvent, wheelHandler, true);
-        return viewer;
     }
 
     private void OnRootPointerWheelChanged(object sender, PointerRoutedEventArgs e)
@@ -3067,27 +3081,50 @@ public sealed class MainWindow : Window
     private void InstallNativeWheelHook()
     {
         _windowHandle = WindowNative.GetWindowHandle(this);
-        if (_windowHandle == IntPtr.Zero || _originalWndProc != IntPtr.Zero)
+        if (_windowHandle == IntPtr.Zero)
             return;
 
         _wndProcDelegate = NativeWindowProc;
-        var newProc = Marshal.GetFunctionPointerForDelegate(_wndProcDelegate);
-        _originalWndProc = SetWindowLongPtr(_windowHandle, GwlWndProc, newProc);
+        RefreshNativeWheelHooks();
+    }
+
+    private void RefreshNativeWheelHooks()
+    {
+        if (_windowHandle == IntPtr.Zero || _wndProcDelegate is null)
+            return;
+
+        HookWindowForMouseWheel(_windowHandle);
+        EnumChildWindows(_windowHandle, (hwnd, _) =>
+        {
+            HookWindowForMouseWheel(hwnd);
+            return true;
+        }, IntPtr.Zero);
     }
 
     private void RestoreNativeWheelHook()
     {
-        if (_windowHandle == IntPtr.Zero || _originalWndProc == IntPtr.Zero)
+        foreach (var (hwnd, previousProc) in _hookedWndProcs.ToList())
+            SetWindowLongPtr(hwnd, GwlWndProc, previousProc);
+        _hookedWndProcs.Clear();
+        _wndProcDelegate = null;
+    }
+
+    private void HookWindowForMouseWheel(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero || _hookedWndProcs.ContainsKey(hwnd) || _wndProcDelegate is null)
             return;
 
-        SetWindowLongPtr(_windowHandle, GwlWndProc, _originalWndProc);
-        _originalWndProc = IntPtr.Zero;
-        _wndProcDelegate = null;
+        // WinUI 3 and remote-control clients can deliver wheel input to late-created child HWNDs.
+        // Refreshing these hooks keeps page scrolling independent from which visual child has focus.
+        var newProc = Marshal.GetFunctionPointerForDelegate(_wndProcDelegate);
+        var previousProc = SetWindowLongPtr(hwnd, GwlWndProc, newProc);
+        if (previousProc != IntPtr.Zero)
+            _hookedWndProcs[hwnd] = previousProc;
     }
 
     private IntPtr NativeWindowProc(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam)
     {
-        if (message == WmMouseWheel && _activePageScroller is not null)
+        if ((message == WmMouseWheel || message == WmPointerWheel) && _activePageScroller is not null)
         {
             var delta = unchecked((short)((wParam.ToInt64() >> 16) & 0xffff));
             if (delta != 0)
@@ -3097,7 +3134,9 @@ public sealed class MainWindow : Window
             }
         }
 
-        return CallWindowProc(_originalWndProc, hwnd, message, wParam, lParam);
+        return _hookedWndProcs.TryGetValue(hwnd, out var previousProc)
+            ? CallWindowProc(previousProc, hwnd, message, wParam, lParam)
+            : DefWindowProc(hwnd, message, wParam, lParam);
     }
 
     private static void ScrollPageByWheelDelta(ScrollViewer viewer, int delta)
@@ -3108,14 +3147,23 @@ public sealed class MainWindow : Window
 
     private const int GwlWndProc = -4;
     private const uint WmMouseWheel = 0x020A;
+    private const uint WmPointerWheel = 0x024E;
 
     private delegate IntPtr WndProcDelegate(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
+
+    private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
 
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
     private static extern IntPtr SetWindowLongPtr(IntPtr hwnd, int index, IntPtr newLong);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern IntPtr CallWindowProc(IntPtr previousProc, IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr DefWindowProc(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool EnumChildWindows(IntPtr parentHandle, EnumWindowsProc callback, IntPtr lParam);
 
     private static TextBlock BodyText(string text)
     {
