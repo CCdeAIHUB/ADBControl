@@ -18,7 +18,7 @@ class MediaVolumeFeatureHandler(private val context: Context) : FeatureCommandHa
             else -> CompanionCommandResult.failure(
                 requestId = context.requestId,
                 errorCode = "COMPANION_OPERATION_NOT_SUPPORTED",
-                message = "Unsupported volume operation: ${context.operation}",
+                message = "不支持的音量操作：${context.operation}",
                 module = "companion.volume",
                 recoverable = false,
             )
@@ -43,7 +43,7 @@ class MediaVolumeFeatureHandler(private val context: Context) : FeatureCommandHa
             return CompanionCommandResult.failure(
                 requestId = command.requestId,
                 errorCode = "COMPANION_VOLUME_FIXED",
-                message = "Android reports that this device uses a fixed volume policy.",
+                message = "Android 报告该设备使用固定音量策略，无法调整媒体音量。",
                 module = "companion.volume",
                 recoverable = true,
             )
@@ -53,7 +53,7 @@ class MediaVolumeFeatureHandler(private val context: Context) : FeatureCommandHa
             ?: return CompanionCommandResult.failure(
                 requestId = command.requestId,
                 errorCode = "COMPANION_PARAMS_INVALID",
-                message = "volume.set requires args.level.",
+                message = "volume.set 需要 args.level 参数。",
                 module = "companion.volume",
                 recoverable = false,
             )

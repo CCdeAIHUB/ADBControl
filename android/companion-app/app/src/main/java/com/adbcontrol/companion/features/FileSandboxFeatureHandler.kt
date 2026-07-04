@@ -16,7 +16,7 @@ class FileSandboxFeatureHandler(private val context: Context) : FeatureCommandHa
             else -> CompanionCommandResult.failure(
                 requestId = context.requestId,
                 errorCode = "COMPANION_OPERATION_NOT_SUPPORTED",
-                message = "Unsupported file operation: ${context.operation}",
+                message = "不支持的文件操作：${context.operation}",
                 module = "companion.file",
                 recoverable = false,
             )
@@ -30,7 +30,7 @@ class FileSandboxFeatureHandler(private val context: Context) : FeatureCommandHa
             return CompanionCommandResult.failure(
                 requestId = command.requestId,
                 errorCode = "COMPANION_FILE_NOT_FOUND",
-                message = "Sandbox file does not exist: ${file.name}",
+                message = "沙盒文件不存在：${file.name}",
                 module = "companion.file",
                 recoverable = true,
             )
@@ -41,10 +41,10 @@ class FileSandboxFeatureHandler(private val context: Context) : FeatureCommandHa
             return CompanionCommandResult.failure(
                 requestId = command.requestId,
                 errorCode = "COMPANION_FILE_TOO_LARGE",
-                message = "File is larger than requested maxBytes.",
+                message = "文件大小超过了请求的 maxBytes 限制。",
                 module = "companion.file",
                 recoverable = true,
-                suggestion = "Use a lower-level streaming file transfer operation for large files.",
+                suggestion = "较大文件请使用底层流式文件传输操作。",
             )
         }
 
@@ -65,7 +65,7 @@ class FileSandboxFeatureHandler(private val context: Context) : FeatureCommandHa
             ?: return CompanionCommandResult.failure(
                 requestId = command.requestId,
                 errorCode = "COMPANION_PARAMS_INVALID",
-                message = "file.write requires args.text.",
+                message = "file.write 需要 args.text 参数。",
                 module = "companion.file",
                 recoverable = false,
             )
@@ -98,7 +98,7 @@ class FileSandboxFeatureHandler(private val context: Context) : FeatureCommandHa
         return CompanionCommandResult.failure(
             requestId = requestId,
             errorCode = "COMPANION_FILE_PATH_INVALID",
-            message = "File path must be a non-empty relative path inside the companion app sandbox.",
+            message = "文件路径必须是伴侣 App 沙盒内的非空相对路径。",
             module = "companion.file",
             recoverable = false,
         )

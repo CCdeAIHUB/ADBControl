@@ -24,7 +24,7 @@ class TelephonyFeatureHandler(private val context: Context) : FeatureCommandHand
             else -> CompanionCommandResult.failure(
                 requestId = context.requestId,
                 errorCode = "COMPANION_OPERATION_NOT_SUPPORTED",
-                message = "Unsupported telephony operation: ${context.operation}",
+                message = "不支持的电话/短信操作：${context.operation}",
                 module = "companion.telephony",
                 recoverable = false,
             )
@@ -36,7 +36,7 @@ class TelephonyFeatureHandler(private val context: Context) : FeatureCommandHand
             ?: return CompanionCommandResult.failure(
                 requestId = command.requestId,
                 errorCode = "COMPANION_PARAMS_INVALID",
-                message = "phone.call requires args.number.",
+                message = "phone.call 需要 args.number 参数。",
                 module = "companion.telephony",
                 recoverable = false,
             )
@@ -45,7 +45,7 @@ class TelephonyFeatureHandler(private val context: Context) : FeatureCommandHand
             return CompanionCommandResult.failure(
                 requestId = command.requestId,
                 errorCode = "COMPANION_PHONE_NUMBER_INVALID",
-                message = "Phone number contains no dialable characters.",
+                message = "电话号码中没有可拨号字符。",
                 module = "companion.telephony",
                 recoverable = false,
             )
@@ -119,7 +119,7 @@ class TelephonyFeatureHandler(private val context: Context) : FeatureCommandHand
             return CompanionCommandResult.failure(
                 requestId = command.requestId,
                 errorCode = "COMPANION_PARAMS_INVALID",
-                message = "sms.send requires args.number and args.text.",
+                message = "sms.send 需要 args.number 和 args.text 参数。",
                 module = "companion.telephony",
                 recoverable = false,
             )

@@ -41,20 +41,20 @@ Java_com_adbcontrol_companion_quic_JniNativeQuicEngine_nativeConnect(
     jstring endpoint_value) {
     const std::string endpoint = ToString(env, endpoint_value);
     if (!IsQuicEndpoint(endpoint)) {
-        ThrowIllegalState(env, "Native QUIC engine only accepts quic:// endpoints.");
+        ThrowIllegalState(env, "原生 QUIC 引擎仅接受 quic:// 地址。");
         return 0;
     }
 
     __android_log_print(
         ANDROID_LOG_ERROR,
         kLogTag,
-        "Native QUIC backend is not linked for endpoint: %s",
+        "原生 QUIC 后端未链接，连接地址：%s",
         endpoint.c_str());
     ThrowIllegalState(
         env,
-        "ADBCONTROL_NATIVE_QUIC_BACKEND_NOT_LINKED: JNI bridge is compiled, "
-        "but no real IETF QUIC backend such as MsQuic or quiche is linked yet. "
-        "Refusing to fake a QUIC connection.");
+        "ADBCONTROL_NATIVE_QUIC_BACKEND_NOT_LINKED：JNI 桥接层已编译，"
+        "但尚未链接 MsQuic 或 quiche 等真实 IETF QUIC 后端，"
+        "因此拒绝伪造 QUIC 连接。");
     return 0;
 }
 
@@ -67,7 +67,7 @@ Java_com_adbcontrol_companion_quic_JniNativeQuicEngine_nativeSend(
     jstring /* channel_value */,
     jstring /* kind_value */,
     jstring /* payload_value */) {
-    ThrowIllegalState(env, "Native QUIC backend is not linked; send is unavailable.");
+    ThrowIllegalState(env, "原生 QUIC 后端未链接，无法发送消息。");
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -82,6 +82,6 @@ Java_com_adbcontrol_companion_quic_JniNativeQuicEngine_nativeCertificateFingerpr
     JNIEnv* env,
     jobject /* thiz */,
     jlong /* handle_value */) {
-    ThrowIllegalState(env, "Native QUIC backend is not linked; certificate fingerprint is unavailable.");
+    ThrowIllegalState(env, "原生 QUIC 后端未链接，无法获取证书指纹。");
     return nullptr;
 }

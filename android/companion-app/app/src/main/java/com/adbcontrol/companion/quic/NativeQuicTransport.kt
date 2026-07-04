@@ -11,7 +11,7 @@ class NativeQuicTransport(
 ) : QuicTransport {
     override fun connect(endpoint: String) {
         require(endpoint.startsWith("quic://")) {
-            "Native QUIC transport requires a quic:// endpoint, not HTTP or HTTP/3."
+            "原生 QUIC 传输需要 quic:// 地址，不能使用 HTTP 或 HTTP/3 地址。"
         }
         engine.connect(endpoint)
     }
@@ -28,13 +28,13 @@ class NativeQuicTransport(
 class UnavailableNativeQuicEngine : NativeQuicEngine {
     override fun connect(endpoint: String) {
         throw IllegalStateException(
-            "Native QUIC engine is not bundled yet. Provide a JNI/native QUIC implementation before connecting to $endpoint.",
+            "尚未内置原生 QUIC 引擎。连接到 $endpoint 前，需要先提供 JNI/原生 QUIC 实现。",
         )
     }
 
     override fun send(envelope: QuicEnvelope) {
         throw IllegalStateException(
-            "Native QUIC engine is not bundled yet. Cannot send message: ${envelope.messageId}",
+            "尚未内置原生 QUIC 引擎，无法发送消息：${envelope.messageId}",
         )
     }
 

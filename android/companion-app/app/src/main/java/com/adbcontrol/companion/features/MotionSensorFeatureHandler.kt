@@ -23,7 +23,7 @@ class MotionSensorFeatureHandler(private val context: Context) : FeatureCommandH
             else -> CompanionCommandResult.failure(
                 requestId = context.requestId,
                 errorCode = "COMPANION_OPERATION_NOT_SUPPORTED",
-                message = "Unsupported sensor operation: ${context.operation}",
+                message = "不支持的传感器操作：${context.operation}",
                 module = "companion.sensor",
                 recoverable = false,
             )
@@ -64,7 +64,7 @@ class MotionSensorFeatureHandler(private val context: Context) : FeatureCommandH
             return CompanionCommandResult.failure(
                 requestId = command.requestId,
                 errorCode = "COMPANION_SENSOR_UNAVAILABLE",
-                message = "None of the requested sensors are available or could be registered.",
+                message = "请求的传感器均不可用，或无法完成注册。",
                 module = "companion.sensor",
                 recoverable = true,
             )
@@ -86,7 +86,7 @@ class MotionSensorFeatureHandler(private val context: Context) : FeatureCommandH
             ?: return CompanionCommandResult.failure(
                 requestId = command.requestId,
                 errorCode = "COMPANION_PARAMS_INVALID",
-                message = "sensor.unsubscribe requires args.subscriptionId.",
+                message = "sensor.unsubscribe 需要 args.subscriptionId 参数。",
                 module = "companion.sensor",
                 recoverable = false,
             )
@@ -94,7 +94,7 @@ class MotionSensorFeatureHandler(private val context: Context) : FeatureCommandH
             ?: return CompanionCommandResult.failure(
                 requestId = command.requestId,
                 errorCode = "COMPANION_SENSOR_SUBSCRIPTION_NOT_FOUND",
-                message = "Sensor subscription is not active: $subscriptionId",
+                message = "传感器订阅未处于运行状态：$subscriptionId",
                 module = "companion.sensor",
                 recoverable = true,
             )

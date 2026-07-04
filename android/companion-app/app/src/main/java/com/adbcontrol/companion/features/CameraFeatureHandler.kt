@@ -36,7 +36,7 @@ class CameraFeatureHandler(
             else -> CompanionCommandResult.failure(
                 requestId = context.requestId,
                 errorCode = "COMPANION_OPERATION_NOT_SUPPORTED",
-                message = "Unsupported camera operation: ${context.operation}",
+                message = "不支持的相机操作：${context.operation}",
                 module = "companion.camera",
                 recoverable = false,
             )
@@ -48,7 +48,7 @@ class CameraFeatureHandler(
             ?: return CompanionCommandResult.failure(
                 requestId = command.requestId,
                 errorCode = "COMPANION_CAMERA_NOT_FOUND",
-                message = "No camera is available on this Android device.",
+                message = "该 Android 设备上没有可用相机。",
                 module = "companion.camera",
                 recoverable = true,
             )
@@ -171,7 +171,7 @@ class CameraFeatureHandler(
         return CompanionCommandResult.failure(
             requestId = requestId,
             errorCode = "COMPANION_CAMERA_OPEN_FAILED",
-            message = "Android camera failed to open.",
+            message = "Android 相机打开失败。",
             module = "companion.camera",
             recoverable = true,
         )
@@ -181,7 +181,7 @@ class CameraFeatureHandler(
         return CompanionCommandResult.failure(
             requestId = requestId,
             errorCode = "COMPANION_CAMERA_SESSION_FAILED",
-            message = "Android failed to create a camera recording session.",
+            message = "Android 创建相机录制会话失败。",
             module = "companion.camera",
             recoverable = true,
         )
@@ -262,7 +262,7 @@ class CameraFeatureHandler(
             ?: return CompanionCommandResult.failure(
                 requestId = command.requestId,
                 errorCode = "COMPANION_PARAMS_INVALID",
-                message = "camera.close requires args.sessionId.",
+                message = "camera.close 需要 args.sessionId 参数。",
                 module = "companion.camera",
                 recoverable = false,
             )
@@ -270,7 +270,7 @@ class CameraFeatureHandler(
             ?: return CompanionCommandResult.failure(
                 requestId = command.requestId,
                 errorCode = "COMPANION_CAMERA_SESSION_NOT_FOUND",
-                message = "Camera session is not active: $sessionId",
+                message = "相机会话未处于运行状态：$sessionId",
                 module = "companion.camera",
                 recoverable = true,
             )

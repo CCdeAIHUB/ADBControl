@@ -34,7 +34,7 @@ class AndroidFeatureDispatcher(
             ?: return CompanionCommandResult.failure(
                 requestId = context.requestId,
                 errorCode = "COMPANION_CAPABILITY_NOT_FOUND",
-                message = "Capability is not declared by Android companion: ${context.capabilityId}",
+                message = "伴侣 App 未声明该能力：${context.capabilityId}",
                 module = "companion.dispatcher",
                 recoverable = false,
             )
@@ -43,7 +43,7 @@ class AndroidFeatureDispatcher(
             return CompanionCommandResult.failure(
                 requestId = context.requestId,
                 errorCode = "COMPANION_OPERATION_NOT_SUPPORTED",
-                message = "Operation ${context.operation} is not supported by ${context.capabilityId}.",
+                message = "能力 ${context.capabilityId} 不支持操作 ${context.operation}。",
                 module = "companion.dispatcher",
                 recoverable = false,
             )
@@ -54,7 +54,7 @@ class AndroidFeatureDispatcher(
             return CompanionCommandResult.failure(
                 requestId = context.requestId,
                 errorCode = "COMPANION_PERMISSION_DENIED",
-                message = "Android companion is missing required permission or special grant for ${context.capabilityId}.",
+                message = "伴侣 App 缺少 ${context.capabilityId} 所需的 Android 权限或特殊授权。",
                 module = "companion.permission",
                 recoverable = true,
                 suggestion = permissionEvaluation.describeMissingGrants(),
@@ -65,7 +65,7 @@ class AndroidFeatureDispatcher(
             ?: return CompanionCommandResult.failure(
                 requestId = context.requestId,
                 errorCode = "COMPANION_HANDLER_NOT_FOUND",
-                message = "No Android feature handler is registered for ${context.capabilityId}/${context.operation}.",
+                message = "未注册 ${context.capabilityId}/${context.operation} 对应的 Android 能力处理器。",
                 module = "companion.dispatcher",
                 recoverable = true,
             )
@@ -76,16 +76,16 @@ class AndroidFeatureDispatcher(
             CompanionCommandResult.failure(
                 requestId = context.requestId,
                 errorCode = "COMPANION_SECURITY_EXCEPTION",
-                message = securityException.message ?: "Android rejected the operation for security reasons.",
+                message = securityException.message ?: "Android 因安全策略拒绝了该操作。",
                 module = "companion.dispatcher",
                 recoverable = true,
-                suggestion = "Refresh permission state and ask the user to grant the missing Android permission.",
+                suggestion = "请刷新权限状态，并让用户授予缺失的 Android 权限。",
             )
         } catch (exception: RuntimeException) {
             CompanionCommandResult.failure(
                 requestId = context.requestId,
                 errorCode = "COMPANION_HANDLER_FAILED",
-                message = exception.message ?: "Android feature handler failed.",
+                message = exception.message ?: "Android 能力处理器执行失败。",
                 module = "companion.dispatcher",
                 recoverable = true,
             )
@@ -95,9 +95,9 @@ class AndroidFeatureDispatcher(
     private fun com.adbcontrol.companion.core.PermissionEvaluation.describeMissingGrants(): String {
         val missing = missingPermissions + missingSpecialGrants
         return if (missing.isEmpty()) {
-            "Retry after the companion app refreshes permission state."
+            "请等待伴侣 App 刷新权限状态后重试。"
         } else {
-            "Missing: ${missing.joinToString()}"
+            "缺少：${missing.joinToString()}"
         }
     }
 }

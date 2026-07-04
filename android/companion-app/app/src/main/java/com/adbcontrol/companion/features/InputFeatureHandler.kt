@@ -18,7 +18,7 @@ class InputFeatureHandler(private val context: Context) : FeatureCommandHandler 
             else -> CompanionCommandResult.failure(
                 requestId = context.requestId,
                 errorCode = "COMPANION_OPERATION_NOT_SUPPORTED",
-                message = "Unsupported input operation: ${context.operation}",
+                message = "不支持的输入操作：${context.operation}",
                 module = "companion.input",
                 recoverable = false,
             )
@@ -30,7 +30,7 @@ class InputFeatureHandler(private val context: Context) : FeatureCommandHandler 
             ?: return CompanionCommandResult.failure(
                 requestId = command.requestId,
                 errorCode = "COMPANION_PARAMS_INVALID",
-                message = "input.text requires args.text.",
+                message = "input.text 需要 args.text 参数。",
                 module = "companion.input",
                 recoverable = false,
             )
@@ -40,10 +40,10 @@ class InputFeatureHandler(private val context: Context) : FeatureCommandHandler 
             return CompanionCommandResult.failure(
                 requestId = command.requestId,
                 errorCode = "COMPANION_IME_NOT_ACTIVE",
-                message = "ADBControl input method is not active or has no current input connection.",
+                message = "ADBControl 输入法未启用，或当前没有可输入的文本焦点。",
                 module = "companion.input",
                 recoverable = true,
-                suggestion = "Enable and select ADBControl Companion IME, then focus a text field before retrying.",
+                suggestion = "请启用并选择 ADBControl 伴侣输入法，然后聚焦文本框后重试。",
             )
         }
 
@@ -61,7 +61,7 @@ class InputFeatureHandler(private val context: Context) : FeatureCommandHandler 
             ?: return CompanionCommandResult.failure(
                 requestId = command.requestId,
                 errorCode = "COMPANION_PARAMS_INVALID",
-                message = "input.key requires args.keyCode.",
+                message = "input.key 需要 args.keyCode 参数。",
                 module = "companion.input",
                 recoverable = false,
             )
@@ -71,10 +71,10 @@ class InputFeatureHandler(private val context: Context) : FeatureCommandHandler 
             return CompanionCommandResult.failure(
                 requestId = command.requestId,
                 errorCode = "COMPANION_IME_NOT_ACTIVE",
-                message = "ADBControl input method is not active or has no current input connection.",
+                message = "ADBControl 输入法未启用，或当前没有可输入的文本焦点。",
                 module = "companion.input",
                 recoverable = true,
-                suggestion = "Enable and select ADBControl Companion IME, then focus a text field before retrying.",
+                suggestion = "请启用并选择 ADBControl 伴侣输入法，然后聚焦文本框后重试。",
             )
         }
 

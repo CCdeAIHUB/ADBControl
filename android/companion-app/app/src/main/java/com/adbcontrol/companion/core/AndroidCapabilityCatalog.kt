@@ -6,7 +6,7 @@ object AndroidCapabilityCatalog {
     fun defaultCapabilities(): List<CompanionCapability> = listOf(
         CompanionCapability(
             id = "android.input.ime",
-            title = "Input method and text injection",
+            title = "输入法与文本注入",
             androidPermissions = emptyList(),
             specialGrants = listOf("input-method-service"),
             sensitivity = CapabilitySensitivity.HIGH,
@@ -15,7 +15,7 @@ object AndroidCapabilityCatalog {
         ),
         CompanionCapability(
             id = "android.screen.capture",
-            title = "Screen capture and casting",
+            title = "屏幕采集与投屏",
             androidPermissions = listOf(
                 Manifest.permission.FOREGROUND_SERVICE,
                 Manifest.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION,
@@ -27,7 +27,7 @@ object AndroidCapabilityCatalog {
         ),
         CompanionCapability(
             id = "android.file.read",
-            title = "File read",
+            title = "文件读取",
             androidPermissions = listOf(
                 Manifest.permission.READ_MEDIA_IMAGES,
                 Manifest.permission.READ_MEDIA_VIDEO,
@@ -40,7 +40,7 @@ object AndroidCapabilityCatalog {
         ),
         CompanionCapability(
             id = "android.file.write",
-            title = "File write",
+            title = "文件写入",
             androidPermissions = emptyList(),
             specialGrants = listOf("scoped-storage-or-document-picker"),
             sensitivity = CapabilitySensitivity.HIGH,
@@ -49,7 +49,7 @@ object AndroidCapabilityCatalog {
         ),
         CompanionCapability(
             id = "android.camera.stream",
-            title = "Camera stream",
+            title = "相机画面",
             androidPermissions = listOf(Manifest.permission.CAMERA),
             specialGrants = emptyList(),
             sensitivity = CapabilitySensitivity.CRITICAL,
@@ -58,7 +58,7 @@ object AndroidCapabilityCatalog {
         ),
         CompanionCapability(
             id = "android.audio.record",
-            title = "Audio recording",
+            title = "音频录制",
             androidPermissions = listOf(Manifest.permission.RECORD_AUDIO),
             specialGrants = emptyList(),
             sensitivity = CapabilitySensitivity.CRITICAL,
@@ -67,7 +67,7 @@ object AndroidCapabilityCatalog {
         ),
         CompanionCapability(
             id = "android.sms.read",
-            title = "SMS read",
+            title = "短信读取",
             androidPermissions = listOf(Manifest.permission.READ_SMS),
             specialGrants = emptyList(),
             sensitivity = CapabilitySensitivity.CRITICAL,
@@ -76,7 +76,7 @@ object AndroidCapabilityCatalog {
         ),
         CompanionCapability(
             id = "android.sms.send",
-            title = "SMS send",
+            title = "短信发送",
             androidPermissions = listOf(Manifest.permission.SEND_SMS),
             specialGrants = emptyList(),
             sensitivity = CapabilitySensitivity.CRITICAL,
@@ -85,7 +85,7 @@ object AndroidCapabilityCatalog {
         ),
         CompanionCapability(
             id = "android.phone.call",
-            title = "Phone call",
+            title = "电话拨号",
             androidPermissions = listOf(Manifest.permission.CALL_PHONE, Manifest.permission.READ_PHONE_STATE),
             specialGrants = emptyList(),
             sensitivity = CapabilitySensitivity.CRITICAL,
@@ -94,7 +94,7 @@ object AndroidCapabilityCatalog {
         ),
         CompanionCapability(
             id = "android.clipboard.read",
-            title = "Clipboard read",
+            title = "剪贴板读取",
             androidPermissions = emptyList(),
             specialGrants = listOf("foreground-required"),
             sensitivity = CapabilitySensitivity.HIGH,
@@ -103,7 +103,7 @@ object AndroidCapabilityCatalog {
         ),
         CompanionCapability(
             id = "android.clipboard.write",
-            title = "Clipboard write",
+            title = "剪贴板写入",
             androidPermissions = emptyList(),
             specialGrants = listOf("sensitive-clip-flag"),
             sensitivity = CapabilitySensitivity.HIGH,
@@ -112,7 +112,7 @@ object AndroidCapabilityCatalog {
         ),
         CompanionCapability(
             id = "android.sensor.motion",
-            title = "Motion and orientation sensors",
+            title = "运动与方向传感器",
             androidPermissions = emptyList(),
             specialGrants = emptyList(),
             sensitivity = CapabilitySensitivity.MEDIUM,
@@ -121,7 +121,7 @@ object AndroidCapabilityCatalog {
         ),
         CompanionCapability(
             id = "android.app.list",
-            title = "Application list",
+            title = "应用列表",
             androidPermissions = emptyList(),
             specialGrants = listOf("package-visibility-query"),
             sensitivity = CapabilitySensitivity.MEDIUM,
@@ -130,7 +130,7 @@ object AndroidCapabilityCatalog {
         ),
         CompanionCapability(
             id = "android.volume.media",
-            title = "Media volume control",
+            title = "媒体音量控制",
             androidPermissions = emptyList(),
             specialGrants = emptyList(),
             sensitivity = CapabilitySensitivity.MEDIUM,
@@ -139,7 +139,7 @@ object AndroidCapabilityCatalog {
         ),
         CompanionCapability(
             id = "android.ui.background_surface",
-            title = "Background surface prompt",
+            title = "后台界面唤起",
             androidPermissions = emptyList(),
             specialGrants = listOf("background-launch-policy"),
             sensitivity = CapabilitySensitivity.HIGH,
@@ -148,7 +148,7 @@ object AndroidCapabilityCatalog {
         ),
         CompanionCapability(
             id = "android.ui.overlay",
-            title = "Overlay window",
+            title = "悬浮窗",
             androidPermissions = listOf(Manifest.permission.SYSTEM_ALERT_WINDOW),
             specialGrants = listOf("draw-over-apps"),
             sensitivity = CapabilitySensitivity.HIGH,
@@ -157,7 +157,7 @@ object AndroidCapabilityCatalog {
         ),
         CompanionCapability(
             id = "android.intent.chain_launch",
-            title = "Chained intent launch",
+            title = "链式 Intent 启动",
             androidPermissions = emptyList(),
             specialGrants = listOf("explicit-intent-only"),
             sensitivity = CapabilitySensitivity.HIGH,

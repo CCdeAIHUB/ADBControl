@@ -37,7 +37,7 @@ class UiFeatureHandler(private val context: Context) : FeatureCommandHandler {
             else -> CompanionCommandResult.failure(
                 requestId = context.requestId,
                 errorCode = "COMPANION_OPERATION_NOT_SUPPORTED",
-                message = "Unsupported UI operation: ${context.operation}",
+                message = "不支持的界面操作：${context.operation}",
                 module = "companion.ui",
                 recoverable = false,
             )
@@ -47,7 +47,7 @@ class UiFeatureHandler(private val context: Context) : FeatureCommandHandler {
     private fun showSurface(command: CompanionCommandContext): CompanionCommandResult {
         val intent = Intent(context, MainActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            putExtra("adbcontrol_reason", command.args.stringArg("reason") ?: "Core requested companion surface.")
+            putExtra("adbcontrol_reason", command.args.stringArg("reason") ?: "桌面端请求打开伴侣 App 界面。")
         }
         context.startActivity(intent)
         return CompanionCommandResult.success(
@@ -64,7 +64,7 @@ class UiFeatureHandler(private val context: Context) : FeatureCommandHandler {
             )
         }
 
-        val text = command.args.stringArg("text") ?: "ADBControl Companion"
+        val text = command.args.stringArg("text") ?: "ADBControl 伴侣"
         val view = TextView(context).apply {
             this.text = text
             textSize = 16f
@@ -112,7 +112,7 @@ class UiFeatureHandler(private val context: Context) : FeatureCommandHandler {
             return CompanionCommandResult.failure(
                 requestId = command.requestId,
                 errorCode = "COMPANION_PARAMS_INVALID",
-                message = "intent.chainLaunch requires args.intents[].",
+                message = "intent.chainLaunch 需要 args.intents[] 参数。",
                 module = "companion.intent",
                 recoverable = false,
             )
@@ -126,7 +126,7 @@ class UiFeatureHandler(private val context: Context) : FeatureCommandHandler {
                 return CompanionCommandResult.failure(
                     requestId = command.requestId,
                     errorCode = "COMPANION_INTENT_NOT_EXPLICIT",
-                    message = "intent.chainLaunch only accepts explicit packageName + className at index $index.",
+                    message = "intent.chainLaunch 仅接受显式 packageName + className，错误位置：$index。",
                     module = "companion.intent",
                     recoverable = false,
                 )

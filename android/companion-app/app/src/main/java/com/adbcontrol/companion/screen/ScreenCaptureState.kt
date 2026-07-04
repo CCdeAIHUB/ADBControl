@@ -27,9 +27,9 @@ object ScreenCaptureState {
         projection?.stop()
         val mediaProjection = manager.getMediaProjection(resultCode, data) ?: throw ScreenCaptureException(
             errorCode = "COMPANION_MEDIA_PROJECTION_UNAVAILABLE",
-            message = "Android did not return a MediaProjection instance for the approved consent result.",
+            message = "Android 在授权完成后没有返回 MediaProjection 实例。",
             recoverable = true,
-            suggestion = "Retry stream.open and approve the Android screen capture consent dialog.",
+            suggestion = "请重新执行 stream.open，并在 Android 截屏授权弹窗中确认。",
         )
         projection = mediaProjection.also { grantedProjection ->
             grantedProjection.registerCallback(
@@ -155,7 +155,7 @@ object ScreenCaptureState {
     fun stopVideoStream(context: Context, sessionId: String?): ScreenVideoStopResult {
         val id = sessionId ?: realtimeSessions.keys.firstOrNull() ?: videoSessions.keys.firstOrNull() ?: throw ScreenCaptureException(
             errorCode = "COMPANION_SCREEN_STREAM_NOT_FOUND",
-            message = "No active screen video stream exists.",
+            message = "当前没有正在运行的屏幕视频流。",
             recoverable = true,
         )
         realtimeSessions.remove(id)?.let { session ->
@@ -164,7 +164,7 @@ object ScreenCaptureState {
         }
         val session = videoSessions.remove(id) ?: throw ScreenCaptureException(
             errorCode = "COMPANION_SCREEN_STREAM_NOT_FOUND",
-            message = "Screen video stream is not active: $id",
+            message = "屏幕视频流未处于运行状态：$id",
             recoverable = true,
         )
         session.stop()
@@ -183,9 +183,9 @@ object ScreenCaptureState {
     ): ScreenCaptureResult {
         val mediaProjection = projection ?: throw ScreenCaptureException(
             errorCode = "COMPANION_MEDIA_PROJECTION_CONSENT_REQUIRED",
-            message = "Screen capture requires Android MediaProjection user consent before screenshots can be captured.",
+            message = "截图前需要先完成 Android MediaProjection 屏幕采集授权。",
             recoverable = true,
-            suggestion = "Call stream.open and approve the Android screen capture consent dialog first.",
+            suggestion = "请先调用 stream.open，并在 Android 屏幕采集授权弹窗中确认。",
         )
         val safeWidth = width.coerceIn(240, 4096)
         val safeHeight = height.coerceIn(240, 4096)
@@ -209,9 +209,9 @@ object ScreenCaptureState {
         try {
             val image = acquireImage(imageReader, safeTimeoutMs) ?: throw ScreenCaptureException(
                 errorCode = "COMPANION_SCREEN_FRAME_TIMEOUT",
-                message = "Timed out while waiting for a MediaProjection frame.",
+                message = "等待 MediaProjection 画面帧超时。",
                 recoverable = true,
-                suggestion = "Keep the device screen awake and retry screenshot.capture.",
+                suggestion = "请保持设备屏幕亮起，然后重试 screenshot.capture。",
             )
             image.use { capturedImage ->
                 val outputFile = File(context.filesDir, "screenshots/${UUID.randomUUID()}.png")
@@ -242,18 +242,18 @@ object ScreenCaptureState {
     private fun projectionRequired(): ScreenCaptureException {
         return ScreenCaptureException(
             errorCode = "COMPANION_MEDIA_PROJECTION_CONSENT_REQUIRED",
-            message = "Screen video stream requires Android MediaProjection user consent.",
+            message = "屏幕视频流需要先完成 Android MediaProjection 用户授权。",
             recoverable = true,
-            suggestion = "Call stream.open and approve the Android screen capture consent dialog first.",
+            suggestion = "请先调用 stream.open，并在 Android 屏幕采集授权弹窗中确认。",
         )
     }
 
     private fun virtualDisplayUnavailable(operation: String): ScreenCaptureException {
         return ScreenCaptureException(
             errorCode = "COMPANION_VIRTUAL_DISPLAY_UNAVAILABLE",
-            message = "Android could not create a virtual display for $operation.",
+            message = "Android 无法为 $operation 创建虚拟显示。",
             recoverable = true,
-            suggestion = "Stop active screen capture sessions, keep the screen unlocked, and retry.",
+            suggestion = "请停止当前屏幕采集会话，保持屏幕解锁后重试。",
         )
     }
 

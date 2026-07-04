@@ -31,7 +31,7 @@
 
     <application
         android:allowBackup="false"
-        android:label="ADBControl Companion"
+        android:label="ADBControl 伴侣"
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
 

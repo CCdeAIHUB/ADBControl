@@ -27,7 +27,7 @@ class AudioRecordFeatureHandler(
             else -> CompanionCommandResult.failure(
                 requestId = context.requestId,
                 errorCode = "COMPANION_OPERATION_NOT_SUPPORTED",
-                message = "Unsupported audio operation: ${context.operation}",
+                message = "不支持的音频操作：${context.operation}",
                 module = "companion.audio",
                 recoverable = false,
             )
@@ -46,7 +46,7 @@ class AudioRecordFeatureHandler(
             return CompanionCommandResult.failure(
                 requestId = command.requestId,
                 errorCode = "COMPANION_AUDIO_FORMAT_UNSUPPORTED",
-                message = "Android rejected the requested PCM recording format.",
+                message = "Android 拒绝了请求的 PCM 录音格式。",
                 module = "companion.audio",
                 recoverable = true,
             )
@@ -97,7 +97,7 @@ class AudioRecordFeatureHandler(
             ?: return CompanionCommandResult.failure(
                 requestId = command.requestId,
                 errorCode = "COMPANION_PARAMS_INVALID",
-                message = "audio.record.stop requires args.sessionId.",
+                message = "audio.record.stop 需要 args.sessionId 参数。",
                 module = "companion.audio",
                 recoverable = false,
             )
@@ -105,7 +105,7 @@ class AudioRecordFeatureHandler(
             ?: return CompanionCommandResult.failure(
                 requestId = command.requestId,
                 errorCode = "COMPANION_AUDIO_SESSION_NOT_FOUND",
-                message = "Audio recording session is not active: $sessionId",
+                message = "录音会话未处于运行状态：$sessionId",
                 module = "companion.audio",
                 recoverable = true,
             )

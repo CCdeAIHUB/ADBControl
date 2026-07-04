@@ -8,7 +8,7 @@ class JniNativeQuicEngine : NativeQuicEngine {
     }
 
     override fun send(envelope: QuicEnvelope) {
-        check(handle != 0L) { "Native QUIC engine is not connected." }
+        check(handle != 0L) { "原生 QUIC 引擎尚未连接。" }
         nativeSend(handle, envelope.messageId, envelope.channel.name, envelope.kind.name, envelope.payload.toString())
     }
 
