@@ -218,7 +218,8 @@ public sealed class AiService
             "你是 ADBControl 内的 AI Agent。你需要用中文简洁回应用户。" +
             "当需要操作 Android 设备时，只能通过工具调用执行，不能编造执行结果。" +
             $"权限模式：{request.PermissionMode}。{device}" +
-            "可用工具：adb_shell，用于在当前设备执行 adb shell 命令。";
+            "可用工具：adb_shell 用于执行 adb shell；companion_call 用于调用伴侣 App 暴露的 Android 能力，" +
+            "包括 android.accessibility.control 的 accessibility.status、accessibility.global.back、accessibility.global.home、accessibility.global.recents、accessibility.global.notifications、accessibility.global.quickSettings、accessibility.global.powerDialog。";
     }
 
     private static async Task<Dictionary<string, object?>> BuildMessageAsync(AiConversationMessage message, CancellationToken cancellationToken)
@@ -339,6 +340,43 @@ public sealed class AiService
                             },
                         },
                         ["required"] = new[] { "command" },
+                    },
+                },
+            },
+            new Dictionary<string, object?>
+            {
+                ["type"] = "function",
+                ["function"] = new Dictionary<string, object?>
+                {
+                    ["name"] = "companion_call",
+                    ["description"] = "调用当前设备上 ADBControl 伴侣 App 暴露的 Android 能力。需要设备已安装伴侣 App；敏感操作会按权限模式审批。",
+                    ["parameters"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object?>
+                        {
+                            ["capabilityId"] = new Dictionary<string, object?>
+                            {
+                                ["type"] = "string",
+                                ["description"] = "伴侣 App 能力标识，例如 android.accessibility.control。",
+                            },
+                            ["operation"] = new Dictionary<string, object?>
+                            {
+                                ["type"] = "string",
+                                ["description"] = "能力操作名，例如 accessibility.global.back。",
+                            },
+                            ["args"] = new Dictionary<string, object?>
+                            {
+                                ["type"] = "object",
+                                ["description"] = "操作参数对象；无参数时传空对象。",
+                            },
+                            ["reason"] = new Dictionary<string, object?>
+                            {
+                                ["type"] = "string",
+                                ["description"] = "为什么需要调用该伴侣能力。",
+                            },
+                        },
+                        ["required"] = new[] { "capabilityId", "operation" },
                     },
                 },
             },

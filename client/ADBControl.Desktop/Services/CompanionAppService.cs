@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Text.Json;
 using ADBControl.Desktop.Models;
 
 namespace ADBControl.Desktop.Services;
@@ -9,6 +10,7 @@ public sealed class CompanionAppService
 {
     public const string PackageName = "com.adbcontrol.companion";
     private const string ConfigureAction = "com.adbcontrol.companion.CONFIGURE_CONNECTION";
+    private const string ExecuteCommandAction = "com.adbcontrol.companion.EXECUTE_COMMAND";
     private readonly AdbService _adb;
 
     public CompanionAppService(AdbService adb)
@@ -63,6 +65,29 @@ public sealed class CompanionAppService
         return await ConfigureConnectionAsync(device, quicPort);
     }
 
+    public async Task<AdbCommandResult> ExecuteCommandAsync(
+        DeviceModel device,
+        string capabilityId,
+        string operation,
+        IReadOnlyDictionary<string, object?>? args,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(capabilityId))
+            return new AdbCommandResult(1, string.Empty, "Companion 能力标识不能为空。");
+        if (string.IsNullOrWhiteSpace(operation))
+            return new AdbCommandResult(1, string.Empty, "Companion 操作不能为空。");
+
+        var requestId = Guid.NewGuid().ToString("N");
+        var argsJson = JsonSerializer.Serialize(args ?? new Dictionary<string, object?>(), JsonOptions);
+        var command =
+            $"am broadcast -a {ExecuteCommandAction} -n {PackageName}/.commands.CompanionCommandReceiver " +
+            $"--es requestId {EscapeShellToken(requestId)} " +
+            $"--es capabilityId {EscapeShellToken(capabilityId)} " +
+            $"--es operation {EscapeShellToken(operation)} " +
+            $"--es argsJson {EscapeShellToken(argsJson)}";
+        return await _adb.ShellAsync(device.DeviceId, command, cancellationToken);
+    }
+
     private static string? ResolveCompanionApkPath()
     {
         var baseDir = AppContext.BaseDirectory;
@@ -96,4 +121,9 @@ public sealed class CompanionAppService
     {
         return "'" + value.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
     }
+
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        WriteIndented = false,
+    };
 }

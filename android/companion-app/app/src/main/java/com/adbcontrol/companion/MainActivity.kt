@@ -170,6 +170,7 @@ class MainActivity : Activity() {
                     putExtra(ScreenCaptureConsentActivity.EXTRA_STREAM_ID, "guide-${UUID.randomUUID()}")
                 },
             )
+            "accessibility-service" -> startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             "foreground-required",
             "background-launch-policy" -> startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                 data = Uri.parse("package:$packageName")
@@ -189,6 +190,7 @@ class MainActivity : Activity() {
             "draw-over-apps" -> "打开悬浮窗授权"
             "input-method-service" -> "打开输入法设置"
             "media-projection-consent" -> "发起投屏授权"
+            "accessibility-service" -> "打开无障碍设置"
             "foreground-required" -> "打开应用设置"
             "background-launch-policy" -> "打开应用设置"
             "package-visibility-query" -> "重新检查清单声明"
@@ -288,6 +290,7 @@ class MainActivity : Activity() {
             "draw-over-apps" -> "悬浮窗显示"
             "input-method-service" -> "启用 ADBControl 输入法"
             "media-projection-consent" -> "屏幕采集授权"
+            "accessibility-service" -> "启用 ADBControl 无障碍辅助"
             "foreground-required" -> "前台运行要求"
             "background-launch-policy" -> "后台启动策略"
             "package-visibility-query" -> "应用可见性声明"

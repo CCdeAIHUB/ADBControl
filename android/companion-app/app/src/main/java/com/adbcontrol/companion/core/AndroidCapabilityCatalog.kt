@@ -156,6 +156,23 @@ object AndroidCapabilityCatalog {
             requiresUserConsent = true,
         ),
         CompanionCapability(
+            id = "android.accessibility.control",
+            title = "无障碍辅助控制",
+            androidPermissions = emptyList(),
+            specialGrants = listOf("accessibility-service"),
+            sensitivity = CapabilitySensitivity.CRITICAL,
+            operations = listOf(
+                "accessibility.status",
+                "accessibility.global.back",
+                "accessibility.global.home",
+                "accessibility.global.recents",
+                "accessibility.global.notifications",
+                "accessibility.global.quickSettings",
+                "accessibility.global.powerDialog",
+            ),
+            requiresUserConsent = true,
+        ),
+        CompanionCapability(
             id = "android.intent.chain_launch",
             title = "链式 Intent 启动",
             androidPermissions = emptyList(),

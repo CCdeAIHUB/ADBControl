@@ -108,8 +108,8 @@ public sealed class MainWindow : Window
     {
         _settings.Load();
         _devices = new DeviceService(_settings, _adb);
-        _aiTools = new AiAgentToolService(_adb);
         _companion = new CompanionAppService(_adb);
+        _aiTools = new AiAgentToolService(_adb, _companion);
 
         Title = "ADBControl";
         ExtendsContentIntoTitleBar = true;

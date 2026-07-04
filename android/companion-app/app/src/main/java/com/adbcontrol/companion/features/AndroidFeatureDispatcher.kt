@@ -22,6 +22,7 @@ class AndroidFeatureDispatcher(
         AudioRecordFeatureHandler(context, mediaStreamSink),
         ClipboardFeatureHandler(context),
         MediaVolumeFeatureHandler(context),
+        AccessibilityFeatureHandler(context),
         AppListFeatureHandler(context),
         FileSandboxFeatureHandler(context),
         TelephonyFeatureHandler(context),

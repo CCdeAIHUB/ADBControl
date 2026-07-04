@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_service_description">允许 ADBControl 伴侣 App 执行返回、主页、多任务、通知栏、快捷设置和电源菜单等无障碍辅助动作。</string>
+</resources>
