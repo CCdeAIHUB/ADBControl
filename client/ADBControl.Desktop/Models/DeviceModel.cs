@@ -12,5 +12,6 @@ public sealed class DeviceModel
     public string Model { get; set; } = "Android";
     public string AndroidVersion { get; set; } = "-";
     public bool IsConnected { get; set; }
+    public bool IsCompanionInstalled { get; set; }
     public bool IsCompanionConnected { get; set; }
 }

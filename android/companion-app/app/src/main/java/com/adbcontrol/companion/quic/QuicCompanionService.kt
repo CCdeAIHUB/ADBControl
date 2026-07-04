@@ -1,9 +1,12 @@
 package com.adbcontrol.companion.quic
 
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import com.adbcontrol.companion.core.AndroidCapabilityCatalog
 import com.adbcontrol.companion.core.CompanionCommandContext
 import com.adbcontrol.companion.core.PermissionGuard
@@ -28,18 +31,43 @@ class QuicCompanionService : Service() {
     private lateinit var permissionGuard: PermissionGuard
     private lateinit var featureDispatcher: AndroidFeatureDispatcher
     private lateinit var pairingDecisionStore: PairingDecisionStore
+    private val reconnectHandler = Handler(Looper.getMainLooper())
     private var connectionState: CompanionConnectionState = CompanionConnectionState.DISCONNECTED
     private var connectedDeviceId: String? = null
     private var certificateFingerprintSha256: String? = null
+    private var reconnectAttempts: Int = 0
+    private var savedEndpoint: String? = null
+    private var savedDeviceId: String? = null
+    private var reconnectRunnable: Runnable? = null
 
     override fun onCreate() {
         super.onCreate()
         permissionGuard = PermissionGuard(this)
         pairingDecisionStore = PairingDecisionStore(this)
         featureDispatcher = AndroidFeatureDispatcher(this, permissionGuard)
+        installNativeEngineIfAvailable()
+        loadConnectionConfig()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_CONFIGURE_CONNECTION) {
+            val endpoint = intent.getStringExtra(EXTRA_ENDPOINT)
+                ?: buildEndpoint(intent.getStringExtra(EXTRA_HOST), intent.getIntExtra(EXTRA_PORT, -1))
+            val deviceId = intent.getStringExtra(EXTRA_DEVICE_ID) ?: Build.MODEL ?: "android-companion"
+            if (!endpoint.isNullOrBlank()) {
+                saveConnectionConfig(endpoint, deviceId)
+                reconnectAttempts = 0
+                connectWithRetry(endpoint, deviceId)
+            } else {
+                connectionState = CompanionConnectionState.FAILED
+            }
+        } else if (!savedEndpoint.isNullOrBlank() && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+            connectWithRetry(savedEndpoint.orEmpty(), savedDeviceId ?: Build.MODEL ?: "android-companion")
+        }
+        return START_STICKY
+    }
 
     fun buildHello(deviceId: String, deviceName: String): QuicEnvelope {
         val hello = mapOf(
@@ -174,6 +202,62 @@ class QuicCompanionService : Service() {
         connectionState = CompanionConnectionState.HANDSHAKING
     }
 
+    private fun connectWithRetry(endpoint: String, deviceId: String) {
+        cancelReconnect()
+        try {
+            transport.close()
+            connect(endpoint, deviceId)
+            reconnectAttempts = 0
+        } catch (error: Throwable) {
+            connectionState = CompanionConnectionState.FAILED
+            scheduleReconnect(endpoint, deviceId)
+        }
+    }
+
+    private fun scheduleReconnect(endpoint: String, deviceId: String) {
+        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+            cancelReconnect()
+            return
+        }
+
+        reconnectAttempts += 1
+        val runnable = Runnable {
+            reconnectRunnable = null
+            connectWithRetry(endpoint, deviceId)
+        }
+        reconnectRunnable = runnable
+        reconnectHandler.postDelayed(runnable, RECONNECT_INTERVAL_MS)
+    }
+
+    private fun cancelReconnect() {
+        reconnectRunnable?.let { reconnectHandler.removeCallbacks(it) }
+        reconnectRunnable = null
+    }
+
+    private fun saveConnectionConfig(endpoint: String, deviceId: String) {
+        savedEndpoint = endpoint
+        savedDeviceId = deviceId
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(PREF_ENDPOINT, endpoint)
+            .putString(PREF_DEVICE_ID, deviceId)
+            .apply()
+    }
+
+    private fun loadConnectionConfig() {
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        savedEndpoint = prefs.getString(PREF_ENDPOINT, null)
+        savedDeviceId = prefs.getString(PREF_DEVICE_ID, null)
+    }
+
+    private fun installNativeEngineIfAvailable() {
+        try {
+            JniNativeQuicEngine.installAsProvider()
+        } catch (_: Throwable) {
+            NativeQuicEngineProvider.clearFactory()
+        }
+    }
+
     private fun pairingResponse(request: CompanionPairingRequest, state: String): QuicEnvelope {
         return QuicEnvelope(
             messageId = "pairing-response-${request.pairingId}",
@@ -190,11 +274,32 @@ class QuicCompanionService : Service() {
     }
 
     override fun onDestroy() {
+        cancelReconnect()
         transport.close()
         super.onDestroy()
     }
 
     fun currentState(): CompanionConnectionState = connectionState
+
+    companion object {
+        const val ACTION_CONFIGURE_CONNECTION = "com.adbcontrol.companion.CONFIGURE_CONNECTION"
+        const val EXTRA_ENDPOINT = "endpoint"
+        const val EXTRA_HOST = "host"
+        const val EXTRA_PORT = "port"
+        const val EXTRA_DEVICE_ID = "deviceId"
+        private const val PREFS_NAME = "adbcontrol_companion_connection"
+        private const val PREF_ENDPOINT = "endpoint"
+        private const val PREF_DEVICE_ID = "deviceId"
+        private const val RECONNECT_INTERVAL_MS = 10_000L
+        private const val MAX_RECONNECT_ATTEMPTS = 60
+
+        private fun buildEndpoint(host: String?, port: Int): String? {
+            if (host.isNullOrBlank() || port !in 1..65535) {
+                return null
+            }
+            return "quic://$host:$port"
+        }
+    }
 }
 
 data class CompanionPairingRequest(

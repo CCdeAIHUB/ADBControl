@@ -17,4 +17,11 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.2.0" />
   </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="..\..\android\companion-app\app\build\outputs\apk\debug\app-debug.apk"
+             Link="companion\ADBControl.Companion.apk"
+             CopyToOutputDirectory="PreserveNewest"
+             Condition="Exists('..\..\android\companion-app\app\build\outputs\apk\debug\app-debug.apk')" />
+  </ItemGroup>
 </Project>

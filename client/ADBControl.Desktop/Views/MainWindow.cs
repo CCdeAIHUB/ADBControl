@@ -3,12 +3,20 @@ using ADBControl.Desktop.Services;
 using Microsoft.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Media.Imaging;
+using System.Diagnostics;
+using System.Runtime.InteropServices.WindowsRuntime;
+using System.Security.Cryptography;
 using System.Runtime.InteropServices;
+using System.Text;
+using Windows.Foundation;
 using Windows.Storage.Pickers;
+using Windows.System;
+using Windows.UI.Core;
 using WinRT.Interop;
 
 namespace ADBControl.Desktop.Views;
@@ -17,7 +25,10 @@ public sealed class MainWindow : Window
 {
     private readonly SettingsService _settings = new();
     private readonly AdbService _adb = new();
+    private readonly AiService _ai = new();
+    private readonly AiAgentToolService _aiTools;
     private readonly DeviceService _devices;
+    private readonly CompanionAppService _companion;
 
     private readonly Grid _root = new();
     private readonly Grid _contentHost = new();
@@ -28,8 +39,11 @@ public sealed class MainWindow : Window
     private readonly TextBox _aiInput = new();
     private readonly ComboBox _modelCombo = new();
     private readonly ComboBox _permissionCombo = new();
+    private readonly Button _permissionSelector = new();
+    private readonly Button _modelSelector = new();
     private readonly InfoBar _info = new();
     private readonly List<AiAttachment> _pendingAttachments = new();
+    private readonly List<AiConversationMessage> _aiConversation = new();
     private readonly List<Button> _navButtons = new();
 
     private ScrollViewer? _activePageScroller;
@@ -45,27 +59,68 @@ public sealed class MainWindow : Window
     private DispatcherTimer? _devicePreviewTimer;
     private DispatcherTimer? _deviceListPreviewTimer;
     private readonly Dictionary<string, (Image Image, TextBlock Status)> _deviceCardPreviews = new();
+    private readonly Dictionary<string, string> _previewFrameHashes = new();
+    private readonly Dictionary<string, (int Width, int Height)> _previewFrameSizes = new();
+    private PreviewTouchState? _previewTouch;
     private DeviceModel? _currentDetailDevice;
     private DeviceModel? _pinnedDeviceNavDevice;
     private bool _deviceListPreviewEnabled;
     private int _deviceListPreviewSeconds = 3;
     private static bool s_darkTheme = true;
     private static bool s_followSystemTheme;
+    private string _selectedAiPermission = "请求批准";
+    private AiModelSettings? _selectedAiModel;
+    private Button? _aiSendButton;
+    private Border? _aiSendCircle;
+    private FontIcon? _aiSendIcon;
+    private Button? _aiScrollBottomButton;
+    private Storyboard? _aiThinkingStoryboard;
+    private ScrollViewer? _aiMessageScroller;
+    private CancellationTokenSource? _aiCancellation;
+    private bool _aiIsSending;
+    private bool _aiInputKeyHandlerAttached;
+    private bool _aiScrollBottomButtonVisible;
+    private bool _aiStreamFlushQueued;
+    private bool _aiStreamHasAnswer;
+    private readonly object _aiStreamLock = new();
+    private readonly StringBuilder _pendingAiAnswerDelta = new();
+    private readonly StringBuilder _pendingAiThinkingDelta = new();
     private string _currentPage = "总览";
 
+    private const int MinimumWindowWidthForDeviceDetail = 1180;
+    private const int MinimumWindowHeightForDeviceTabs = 720;
+
     private sealed record NavButtonInfo(string Text, Symbol Symbol, bool UsesDeviceGlyph = false, bool IsTablet = false);
+
+    private sealed record PreviewTouchState(DeviceModel Device, Image Image, Point StartPoint, DateTimeOffset StartedAt, uint PointerId);
+
+    private sealed record AiStreamingMessageUi(
+        AiChatMessage Message,
+        TextBlock AnswerText,
+        Border ThinkingShell,
+        TextBlock ThinkingText,
+        TextBlock ThinkingSummary,
+        Border ThinkingBody,
+        TextBlock ThinkingArrow,
+        TextBlock DurationText);
 
     public MainWindow()
     {
         _settings.Load();
         _devices = new DeviceService(_settings, _adb);
+        _aiTools = new AiAgentToolService(_adb);
+        _companion = new CompanionAppService(_adb);
 
         Title = "ADBControl";
         ExtendsContentIntoTitleBar = true;
         Content = _root;
         BuildShell();
         InstallNativeWheelHook();
-        _root.Loaded += (_, _) => RefreshNativeWheelHooks();
+        _root.Loaded += (_, _) =>
+        {
+            RefreshNativeWheelHooks();
+            PolishRoundedEdges(_root);
+        };
         ApplyTitleBarTheme();
         Navigate("总览");
         Closed += (_, _) => RestoreNativeWheelHook();
@@ -82,6 +137,7 @@ public sealed class MainWindow : Window
             {
                 new ColumnDefinition { Width = GridLength.Auto },
                 new ColumnDefinition(),
+                new ColumnDefinition { Width = GridLength.Auto },
             },
         };
         bar.Children.Add(new TextBlock
@@ -106,7 +162,7 @@ public sealed class MainWindow : Window
         {
             Fill = AppBrush(),
             GridLineBrush = GridLineBrush(),
-            GridSize = 56,
+            GridSize = 20,
         };
         Grid.SetRowSpan(_background, 3);
         _root.Children.Add(_background);
@@ -116,7 +172,7 @@ public sealed class MainWindow : Window
         _root.Children.Add(titleBar);
         SetTitleBar(titleBar);
 
-        _contentFrame.Margin = new Thickness(10, 8, 10, 8);
+        _contentFrame.Margin = new Thickness(10, 4, 10, 8);
         _contentFrame.CornerRadius = new CornerRadius(16);
         _contentFrame.Background = TransparentBrush();
         _contentFrame.Child = _contentHost;
@@ -369,6 +425,7 @@ public sealed class MainWindow : Window
                 ShowSettings();
                 break;
         }
+        _ = DispatcherQueue.TryEnqueue(() => PolishRoundedEdges(_root));
     }
 
     private static void ApplyNavButtonState(Button button, bool active)
@@ -445,6 +502,16 @@ public sealed class MainWindow : Window
         {
             case Border border when Equals(border.Tag, tag):
                 border.Background = background;
+                if (HasVisibleBrush(background))
+                {
+                    border.BorderThickness = new Thickness(1);
+                    border.BorderBrush = RoundedEdgeBrush();
+                }
+                else
+                {
+                    border.BorderThickness = new Thickness(0);
+                    border.BorderBrush = TransparentBrush();
+                }
                 break;
             case Border border when border.Child is not null:
                 SetTaggedBorder(border.Child, tag, background);
@@ -511,7 +578,7 @@ public sealed class MainWindow : Window
         _contentHost.Children.Add(panel);
     }
 
-    private void ShowDevices()
+    private void ShowDevices(bool refreshState = true)
     {
         _contentHost.Children.Clear();
         _deviceCardPreviews.Clear();
@@ -625,6 +692,37 @@ public sealed class MainWindow : Window
         }
 
         _contentHost.Children.Add(PageScroller(panel));
+        if (refreshState)
+            _ = RefreshDeviceStatesAndReloadAsync();
+    }
+
+    private async Task RefreshDeviceStatesAndReloadAsync()
+    {
+        var result = await _devices.RefreshConnectivityAsync();
+        if (!result.Success)
+            Notify("设备状态刷新失败", FailureText(result), InfoBarSeverity.Warning);
+
+        if (_currentPage == "设备" && _currentDetailDevice is null)
+            ShowDevices(false);
+    }
+
+    private void DeleteDevice(DeviceModel device)
+    {
+        var wasCurrentDetail = _currentDetailDevice?.DeviceId == device.DeviceId;
+        var wasPinned = _pinnedDeviceNavDevice?.DeviceId == device.DeviceId;
+        _devices.Remove(device);
+        StopDevicePreview();
+        StopDeviceListPreview();
+        if (wasCurrentDetail)
+            _currentDetailDevice = null;
+        if (wasPinned)
+        {
+            _pinnedDeviceNavDevice = null;
+            UpdateDeviceNav(null);
+        }
+
+        Notify("设备已删除", device.DisplayName, InfoBarSeverity.Success);
+        ShowDevices(false);
     }
 
     private UIElement DeviceCard(DeviceModel device)
@@ -632,6 +730,7 @@ public sealed class MainWindow : Window
         var root = new StackPanel { Spacing = 12 };
         var head = new Grid
         {
+            ColumnSpacing = 10,
             ColumnDefinitions =
             {
                 new ColumnDefinition { Width = GridLength.Auto },
@@ -672,8 +771,22 @@ public sealed class MainWindow : Window
             Background = new SolidColorBrush(device.IsConnected ? Colors.MediumSeaGreen : Colors.Orange),
             VerticalAlignment = VerticalAlignment.Center,
         };
-        Grid.SetColumn(status, 2);
-        head.Children.Add(status);
+        var delete = DangerButton("删除");
+        delete.MinHeight = 30;
+        delete.Padding = new Thickness(10, 5, 10, 5);
+        delete.Click += (_, args) =>
+        {
+            DeleteDevice(device);
+        };
+        var actions = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children = { status, delete },
+        };
+        Grid.SetColumn(actions, 2);
+        head.Children.Add(actions);
         root.Children.Add(head);
 
         if (_deviceListPreviewEnabled && device.IsConnected)
@@ -736,6 +849,8 @@ public sealed class MainWindow : Window
 
         var card = new Border
         {
+            Width = 320,
+            Margin = new Thickness(0, 0, 16, 16),
             CornerRadius = new CornerRadius(20),
             BorderBrush = BorderBrush(),
             BorderThickness = new Thickness(1),
@@ -743,33 +858,20 @@ public sealed class MainWindow : Window
             Padding = new Thickness(20),
             Child = root,
         };
-        var button = new Button
-        {
-            Width = 320,
-            Margin = new Thickness(0, 0, 16, 16),
-            Background = TransparentBrush(),
-            BorderBrush = TransparentBrush(),
-            CornerRadius = new CornerRadius(20),
-            Padding = new Thickness(0),
-            HorizontalContentAlignment = HorizontalAlignment.Stretch,
-            BorderThickness = new Thickness(0),
-            Content = card,
-        };
-        ApplyButtonResources(button, TransparentBrush(), PrimaryTextBrush(), TransparentBrush(), TransparentBrush(), TransparentBrush(), new Thickness(0));
-        button.PointerEntered += (_, _) =>
+        card.PointerEntered += (_, _) =>
         {
             card.BorderBrush = TransparentBrush();
             card.Shadow = new ThemeShadow();
             card.Translation = new System.Numerics.Vector3(0, 0, 24);
         };
-        button.PointerExited += (_, _) =>
+        card.PointerExited += (_, _) =>
         {
             card.BorderBrush = BorderBrush();
             card.Shadow = null;
             card.Translation = System.Numerics.Vector3.Zero;
         };
-        button.Click += (_, _) => ShowDeviceDetail(device);
-        return button;
+        card.Tapped += (_, _) => ShowDeviceDetail(device);
+        return card;
     }
 
     private void ShowDeviceDetail(DeviceModel device)
@@ -783,7 +885,16 @@ public sealed class MainWindow : Window
         foreach (var button in _navButtons)
             ApplyNavButtonState(button, false);
         _contentHost.Children.Clear();
-        var panel = PageStack();
+        var panel = new Grid
+        {
+            Margin = PageMargin(),
+            RowSpacing = 12,
+            RowDefinitions =
+            {
+                new RowDefinition { Height = GridLength.Auto },
+                new RowDefinition(),
+            },
+        };
         var headerRow = new Grid
         {
             ColumnSpacing = 14,
@@ -791,6 +902,8 @@ public sealed class MainWindow : Window
             {
                 new ColumnDefinition { Width = GridLength.Auto },
                 new ColumnDefinition(),
+                new ColumnDefinition { Width = GridLength.Auto },
+                new ColumnDefinition { Width = GridLength.Auto },
             },
         };
         var back = IconSquareButton("‹", 56);
@@ -800,12 +913,46 @@ public sealed class MainWindow : Window
         var detailHeader = (FrameworkElement)Header(device.DisplayName, device.ConnectionKind == "usb" ? "有线 ADB 设备详情" : "无线 ADB 设备详情");
         Grid.SetColumn(detailHeader, 1);
         headerRow.Children.Add(detailHeader);
+        var statusBadges = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                ConnectionBadge("ADB连接", device.IsConnected),
+                ConnectionBadge("APP连接", device.IsCompanionConnected),
+            },
+        };
+        Grid.SetColumn(statusBadges, 2);
+        headerRow.Children.Add(statusBadges);
+        var companionInstall = SecondaryButton("安装伴侣 App");
+        companionInstall.VerticalAlignment = VerticalAlignment.Center;
+        companionInstall.Visibility = Visibility.Collapsed;
+        companionInstall.Click += async (_, _) => await InstallCompanionFromDetailAsync(device, companionInstall);
+        Grid.SetColumn(companionInstall, 3);
+        headerRow.Children.Add(companionInstall);
+        var disconnect = SecondaryButton("断开连接");
+        disconnect.VerticalAlignment = VerticalAlignment.Center;
+        disconnect.Click += async (_, _) => await DisconnectDeviceAsync(device);
+        Grid.SetColumn(disconnect, 4);
+        headerRow.Children.Add(disconnect);
+        var detailDelete = DangerButton("删除设备");
+        detailDelete.VerticalAlignment = VerticalAlignment.Center;
+        detailDelete.Click += (_, _) => DeleteDevice(device);
+        Grid.SetColumn(detailDelete, 5);
+        headerRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        headerRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        headerRow.Children.Add(detailDelete);
         panel.Children.Add(headerRow);
 
         var layout = new Grid
         {
             ColumnSpacing = 16,
             RowSpacing = 16,
+            MinHeight = 0,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
             ColumnDefinitions =
             {
                 new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
@@ -829,15 +976,41 @@ public sealed class MainWindow : Window
         };
         var previewLayer = new Grid
         {
-            MinHeight = 420,
+            MinHeight = 0,
+            Background = TransparentBrush(),
+            VerticalAlignment = VerticalAlignment.Stretch,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
             Children =
             {
                 previewImage,
                 previewStatus,
             },
         };
-        var previewCard = Card(new Grid
+        AttachPreviewTouchHandlers(previewLayer, previewImage, device);
+        var previewControls = BuildPreviewControls(device, previewImage, previewStatus);
+        var previewShell = new Grid
         {
+            MinHeight = 0,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            ColumnSpacing = 12,
+            ColumnDefinitions =
+            {
+                new ColumnDefinition(),
+                new ColumnDefinition { Width = GridLength.Auto },
+            },
+            Children =
+            {
+                previewLayer,
+                previewControls,
+            },
+        };
+        Grid.SetColumn(previewLayer, 0);
+        Grid.SetColumn(previewControls, 1);
+        var previewContent = new Grid
+        {
+            MinHeight = 0,
+            VerticalAlignment = VerticalAlignment.Stretch,
             RowDefinitions =
             {
                 new RowDefinition { Height = GridLength.Auto },
@@ -853,20 +1026,329 @@ public sealed class MainWindow : Window
                     Foreground = PrimaryTextBrush(),
                     Margin = new Thickness(0, 0, 0, 12),
                 },
-                previewLayer,
+                previewShell,
             },
-        });
-        Grid.SetColumn(previewLayer, 0);
-        Grid.SetRow(previewLayer, 1);
+        };
+        var previewCard = Card(previewContent);
+        previewCard.VerticalAlignment = VerticalAlignment.Stretch;
+        previewCard.MinHeight = 0;
+        Grid.SetRow(previewShell, 1);
         Grid.SetColumn(previewCard, 0);
         layout.Children.Add(previewCard);
 
         var toolsCard = Card(BuildDeviceToolTabs(device));
+        toolsCard.VerticalAlignment = VerticalAlignment.Stretch;
+        toolsCard.MinHeight = 0;
         Grid.SetColumn(toolsCard, 1);
         layout.Children.Add(toolsCard);
+        Grid.SetRow(layout, 1);
         panel.Children.Add(layout);
         _contentHost.Children.Add(panel);
         StartDevicePreview(device, previewImage, previewStatus);
+        _ = RefreshCompanionInstallStateAsync(device, companionInstall);
+    }
+
+    private FrameworkElement BuildPreviewControls(DeviceModel device, Image previewImage, TextBlock previewStatus)
+    {
+        var controls = new StackPanel
+        {
+            Spacing = 8,
+            Width = 48,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+        controls.Children.Add(PreviewControlButton("⏻", "电源", async () => await _adb.ShellAsync(device.DeviceId, "input keyevent KEYCODE_POWER"), device));
+        controls.Children.Add(PreviewControlButton("+", "音量加", async () => await _adb.ShellAsync(device.DeviceId, "input keyevent KEYCODE_VOLUME_UP"), device));
+        controls.Children.Add(PreviewControlButton("-", "音量键", async () => await _adb.ShellAsync(device.DeviceId, "input keyevent KEYCODE_VOLUME_DOWN"), device));
+        controls.Children.Add(PreviewControlButton("□", "截图", async () => await RefreshPreviewOnceAsync(device, previewImage, previewStatus), device, showSuccess: false));
+        controls.Children.Add(new Border { Height = 18, Background = TransparentBrush() });
+        controls.Children.Add(PreviewControlButton("‹", "返回键", async () => await _adb.ShellAsync(device.DeviceId, "input keyevent KEYCODE_BACK"), device));
+        controls.Children.Add(PreviewControlButton("⌂", "主页键", async () => await _adb.ShellAsync(device.DeviceId, "input keyevent KEYCODE_HOME"), device));
+        controls.Children.Add(PreviewControlButton("≡", "多任务", async () => await _adb.ShellAsync(device.DeviceId, "input keyevent KEYCODE_APP_SWITCH"), device));
+        return controls;
+    }
+
+    private Button PreviewControlButton(string glyph, string label, Func<Task<AdbCommandResult>> action, DeviceModel device, bool showSuccess = true)
+    {
+        var button = new Button
+        {
+            Width = 44,
+            Height = 44,
+            MinWidth = 44,
+            MinHeight = 44,
+            Padding = new Thickness(0),
+            CornerRadius = new CornerRadius(14),
+            Content = new TextBlock
+            {
+                Text = glyph,
+                FontSize = 18,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                LineHeight = 22,
+            },
+        };
+        ApplyButtonResources(button, SurfaceAltBrush(), PrimaryTextBrush(), HoverBrush(), SurfaceBrush(), BorderLightBrush(), new Thickness(1));
+        ToolTipService.SetToolTip(button, label);
+        button.Click += async (_, _) =>
+        {
+            if (!await EnsureDeviceReadyAsync(device))
+                return;
+
+            try
+            {
+                var result = await action();
+                if (!result.Success)
+                    device.IsConnected = false;
+                if (showSuccess || !result.Success)
+                    Notify(result.Success ? "操作已执行" : "操作失败", result.Success ? label : FormatCommandResult(result), result.Success ? InfoBarSeverity.Success : InfoBarSeverity.Error);
+            }
+            catch (Exception ex)
+            {
+                device.IsConnected = false;
+                Notify("操作失败", ex.Message, InfoBarSeverity.Error);
+            }
+        };
+        return button;
+    }
+
+    private async Task<AdbCommandResult> RefreshPreviewOnceAsync(DeviceModel device, Image previewImage, TextBlock status)
+    {
+        try
+        {
+            status.Text = "正在刷新截图...";
+            status.Visibility = Visibility.Visible;
+            var png = await _adb.ScreencapPngAsync(device.DeviceId);
+            await ApplyPreviewFrameAsync(previewImage, device.DeviceId, png, "detail", force: true);
+            status.Visibility = Visibility.Collapsed;
+            return new AdbCommandResult(0, "截图已刷新。", string.Empty);
+        }
+        catch (Exception ex)
+        {
+            device.IsConnected = false;
+            status.Text = $"截图失败：{ex.Message}";
+            status.Visibility = Visibility.Visible;
+            return new AdbCommandResult(1, string.Empty, ex.Message);
+        }
+    }
+
+    private static UIElement ConnectionBadge(string label, bool connected)
+    {
+        var accent = connected ? Colors.MediumSeaGreen : Colors.Orange;
+        var brush = new SolidColorBrush(accent);
+        return new Border
+        {
+            CornerRadius = new CornerRadius(12),
+            BorderBrush = brush,
+            BorderThickness = new Thickness(1),
+            Background = connected ? PrimaryLightBrush() : SurfaceAltBrush(),
+            Padding = new Thickness(10, 5, 10, 5),
+            Child = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 6,
+                Children =
+                {
+                    new Border
+                    {
+                        Width = 7,
+                        Height = 7,
+                        CornerRadius = new CornerRadius(3.5),
+                        Background = brush,
+                        VerticalAlignment = VerticalAlignment.Center,
+                    },
+                    new TextBlock
+                    {
+                        Text = $"{label} {(connected ? "已连接" : "未连接")}",
+                        FontSize = 11,
+                        Foreground = connected ? PrimaryBrush() : SecondaryTextBrush(),
+                        VerticalAlignment = VerticalAlignment.Center,
+                    },
+                },
+            },
+        };
+    }
+
+    private async Task DisconnectDeviceAsync(DeviceModel device)
+    {
+        if (string.IsNullOrWhiteSpace(device.DeviceId))
+            return;
+
+        var result = await _adb.DisconnectAsync(device.DeviceId);
+        device.IsConnected = false;
+        StopDevicePreview();
+        Notify(result.Success ? "已断开连接" : "断开连接失败", FormatCommandResult(result), result.Success ? InfoBarSeverity.Success : InfoBarSeverity.Error);
+        ShowDeviceDetail(device);
+    }
+
+    private async Task RefreshCompanionInstallStateAsync(DeviceModel device, Button installButton)
+    {
+        if (!await EnsureDeviceReadyAsync(device))
+        {
+            installButton.Visibility = Visibility.Visible;
+            return;
+        }
+
+        try
+        {
+            var installed = await _companion.IsInstalledAsync(device);
+            device.IsCompanionInstalled = installed;
+            installButton.Visibility = installed ? Visibility.Collapsed : Visibility.Visible;
+            if (installed && !device.IsCompanionConnected)
+            {
+                var result = await _companion.OpenAndConfigureAsync(device, _settings.Current.QuicPort);
+                Notify(
+                    result.Success ? "伴侣 App 已启动" : "伴侣 App 连接配置失败",
+                    result.Success ? $"已下发 QUIC 地址，端口 {_settings.Current.QuicPort}。" : FormatCommandResult(result),
+                    result.Success ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            installButton.Visibility = Visibility.Visible;
+            Notify("伴侣 App 检测失败", ex.Message, InfoBarSeverity.Warning);
+        }
+    }
+
+    private async Task InstallCompanionFromDetailAsync(DeviceModel device, Button installButton)
+    {
+        if (!await EnsureDeviceReadyAsync(device))
+        {
+            Notify("需要 ADB 连接", "请先让该设备处于 ADB 已连接状态，再安装伴侣 App。", InfoBarSeverity.Warning);
+            return;
+        }
+
+        var originalContent = installButton.Content;
+        installButton.IsEnabled = false;
+        installButton.Content = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            Children =
+            {
+                new TextBlock { Text = "•••", Foreground = PrimaryBrush(), FontSize = 14, VerticalAlignment = VerticalAlignment.Center },
+                new TextBlock
+                {
+                    Text = "安装中...",
+                    Foreground = SecondaryTextBrush(),
+                    VerticalAlignment = VerticalAlignment.Center,
+                },
+            },
+        };
+
+        try
+        {
+            var install = await _companion.InstallAsync(device);
+            if (!install.Success)
+            {
+                Notify("伴侣 App 安装失败", FormatCommandResult(install), InfoBarSeverity.Error);
+                return;
+            }
+
+            device.IsCompanionInstalled = true;
+            installButton.Visibility = Visibility.Collapsed;
+            var configure = await _companion.OpenAndConfigureAsync(device, _settings.Current.QuicPort);
+            Notify(
+                configure.Success ? "伴侣 App 已安装" : "伴侣 App 已安装但连接配置失败",
+                configure.Success ? $"已通过 ADB 下发 QUIC 连接地址，端口 {_settings.Current.QuicPort}。" : FormatCommandResult(configure),
+                configure.Success ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
+        }
+        catch (Exception ex)
+        {
+            Notify("伴侣 App 安装失败", ex.Message, InfoBarSeverity.Error);
+        }
+        finally
+        {
+            installButton.IsEnabled = true;
+            installButton.Content = originalContent;
+        }
+    }
+
+    private void AttachPreviewTouchHandlers(Grid previewLayer, Image previewImage, DeviceModel device)
+    {
+        previewLayer.PointerPressed += (_, e) =>
+        {
+            if (!e.GetCurrentPoint(previewLayer).Properties.IsLeftButtonPressed)
+                return;
+
+            var point = e.GetCurrentPoint(previewLayer);
+            _previewTouch = new PreviewTouchState(device, previewImage, point.Position, DateTimeOffset.Now, point.PointerId);
+            previewLayer.CapturePointer(e.Pointer);
+            e.Handled = true;
+        };
+
+        previewLayer.PointerReleased += async (_, e) =>
+        {
+            if (_previewTouch is null || _previewTouch.PointerId != e.Pointer.PointerId)
+                return;
+
+            var touch = _previewTouch;
+            _previewTouch = null;
+            previewLayer.ReleasePointerCapture(e.Pointer);
+            e.Handled = true;
+            await SendPreviewTouchAsync(previewLayer, touch, e.GetCurrentPoint(previewLayer).Position);
+        };
+
+        previewLayer.PointerCanceled += (_, e) =>
+        {
+            if (_previewTouch?.PointerId == e.Pointer.PointerId)
+                _previewTouch = null;
+            previewLayer.ReleasePointerCapture(e.Pointer);
+        };
+
+        previewLayer.PointerCaptureLost += (_, _) => _previewTouch = null;
+    }
+
+    private async Task SendPreviewTouchAsync(FrameworkElement previewLayer, PreviewTouchState touch, Point endPoint)
+    {
+        if (!TryMapPreviewPoint(previewLayer, touch.Image, touch.Device.DeviceId, touch.StartPoint, out var start) ||
+            !TryMapPreviewPoint(previewLayer, touch.Image, touch.Device.DeviceId, endPoint, out var end))
+            return;
+
+        if (!await EnsureDeviceReadyAsync(touch.Device))
+            return;
+
+        var elapsed = Math.Max(1, (int)(DateTimeOffset.Now - touch.StartedAt).TotalMilliseconds);
+        var distance = Math.Sqrt(Math.Pow(end.X - start.X, 2) + Math.Pow(end.Y - start.Y, 2));
+        var result = distance < 8
+            ? elapsed >= 500
+                ? await _adb.SwipeAsync(touch.Device.DeviceId, start.X, start.Y, start.X, start.Y, Math.Max(650, elapsed))
+                : await _adb.TapAsync(touch.Device.DeviceId, start.X, start.Y)
+            : await _adb.SwipeAsync(touch.Device.DeviceId, start.X, start.Y, end.X, end.Y, Math.Max(120, elapsed));
+
+        if (!result.Success)
+        {
+            touch.Device.IsConnected = false;
+            Notify("触控失败", FormatCommandResult(result), InfoBarSeverity.Error);
+        }
+    }
+
+    private bool TryMapPreviewPoint(FrameworkElement previewLayer, Image image, string deviceId, Point point, out (int X, int Y) devicePoint)
+    {
+        devicePoint = default;
+        if (!_previewFrameSizes.TryGetValue($"detail:{deviceId}", out var frame) || frame.Width <= 0 || frame.Height <= 0)
+            return false;
+
+        var layerWidth = previewLayer.ActualWidth;
+        var layerHeight = previewLayer.ActualHeight;
+        if (layerWidth <= 0 || layerHeight <= 0)
+            return false;
+
+        // The preview image uses Stretch.Uniform, so clicks on letterboxed margins must not be sent to the device.
+        var scale = Math.Min(layerWidth / frame.Width, layerHeight / frame.Height);
+        var renderedWidth = frame.Width * scale;
+        var renderedHeight = frame.Height * scale;
+        var offsetX = (layerWidth - renderedWidth) / 2d;
+        var offsetY = (layerHeight - renderedHeight) / 2d;
+        var imageX = point.X - offsetX;
+        var imageY = point.Y - offsetY;
+        if (imageX < 0 || imageY < 0 || imageX > renderedWidth || imageY > renderedHeight)
+            return false;
+
+        var x = (int)Math.Clamp(Math.Round(imageX / scale), 0, frame.Width - 1);
+        var y = (int)Math.Clamp(Math.Round(imageY / scale), 0, frame.Height - 1);
+        devicePoint = (x, y);
+        return true;
     }
 
     private UIElement BuildDeviceToolTabs(DeviceModel device)
@@ -877,7 +1359,19 @@ public sealed class MainWindow : Window
             BorderThickness = new Thickness(0),
             CornerRadius = new CornerRadius(14, 0, 0, 14),
             Padding = new Thickness(0),
+            MinHeight = 0,
+            VerticalAlignment = VerticalAlignment.Stretch,
         };
+        var contentScroller = new ScrollViewer
+        {
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            MinHeight = 0,
+            VerticalAlignment = VerticalAlignment.Stretch,
+        };
+        StyleScrollViewer(contentScroller);
+        AttachWheelScrolling(contentScroller);
+        contentHost.Child = contentScroller;
         var tabs = new StackPanel
         {
             Spacing = 8,
@@ -897,7 +1391,7 @@ public sealed class MainWindow : Window
 
         void Select(int index)
         {
-            contentHost.Child = items[index].Build();
+            contentScroller.Content = items[index].Build();
             for (var i = 0; i < buttons.Count; i++)
                 ApplyDeviceTabState(buttons[i], i == index);
         }
@@ -914,6 +1408,9 @@ public sealed class MainWindow : Window
         var root = new Grid
         {
             ColumnSpacing = 0,
+            MinHeight = 0,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
             ColumnDefinitions =
             {
                 new ColumnDefinition(),
@@ -971,12 +1468,12 @@ public sealed class MainWindow : Window
         var stack = ToolStack();
         stack.Children.Add(BodyText("最近使用的高频 ADB 操作。"));
         stack.Children.Add(ActionGrid(
-            DeviceActionButton("截屏刷新", async () => await _adb.ScreencapPngAsync(device.DeviceId), "截图命令已执行。"),
-            DeviceActionButton("返回", async () => await _adb.ShellAsync(device.DeviceId, "input keyevent KEYCODE_BACK")),
-            DeviceActionButton("主页", async () => await _adb.ShellAsync(device.DeviceId, "input keyevent KEYCODE_HOME")),
-            DeviceActionButton("任务视图", async () => await _adb.ShellAsync(device.DeviceId, "input keyevent KEYCODE_APP_SWITCH")),
-            DeviceActionButton("点亮屏幕", async () => await _adb.ShellAsync(device.DeviceId, "input keyevent KEYCODE_WAKEUP")),
-            DeviceActionButton("锁屏", async () => await _adb.ShellAsync(device.DeviceId, "input keyevent KEYCODE_SLEEP"))));
+            DeviceActionButton(device, "截屏刷新", async () => await _adb.ScreencapPngAsync(device.DeviceId), "截图命令已执行。"),
+            DeviceActionButton(device, "返回", async () => await _adb.ShellAsync(device.DeviceId, "input keyevent KEYCODE_BACK")),
+            DeviceActionButton(device, "主页", async () => await _adb.ShellAsync(device.DeviceId, "input keyevent KEYCODE_HOME")),
+            DeviceActionButton(device, "任务视图", async () => await _adb.ShellAsync(device.DeviceId, "input keyevent KEYCODE_APP_SWITCH")),
+            DeviceActionButton(device, "点亮屏幕", async () => await _adb.ShellAsync(device.DeviceId, "input keyevent KEYCODE_WAKEUP")),
+            DeviceActionButton(device, "锁屏", async () => await _adb.ShellAsync(device.DeviceId, "input keyevent KEYCODE_SLEEP"))));
         return stack;
     }
 
@@ -1006,10 +1503,22 @@ public sealed class MainWindow : Window
         {
             if (string.IsNullOrWhiteSpace(input.Text))
                 return;
+            if (!await EnsureDeviceReadyAsync(device))
+                return;
             var command = input.Text.Trim();
             output.Text = $"adb -s {device.DeviceId} shell {command}\r\n执行中...";
-            var result = await _adb.ShellAsync(device.DeviceId, command);
-            output.Text = $"adb -s {device.DeviceId} shell {command}\r\n{FormatCommandResult(result)}";
+            try
+            {
+                var result = await _adb.ShellAsync(device.DeviceId, command);
+                output.Text = $"adb -s {device.DeviceId} shell {command}\r\n{FormatCommandResult(result)}";
+                if (!result.Success)
+                    device.IsConnected = false;
+            }
+            catch (Exception ex)
+            {
+                device.IsConnected = false;
+                output.Text = $"adb -s {device.DeviceId} shell {command}\r\n{ex.Message}";
+            }
         };
         var prompt = new Grid
         {
@@ -1064,12 +1573,12 @@ public sealed class MainWindow : Window
 
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { refresh, install } };
         var actions = ActionGrid(
-            DevicePackageButton("运行", packages, packageName => _adb.ShellAsync(device.DeviceId, $"monkey -p {packageName} 1")),
-            DevicePackageButton("强制停止", packages, packageName => _adb.ShellAsync(device.DeviceId, $"am force-stop {packageName}")),
-            DevicePackageButton("禁用", packages, packageName => _adb.ShellAsync(device.DeviceId, $"pm disable-user {packageName}")),
-            DevicePackageButton("启用", packages, packageName => _adb.ShellAsync(device.DeviceId, $"pm enable {packageName}")),
-            DevicePackageButton("提取 APK", packages, packageName => PullPackageApkAsync(device, packageName)),
-            DevicePackageButton("清除数据", packages, packageName => _adb.ShellAsync(device.DeviceId, $"pm clear {packageName}")));
+            DevicePackageButton(device, "运行", packages, packageName => _adb.ShellAsync(device.DeviceId, $"monkey -p {packageName} 1")),
+            DevicePackageButton(device, "强制停止", packages, packageName => _adb.ShellAsync(device.DeviceId, $"am force-stop {packageName}")),
+            DevicePackageButton(device, "禁用", packages, packageName => _adb.ShellAsync(device.DeviceId, $"pm disable-user {packageName}")),
+            DevicePackageButton(device, "启用", packages, packageName => _adb.ShellAsync(device.DeviceId, $"pm enable {packageName}")),
+            DevicePackageButton(device, "提取 APK", packages, packageName => PullPackageApkAsync(device, packageName)),
+            DevicePackageButton(device, "清除数据", packages, packageName => _adb.ShellAsync(device.DeviceId, $"pm clear {packageName}")));
         var detail = SecondaryButton("查看软件信息");
         detail.Click += async (_, _) =>
         {
@@ -1079,6 +1588,8 @@ public sealed class MainWindow : Window
                 return;
             }
 
+            if (!await EnsureDeviceReadyAsync(device))
+                return;
             var result = await _adb.ShellAsync(device.DeviceId, $"dumpsys package {packageName}");
             await ShowTextDialogAsync($"软件信息 - {packageName}", FormatCommandResult(result));
         };
@@ -1110,15 +1621,23 @@ public sealed class MainWindow : Window
         var list = PrimaryButton("查看目录");
         list.Click += async (_, _) =>
         {
+            if (!await EnsureDeviceReadyAsync(device))
+                return;
             var result = await _adb.ShellAsync(device.DeviceId, $"ls -la \"{EscapeShell(path.Text)}\"");
             listing.Text = FormatCommandResult(result);
+            if (!result.Success)
+                device.IsConnected = false;
         };
         var send = SecondaryButton("发送文件到此目录");
         send.Click += async (_, _) => await PushFileAsync(device, path.Text.Trim());
         var delete = SecondaryButton("删除路径");
         delete.Click += async (_, _) =>
         {
+            if (!await EnsureDeviceReadyAsync(device))
+                return;
             var result = await _adb.ShellAsync(device.DeviceId, $"rm -rf \"{EscapeShell(path.Text)}\"");
+            if (!result.Success)
+                device.IsConnected = false;
             Notify(result.Success ? "删除命令已执行" : "删除失败", FormatCommandResult(result), result.Success ? InfoBarSeverity.Success : InfoBarSeverity.Error);
         };
 
@@ -1146,9 +1665,13 @@ public sealed class MainWindow : Window
         var refresh = PrimaryButton("刷新硬件信息");
         refresh.Click += async (_, _) =>
         {
+            if (!await EnsureDeviceReadyAsync(device))
+                return;
             var command = "printf '品牌: '; getprop ro.product.brand; printf '型号: '; getprop ro.product.model; printf '系统: '; getprop ro.build.version.release; printf 'SDK: '; getprop ro.build.version.sdk; printf 'CPU ABI: '; getprop ro.product.cpu.abi; printf 'CPU 型号: '; cat /proc/cpuinfo | grep -m 1 'Hardware\\|model name\\|Processor'; printf '\\n电池:\\n'; dumpsys battery | head -n 20; printf '\\n内存:\\n'; cat /proc/meminfo | head -n 8; printf '\\nCPU 负载:\\n'; cat /proc/loadavg";
             var result = await _adb.ShellAsync(device.DeviceId, command);
             output.Text = FormatCommandResult(result);
+            if (!result.Success)
+                device.IsConnected = false;
         };
 
         var stack = ToolStack();
@@ -1163,12 +1686,12 @@ public sealed class MainWindow : Window
         var stack = ToolStack();
         stack.Children.Add(BodyText("这些操作会改变设备启动状态，请确认设备可恢复后再执行。"));
         stack.Children.Add(ActionGrid(
-            DeviceActionButton("重启系统", async () => await _adb.ShellAsync(device.DeviceId, "reboot")),
-            DeviceActionButton("Fastboot", async () => await _adb.ShellAsync(device.DeviceId, "reboot bootloader")),
-            DeviceActionButton("Fastbootd", async () => await _adb.ShellAsync(device.DeviceId, "reboot fastboot")),
-            DeviceActionButton("Recovery", async () => await _adb.ShellAsync(device.DeviceId, "reboot recovery")),
-            DeviceActionButton("EDL", async () => await _adb.ShellAsync(device.DeviceId, "reboot edl")),
-            DeviceActionButton("关机", async () => await _adb.ShellAsync(device.DeviceId, "reboot -p"))));
+            DeviceActionButton(device, "重启系统", async () => await _adb.ShellAsync(device.DeviceId, "reboot")),
+            DeviceActionButton(device, "Fastboot", async () => await _adb.ShellAsync(device.DeviceId, "reboot bootloader")),
+            DeviceActionButton(device, "Fastbootd", async () => await _adb.ShellAsync(device.DeviceId, "reboot fastboot")),
+            DeviceActionButton(device, "Recovery", async () => await _adb.ShellAsync(device.DeviceId, "reboot recovery")),
+            DeviceActionButton(device, "EDL", async () => await _adb.ShellAsync(device.DeviceId, "reboot edl")),
+            DeviceActionButton(device, "关机", async () => await _adb.ShellAsync(device.DeviceId, "reboot -p"))));
         return stack;
     }
 
@@ -1189,31 +1712,53 @@ public sealed class MainWindow : Window
         return panel;
     }
 
-    private Button DeviceActionButton(string text, Func<Task<AdbCommandResult>> action)
+    private Button DeviceActionButton(DeviceModel device, string text, Func<Task<AdbCommandResult>> action)
     {
         var button = SecondaryButton(text);
         button.Margin = new Thickness(0, 0, 8, 8);
         button.Click += async (_, _) =>
         {
-            var result = await action();
-            Notify(result.Success ? "操作已执行" : "操作失败", FormatCommandResult(result), result.Success ? InfoBarSeverity.Success : InfoBarSeverity.Error);
+            if (!await EnsureDeviceReadyAsync(device))
+                return;
+            try
+            {
+                var result = await action();
+                if (!result.Success)
+                    device.IsConnected = false;
+                Notify(result.Success ? "操作已执行" : "操作失败", FormatCommandResult(result), result.Success ? InfoBarSeverity.Success : InfoBarSeverity.Error);
+            }
+            catch (Exception ex)
+            {
+                device.IsConnected = false;
+                Notify("操作失败", ex.Message, InfoBarSeverity.Error);
+            }
         };
         return button;
     }
 
-    private Button DeviceActionButton(string text, Func<Task<byte[]>> action, string successMessage)
+    private Button DeviceActionButton(DeviceModel device, string text, Func<Task<byte[]>> action, string successMessage)
     {
         var button = SecondaryButton(text);
         button.Margin = new Thickness(0, 0, 8, 8);
         button.Click += async (_, _) =>
         {
-            await action();
-            Notify("操作已执行", successMessage, InfoBarSeverity.Success);
+            if (!await EnsureDeviceReadyAsync(device))
+                return;
+            try
+            {
+                await action();
+                Notify("操作已执行", successMessage, InfoBarSeverity.Success);
+            }
+            catch (Exception ex)
+            {
+                device.IsConnected = false;
+                Notify("操作失败", ex.Message, InfoBarSeverity.Error);
+            }
         };
         return button;
     }
 
-    private Button DevicePackageButton(string text, ListView packages, Func<string, Task<AdbCommandResult>> action)
+    private Button DevicePackageButton(DeviceModel device, string text, ListView packages, Func<string, Task<AdbCommandResult>> action)
     {
         var button = SecondaryButton(text);
         button.Margin = new Thickness(0, 0, 8, 8);
@@ -1225,18 +1770,44 @@ public sealed class MainWindow : Window
                 return;
             }
 
+            if (!await EnsureDeviceReadyAsync(device))
+                return;
             var result = await action(packageName);
+            if (!result.Success)
+                device.IsConnected = false;
             Notify(result.Success ? "操作已执行" : "操作失败", FormatCommandResult(result), result.Success ? InfoBarSeverity.Success : InfoBarSeverity.Error);
         };
         return button;
     }
 
+    private async Task<bool> EnsureDeviceReadyAsync(DeviceModel device, bool notify = true)
+    {
+        if (string.IsNullOrWhiteSpace(device.DeviceId))
+            return false;
+
+        var online = await _devices.EnsureDeviceOnlineAsync(device);
+        if (!online)
+        {
+            device.IsConnected = false;
+            if (notify)
+                Notify("设备离线", $"ADB 当前无法访问 {device.DeviceId}，请重新连接或确认无线调试端口仍有效。", InfoBarSeverity.Warning);
+        }
+
+        return online;
+    }
+
     private async Task LoadPackagesAsync(DeviceModel device, ListView packages, TextBlock status)
     {
         status.Text = "正在读取软件包...";
+        if (!await EnsureDeviceReadyAsync(device))
+        {
+            status.Text = $"设备离线：{device.DeviceId}";
+            return;
+        }
         var result = await _adb.ShellAsync(device.DeviceId, "pm list packages -3");
         if (!result.Success)
         {
+            device.IsConnected = false;
             status.Text = FormatCommandResult(result);
             return;
         }
@@ -1253,6 +1824,9 @@ public sealed class MainWindow : Window
 
     private async Task InstallApkAsync(DeviceModel device)
     {
+        if (!await EnsureDeviceReadyAsync(device))
+            return;
+
         var picker = new FileOpenPicker();
         InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(this));
         picker.FileTypeFilter.Add(".apk");
@@ -1261,14 +1835,22 @@ public sealed class MainWindow : Window
             return;
 
         var result = await _adb.InstallAsync(device.DeviceId, file.Path);
+        if (!result.Success)
+            device.IsConnected = false;
         Notify(result.Success ? "APK 已安装" : "安装失败", FormatCommandResult(result), result.Success ? InfoBarSeverity.Success : InfoBarSeverity.Error);
     }
 
     private async Task<AdbCommandResult> PullPackageApkAsync(DeviceModel device, string packageName)
     {
+        if (!await EnsureDeviceReadyAsync(device))
+            return new AdbCommandResult(1, string.Empty, $"设备离线：{device.DeviceId}");
+
         var pathResult = await _adb.ShellAsync(device.DeviceId, $"pm path {packageName}");
         if (!pathResult.Success)
+        {
+            device.IsConnected = false;
             return pathResult;
+        }
 
         var remote = pathResult.Stdout
             .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
@@ -1289,6 +1871,9 @@ public sealed class MainWindow : Window
 
     private async Task PushFileAsync(DeviceModel device, string remoteDirectory)
     {
+        if (!await EnsureDeviceReadyAsync(device))
+            return;
+
         var picker = new FileOpenPicker();
         InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(this));
         picker.FileTypeFilter.Add("*");
@@ -1298,6 +1883,8 @@ public sealed class MainWindow : Window
 
         var remote = $"{remoteDirectory.TrimEnd('/')}/{file.Name}";
         var result = await _adb.PushAsync(device.DeviceId, file.Path, remote);
+        if (!result.Success)
+            device.IsConnected = false;
         Notify(result.Success ? "文件已发送" : "发送失败", FormatCommandResult(result), result.Success ? InfoBarSeverity.Success : InfoBarSeverity.Error);
     }
 
@@ -1307,14 +1894,19 @@ public sealed class MainWindow : Window
         {
             try
             {
+                if (!await EnsureDeviceReadyAsync(device, false))
+                {
+                    status.Visibility = Visibility.Visible;
+                    status.Text = $"设备离线：{device.DeviceId}";
+                    return;
+                }
                 var png = await _adb.ScreencapPngAsync(device.DeviceId);
-                var path = Path.Combine(Path.GetTempPath(), $"adbcontrol-preview-{SanitizeFileName(device.DeviceId)}.png");
-                await File.WriteAllBytesAsync(path, png);
-                previewImage.Source = new BitmapImage(new Uri(path));
+                await ApplyPreviewFrameAsync(previewImage, device.DeviceId, png, "detail");
                 status.Visibility = Visibility.Collapsed;
             }
             catch (Exception ex)
             {
+                device.IsConnected = false;
                 status.Visibility = Visibility.Visible;
                 status.Text = $"截图失败：{ex.Message}";
             }
@@ -1330,6 +1922,10 @@ public sealed class MainWindow : Window
     {
         _devicePreviewTimer?.Stop();
         _devicePreviewTimer = null;
+        _previewFrameHashes.Keys
+            .Where(key => key.StartsWith("detail:", StringComparison.Ordinal))
+            .ToList()
+            .ForEach(key => _previewFrameHashes.Remove(key));
     }
 
     private void StartDeviceListPreview()
@@ -1368,17 +1964,62 @@ public sealed class MainWindow : Window
         {
             target.Status.Text = "刷新中...";
             target.Status.Visibility = Visibility.Visible;
+            if (!await EnsureDeviceReadyAsync(device, false))
+            {
+                target.Status.Text = $"设备离线：{device.DeviceId}";
+                return;
+            }
             var png = await _adb.ScreencapPngAsync(device.DeviceId);
-            var path = Path.Combine(Path.GetTempPath(), $"adbcontrol-card-preview-{SanitizeFileName(device.DeviceId)}.png");
-            await File.WriteAllBytesAsync(path, png);
-            target.Image.Source = new BitmapImage(new Uri(path));
+            await ApplyPreviewFrameAsync(target.Image, device.DeviceId, png, "card");
             target.Status.Visibility = Visibility.Collapsed;
         }
         catch (Exception ex)
         {
+            device.IsConnected = false;
             target.Status.Visibility = Visibility.Visible;
             target.Status.Text = $"截图失败：{ex.Message}";
         }
+    }
+
+    private async Task<bool> ApplyPreviewFrameAsync(Image image, string deviceId, byte[] png, string scope, bool force = false)
+    {
+        var key = $"{scope}:{deviceId}";
+        if (TryReadPngSize(png, out var width, out var height))
+            _previewFrameSizes[key] = (width, height);
+        var hash = Convert.ToHexString(SHA256.HashData(png));
+        if (!force && _previewFrameHashes.TryGetValue(key, out var previousHash) && previousHash == hash)
+            return false;
+
+        _previewFrameHashes[key] = hash;
+        var bitmap = new BitmapImage();
+        using var stream = new MemoryStream(png);
+        await bitmap.SetSourceAsync(stream.AsRandomAccessStream());
+        image.Source = bitmap;
+        return true;
+    }
+
+    private static bool TryReadPngSize(byte[] png, out int width, out int height)
+    {
+        width = 0;
+        height = 0;
+        if (png.Length < 24 ||
+            png[0] != 0x89 ||
+            png[1] != 0x50 ||
+            png[2] != 0x4E ||
+            png[3] != 0x47)
+            return false;
+
+        width = ReadBigEndianInt32(png, 16);
+        height = ReadBigEndianInt32(png, 20);
+        return width > 0 && height > 0;
+    }
+
+    private static int ReadBigEndianInt32(byte[] bytes, int offset)
+    {
+        return (bytes[offset] << 24) |
+               (bytes[offset + 1] << 16) |
+               (bytes[offset + 2] << 8) |
+               bytes[offset + 3];
     }
 
     private async Task ShowTextDialogAsync(string title, string text)
@@ -1450,6 +2091,38 @@ public sealed class MainWindow : Window
         var panel = PageStack();
         panel.MaxWidth = 640;
         panel.HorizontalAlignment = HorizontalAlignment.Center;
+        var adbPortBox = StyledNumberBox(_settings.Current.AdbPort, 1024, 65535, 180);
+        adbPortBox.ValueChanged += (_, args) =>
+        {
+            if (!double.IsNaN(args.NewValue))
+            {
+                _settings.Current.AdbPort = (int)Math.Clamp(args.NewValue, 1024, 65535);
+                _settings.Save();
+            }
+        };
+        var quicPortBox = StyledNumberBox(_settings.Current.QuicPort, 1024, 65535, 180);
+        quicPortBox.ValueChanged += (_, args) =>
+        {
+            if (!double.IsNaN(args.NewValue))
+            {
+                _settings.Current.QuicPort = (int)Math.Clamp(args.NewValue, 1024, 65535);
+                _settings.Save();
+            }
+        };
+        var resetAdbPort = SecondaryButton("恢复默认 (15037)");
+        resetAdbPort.Click += (_, _) =>
+        {
+            _settings.Current.AdbPort = 15037;
+            _settings.Save();
+            adbPortBox.Value = 15037;
+        };
+        var resetQuicPort = SecondaryButton("恢复默认 (15038)");
+        resetQuicPort.Click += (_, _) =>
+        {
+            _settings.Current.QuicPort = 15038;
+            _settings.Save();
+            quicPortBox.Value = 15038;
+        };
         panel.Children.Add(SettingsSection("ADB 配置", new StackPanel
         {
             Spacing = 6,
@@ -1463,8 +2136,21 @@ public sealed class MainWindow : Window
                     Spacing = 12,
                     Children =
                     {
-                        StyledNumberBox(15037, 1024, 65535, 180),
-                        SecondaryButton("恢复默认 (15037)"),
+                        adbPortBox,
+                        resetAdbPort,
+                    },
+                },
+                new Border { Height = 1, Background = BorderBrush(), Margin = new Thickness(0, 8, 0, 8) },
+                new TextBlock { Text = "Companion QUIC 端口", Foreground = PrimaryTextBrush() },
+                new TextBlock { Text = "桌面端通过 ADB 下发给伴侣 App 的局域网 QUIC 连接端口", FontSize = 12, Foreground = MutedBrush(), TextWrapping = TextWrapping.Wrap },
+                new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 12,
+                    Children =
+                    {
+                        quicPortBox,
+                        resetQuicPort,
                     },
                 },
             },
@@ -1610,7 +2296,7 @@ public sealed class MainWindow : Window
         {
             _background.Fill = AppBrush();
             _background.GridLineBrush = GridLineBrush();
-            _background.GridSize = 56;
+            _background.GridSize = 20;
             _background.Refresh();
         }
         ApplyTitleBarTheme();
@@ -1628,6 +2314,7 @@ public sealed class MainWindow : Window
         if (_aiButton is not null)
             ApplyNavButtonState(_aiButton, _aiPanel.Visibility == Visibility.Visible);
         RefreshAiPanelTheme();
+        _ = DispatcherQueue.TryEnqueue(() => PolishRoundedEdges(_root));
     }
 
     private void ApplyTitleBarTheme()
@@ -1686,17 +2373,46 @@ public sealed class MainWindow : Window
         }
         else
         {
-            foreach (var model in _settings.Current.AiModels)
+            foreach (var model in _settings.Current.AiModels.ToList())
             {
-                stack.Children.Add(Card(new TextBlock
+                var row = new Grid
+                {
+                    ColumnSpacing = 12,
+                    ColumnDefinitions =
+                    {
+                        new ColumnDefinition(),
+                        new ColumnDefinition { Width = GridLength.Auto },
+                    },
+                };
+                row.Children.Add(new TextBlock
                 {
                     Text = $"{model.Name}  ·  {model.ModelId}\n{model.ApiUrl}",
                     TextWrapping = TextWrapping.Wrap,
-                }));
+                    Foreground = PrimaryTextBrush(),
+                });
+                var delete = DangerButton("删除");
+                delete.Click += (_, _) => DeleteAiModel(model);
+                Grid.SetColumn(delete, 1);
+                row.Children.Add(delete);
+                stack.Children.Add(Card(row));
             }
         }
 
         return Card(stack);
+    }
+
+    private void DeleteAiModel(AiModelSettings model)
+    {
+        _settings.Current.AiModels.Remove(model);
+        if (_selectedAiModel is not null &&
+            (ReferenceEquals(_selectedAiModel, model) || _selectedAiModel.ModelId == model.ModelId))
+        {
+            _selectedAiModel = null;
+        }
+        _settings.Save();
+        RefreshModelCombo();
+        ShowSettings();
+        Notify("模型已删除", model.Name, InfoBarSeverity.Success);
     }
 
     private void BuildAiPanel()
@@ -1759,7 +2475,21 @@ public sealed class MainWindow : Window
         var close = new Button
         {
             Tag = "ai-close",
-            Content = new SymbolIcon(Symbol.Cancel),
+            Content = new Grid
+            {
+                Width = 34,
+                Height = 34,
+                Children =
+                {
+                    new SymbolIcon(Symbol.Cancel)
+                    {
+                        Width = 15,
+                        Height = 15,
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                        VerticalAlignment = VerticalAlignment.Center,
+                    },
+                },
+            },
             Width = 34,
             Height = 34,
             Padding = new Thickness(0),
@@ -1775,27 +2505,44 @@ public sealed class MainWindow : Window
         root.Children.Add(top);
 
         _messageList.Spacing = 12;
-        _messageList.Children.Add(MessageBubble(new AiChatMessage
+        if (_settings.Current.AiMessages.Count == 0)
         {
-            Role = "AI",
-            Text = "请先在设置内配置 AI 模型，然后再发送消息。",
-            IsUser = false,
-        }));
+            _messageList.Children.Add(MessageBubble(new AiChatMessage
+            {
+                Role = "AI",
+                Text = "请先在设置内配置 AI 模型，然后再发送消息。",
+                IsUser = false,
+            }));
+        }
+        else
+        {
+            foreach (var message in _settings.Current.AiMessages)
+                _messageList.Children.Add(MessageBubble(message));
+        }
+        RebuildAiConversationFromVisibleMessages();
         var messageScroller = new ScrollViewer
         {
             Content = _messageList,
             Padding = new Thickness(16, 12, 16, 12),
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
+        _aiMessageScroller = messageScroller;
+        StyleScrollViewer(messageScroller);
         AttachWheelScrolling(messageScroller);
-        Grid.SetRow(messageScroller, 1);
-        root.Children.Add(messageScroller);
+        messageScroller.ViewChanged -= OnAiMessageScrollerViewChanged;
+        messageScroller.ViewChanged += OnAiMessageScrollerViewChanged;
+        var messageLayer = new Grid();
+        messageLayer.Children.Add(messageScroller);
+        _aiScrollBottomButton = BuildAiScrollBottomButton();
+        messageLayer.Children.Add(_aiScrollBottomButton);
+        Grid.SetRow(messageLayer, 1);
+        root.Children.Add(messageLayer);
 
         var inputArea = new Grid
         {
             Margin = new Thickness(0),
-            Padding = new Thickness(12, 10, 12, 10),
-            RowSpacing = 6,
+            Padding = new Thickness(0, 0, 0, 8),
+            RowSpacing = 4,
             Background = SurfaceAltBrush(),
         };
         inputArea.Tag = "ai-input-shell";
@@ -1807,14 +2554,28 @@ public sealed class MainWindow : Window
 
         _aiInput.PlaceholderText = "要求后续变更...";
         _aiInput.AcceptsReturn = true;
-        _aiInput.MinHeight = 48;
-        _aiInput.MaxHeight = 160;
+        _aiInput.TextWrapping = TextWrapping.Wrap;
+        _aiInput.MinHeight = 44;
+        _aiInput.MaxHeight = 180;
         _aiInput.FontSize = 14;
-        _aiInput.Padding = new Thickness(0, 2, 0, 2);
+        _aiInput.Padding = new Thickness(12, 10, 12, 6);
         _aiInput.CornerRadius = new CornerRadius(0);
         _aiInput.Background = TransparentBrush();
         _aiInput.BorderBrush = TransparentBrush();
         _aiInput.BorderThickness = new Thickness(0);
+        _aiInput.TextChanged -= OnAiInputTextChanged;
+        _aiInput.TextChanged += OnAiInputTextChanged;
+        _aiInput.SizeChanged -= OnAiInputSizeChanged;
+        _aiInput.SizeChanged += OnAiInputSizeChanged;
+        _aiInput.KeyDown -= OnAiInputKeyDown;
+        _aiInput.KeyDown += OnAiInputKeyDown;
+        if (!_aiInputKeyHandlerAttached)
+        {
+            _aiInput.AddHandler(UIElement.KeyDownEvent, new KeyEventHandler(OnAiInputKeyDown), true);
+            _aiInputKeyHandlerAttached = true;
+        }
+        StyleAiInputBox();
+        UpdateAiInputHeight();
         Grid.SetRow(_aiInput, 1);
         inputArea.Children.Add(_aiInput);
 
@@ -1852,18 +2613,10 @@ public sealed class MainWindow : Window
         _aiInput.BorderBrush = TransparentBrush();
         _aiInput.Foreground = PrimaryTextBrush();
         _aiInput.PlaceholderForeground = MutedBrush();
-        _aiInput.Resources["TextControlBackground"] = TransparentBrush();
-        _aiInput.Resources["TextControlBackgroundPointerOver"] = TransparentBrush();
-        _aiInput.Resources["TextControlBackgroundFocused"] = TransparentBrush();
-        _aiInput.Resources["TextControlForeground"] = PrimaryTextBrush();
-        _aiInput.Resources["TextControlBorderBrush"] = TransparentBrush();
-        _aiInput.Resources["TextControlBorderBrushFocused"] = TransparentBrush();
-        _permissionCombo.Background = TransparentBrush();
-        _permissionCombo.BorderBrush = BorderLightBrush();
-        _modelCombo.Background = TransparentBrush();
-        _modelCombo.BorderBrush = BorderLightBrush();
-        StyleComboBox(_permissionCombo);
-        StyleComboBox(_modelCombo);
+        StyleAiInputBox();
+        StyleSelectorButton(_permissionSelector, 150);
+        StyleSelectorButton(_modelSelector, 108);
+        RefreshSelectorLabels();
 
         if (_aiPanel.Child is UIElement child)
             RefreshThemeBrushes(child);
@@ -1874,6 +2627,11 @@ public sealed class MainWindow : Window
         switch (element)
         {
             case TextBlock text:
+                if (Equals(text.Tag, "send-icon"))
+                {
+                    text.Foreground = OnPrimaryBrush();
+                    break;
+                }
                 text.Foreground = text.FontSize <= 12 ? SecondaryTextBrush() : PrimaryTextBrush();
                 break;
             case Border border:
@@ -1885,6 +2643,10 @@ public sealed class MainWindow : Window
                     border.Background = SurfaceAltBrush();
                 else if (Equals(border.Tag, "ai-surface"))
                     border.Background = SurfaceBrush();
+                else if (Equals(border.Tag, "ai-thinking-body"))
+                    border.Background = SurfaceBrush();
+                else if (Equals(border.Tag, "ai-thinking-shell"))
+                    border.Background = TransparentBrush();
                 if (border.BorderThickness.Left > 0 || border.BorderThickness.Top > 0)
                     border.BorderBrush = BorderLightBrush();
                 if (border.Child is not null)
@@ -1893,12 +2655,25 @@ public sealed class MainWindow : Window
             case Button button:
                 if (Equals(button.Tag, "primary-action"))
                 {
-                    button.Background = PrimaryBrush();
+                    ApplyButtonResources(button, TransparentBrush(), OnPrimaryBrush(), TransparentBrush(), TransparentBrush(), TransparentBrush(), new Thickness(0));
                     button.Foreground = OnPrimaryBrush();
+                    if (button.Content is Border sendCircle)
+                    {
+                        sendCircle.Background = PrimaryBrush();
+                        sendCircle.BorderBrush = PrimaryHoverBrush();
+                    }
                 }
                 else if (Equals(button.Tag, "ai-close"))
                 {
                     ApplyButtonResources(button, TransparentBrush(), SecondaryTextBrush(), HoverBrush(), SurfaceAltBrush(), BorderLightBrush(), new Thickness(0));
+                }
+                else if (Equals(button.Tag, "ai-selector"))
+                {
+                    StyleSelectorButton(button, button.Width);
+                }
+                else if (Equals(button.Tag, "ai-thinking-toggle"))
+                {
+                    ApplyButtonResources(button, TransparentBrush(), SecondaryTextBrush(), HoverBrush(), SurfaceBrush(), TransparentBrush(), new Thickness(0));
                 }
                 else
                 {
@@ -1909,7 +2684,9 @@ public sealed class MainWindow : Window
                     RefreshThemeBrushes(buttonContent);
                 break;
             case IconElement icon:
-                icon.Foreground = SecondaryTextBrush();
+                icon.Foreground = icon is FrameworkElement iconElement && Equals(iconElement.Tag, "send-icon")
+                    ? OnPrimaryBrush()
+                    : SecondaryTextBrush();
                 break;
             case Grid grid:
                 if (Equals(grid.Tag, "ai-input-shell"))
@@ -1944,7 +2721,7 @@ public sealed class MainWindow : Window
         var tools = new Grid
         {
             ColumnSpacing = 8,
-            Padding = new Thickness(0, 2, 0, 0),
+            Padding = new Thickness(8, 2, 8, 0),
             VerticalAlignment = VerticalAlignment.Top,
         };
         tools.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -1955,7 +2732,7 @@ public sealed class MainWindow : Window
 
         var attach = new Button
         {
-            Content = new SymbolIcon(Symbol.Attach),
+            Content = ToolbarGlyph(Symbol.Attach, 18, 13),
             Width = 32,
             Height = 32,
             MinWidth = 0,
@@ -1971,55 +2748,74 @@ public sealed class MainWindow : Window
         attach.Click += async (_, _) => await PickAttachmentsAsync();
         tools.Children.Add(attach);
 
-        _permissionCombo.Width = 150;
-        _permissionCombo.Height = 32;
-        _permissionCombo.MinHeight = 32;
-        _permissionCombo.CornerRadius = new CornerRadius(8);
-        _permissionCombo.Background = TransparentBrush();
-        _permissionCombo.BorderBrush = BorderLightBrush();
-        _permissionCombo.Items.Clear();
-        _permissionCombo.Items.Add(PermissionItem("请求批准", Symbol.Help, "敏感操作由用户审批同意"));
-        _permissionCombo.Items.Add(PermissionItem("替我审批", Symbol.Accept, "AI 自行根据情况审批"));
-        _permissionCombo.Items.Add(PermissionItem("完全访问", Symbol.Permissions, "放开全部权限，不需要审批"));
-        _permissionCombo.SelectedIndex = 0;
-        StyleComboBox(_permissionCombo);
-        Grid.SetColumn(_permissionCombo, 1);
-        tools.Children.Add(_permissionCombo);
+        StyleSelectorButton(_permissionSelector, 150);
+        _permissionSelector.Click -= OnPermissionSelectorClick;
+        _permissionSelector.Click += OnPermissionSelectorClick;
+        Grid.SetColumn(_permissionSelector, 1);
+        tools.Children.Add(_permissionSelector);
 
-        _modelCombo.PlaceholderText = "选择模型";
-        _modelCombo.Width = 108;
-        _modelCombo.Height = 32;
-        _modelCombo.MinHeight = 32;
-        _modelCombo.CornerRadius = new CornerRadius(8);
-        _modelCombo.Background = TransparentBrush();
-        _modelCombo.BorderBrush = BorderLightBrush();
-        StyleComboBox(_modelCombo);
+        StyleSelectorButton(_modelSelector, 108);
+        _modelSelector.Click -= OnModelSelectorClick;
+        _modelSelector.Click += OnModelSelectorClick;
         RefreshModelCombo();
-        Grid.SetColumn(_modelCombo, 3);
-        tools.Children.Add(_modelCombo);
+        Grid.SetColumn(_modelSelector, 3);
+        tools.Children.Add(_modelSelector);
 
+        var sendIcon = new FontIcon
+        {
+            Tag = "send-icon",
+            Glyph = "\uE74A",
+            FontFamily = new FontFamily("Segoe Fluent Icons"),
+            FontSize = 15,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Width = 18,
+            Height = 18,
+            Foreground = OnPrimaryBrush(),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var sendCircle = new Border
+        {
+            Width = 32,
+            Height = 32,
+            CornerRadius = new CornerRadius(16),
+            Background = PrimaryBrush(),
+            BorderBrush = PrimaryHoverBrush(),
+            BorderThickness = new Thickness(1),
+            Child = sendIcon,
+        };
         var send = new Button
         {
             Tag = "primary-action",
-            Content = new SymbolIcon(Symbol.Upload)
-            {
-                Width = 15,
-                Height = 15,
-                Foreground = OnPrimaryBrush(),
-            },
+            Content = sendCircle,
             Width = 32,
             Height = 32,
+            MinWidth = 32,
+            MinHeight = 32,
             Padding = new Thickness(0),
             CornerRadius = new CornerRadius(16),
-            Background = PrimaryBrush(),
+            Background = TransparentBrush(),
             Foreground = OnPrimaryBrush(),
             BorderThickness = new Thickness(0),
             HorizontalContentAlignment = HorizontalAlignment.Center,
             VerticalContentAlignment = VerticalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Top,
         };
-        ApplyButtonResources(send, PrimaryBrush(), OnPrimaryBrush(), PrimaryHoverBrush(), PrimaryPressedBrush(), PrimaryBrush(), new Thickness(0));
-        send.Click += (_, _) => SendAiMessage();
+        ApplyButtonResources(send, TransparentBrush(), OnPrimaryBrush(), TransparentBrush(), TransparentBrush(), TransparentBrush(), new Thickness(0));
+        send.PointerEntered += (_, _) => sendCircle.Background = PrimaryHoverBrush();
+        send.PointerExited += (_, _) => sendCircle.Background = PrimaryBrush();
+        send.PointerPressed += (_, _) => sendCircle.Background = PrimaryPressedBrush();
+        send.PointerReleased += (_, _) => sendCircle.Background = PrimaryHoverBrush();
+        _aiSendButton = send;
+        _aiSendCircle = sendCircle;
+        _aiSendIcon = sendIcon;
+        send.Click += async (_, _) =>
+        {
+            if (_aiIsSending)
+                CancelAiGeneration();
+            else
+                await SendAiMessageAsync();
+        };
         Grid.SetColumn(send, 4);
         tools.Children.Add(send);
         return tools;
@@ -2050,37 +2846,367 @@ public sealed class MainWindow : Window
         };
     }
 
-    private void RefreshModelCombo()
+    private void StyleAiInputBox()
     {
-        _modelCombo.SelectionChanged -= OnModelSelectionChanged;
-        _modelCombo.Items.Clear();
-        foreach (var model in _settings.Current.AiModels)
+        _aiInput.Background = TransparentBrush();
+        _aiInput.BorderBrush = TransparentBrush();
+        _aiInput.BorderThickness = new Thickness(0);
+        _aiInput.Foreground = PrimaryTextBrush();
+        _aiInput.PlaceholderForeground = MutedBrush();
+        _aiInput.UseSystemFocusVisuals = false;
+        _aiInput.Resources["TextControlBackground"] = TransparentBrush();
+        _aiInput.Resources["TextControlBackgroundPointerOver"] = TransparentBrush();
+        _aiInput.Resources["TextControlBackgroundFocused"] = TransparentBrush();
+        _aiInput.Resources["TextControlBackgroundDisabled"] = TransparentBrush();
+        _aiInput.Resources["TextControlForeground"] = PrimaryTextBrush();
+        _aiInput.Resources["TextControlForegroundPointerOver"] = PrimaryTextBrush();
+        _aiInput.Resources["TextControlForegroundFocused"] = PrimaryTextBrush();
+        _aiInput.Resources["TextControlPlaceholderForeground"] = MutedBrush();
+        _aiInput.Resources["TextControlPlaceholderForegroundPointerOver"] = MutedBrush();
+        _aiInput.Resources["TextControlPlaceholderForegroundFocused"] = MutedBrush();
+        _aiInput.Resources["TextControlBorderBrush"] = TransparentBrush();
+        _aiInput.Resources["TextControlBorderBrushPointerOver"] = TransparentBrush();
+        _aiInput.Resources["TextControlBorderBrushFocused"] = TransparentBrush();
+        _aiInput.Resources["FocusVisualPrimaryBrush"] = TransparentBrush();
+        _aiInput.Resources["FocusVisualSecondaryBrush"] = TransparentBrush();
+    }
+
+    private void OnAiInputTextChanged(object sender, TextChangedEventArgs e)
+    {
+        UpdateAiInputHeight();
+    }
+
+    private async void OnAiInputKeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        if (e.Key != VirtualKey.Enter)
+            return;
+
+        var shiftState = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Shift);
+        var shiftDown = (shiftState & CoreVirtualKeyStates.Down) == CoreVirtualKeyStates.Down;
+        if (shiftDown)
+            return;
+
+        e.Handled = true;
+        await SendAiMessageAsync();
+    }
+
+    private void OnAiInputSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        UpdateAiInputHeight();
+    }
+
+    private void UpdateAiInputHeight()
+    {
+        var lineCount = EstimateAiInputVisualLineCount();
+        var targetHeight = Math.Clamp(24 + lineCount * 22, 44, 180);
+        if (Math.Abs(_aiInput.Height - targetHeight) < 0.5)
+            return;
+
+        _aiInput.Height = targetHeight;
+        _aiInput.InvalidateMeasure();
+        _aiInput.UpdateLayout();
+    }
+
+    private int EstimateAiInputVisualLineCount()
+    {
+        var text = string.IsNullOrEmpty(_aiInput.Text) ? string.Empty : _aiInput.Text.Replace("\r", string.Empty, StringComparison.Ordinal);
+        var availableWidth = _aiInput.ActualWidth > 0 ? _aiInput.ActualWidth : 340;
+        availableWidth = Math.Max(80, availableWidth - _aiInput.Padding.Left - _aiInput.Padding.Right);
+        var columnWidth = Math.Max(6, _aiInput.FontSize * 0.58);
+        var columnsPerLine = Math.Max(8, (int)Math.Floor(availableWidth / columnWidth));
+        var totalLines = 0;
+
+        foreach (var rawLine in text.Split('\n'))
         {
-            _modelCombo.Items.Add(new ComboBoxItem
-            {
-                Tag = model,
-                Content = new StackPanel
-                {
-                    Children =
-                    {
-                        new TextBlock { Text = model.Name, FontSize = 13 },
-                        new TextBlock { Text = model.ModelId, FontSize = 11, Foreground = MutedBrush() },
-                    },
-                },
-            });
+            var visualColumns = MeasureAiInputColumns(rawLine);
+            totalLines += Math.Max(1, (int)Math.Ceiling(visualColumns / columnsPerLine));
         }
 
-        _modelCombo.Items.Add(new ComboBoxItem
+        return Math.Clamp(totalLines, 1, 8);
+    }
+
+    private static double MeasureAiInputColumns(string line)
+    {
+        if (string.IsNullOrEmpty(line))
+            return 0;
+
+        var columns = 0d;
+        foreach (var c in line)
+            columns += c <= 0x7f ? 1d : 1.75d;
+        return columns;
+    }
+
+    private static void StyleSelectorButton(Button button, double width)
+    {
+        button.Tag = "ai-selector";
+        button.Width = width;
+        button.Height = 30;
+        button.MinHeight = 30;
+        button.Padding = new Thickness(8, 0, 6, 0);
+        button.CornerRadius = new CornerRadius(8);
+        button.Background = TransparentBrush();
+        button.Foreground = SecondaryTextBrush();
+        button.BorderBrush = TransparentBrush();
+        button.BorderThickness = new Thickness(0);
+        button.HorizontalContentAlignment = HorizontalAlignment.Stretch;
+        button.VerticalContentAlignment = VerticalAlignment.Center;
+        ApplyButtonResources(button, TransparentBrush(), SecondaryTextBrush(), SelectorHoverBrush(), SelectorPressedBrush(), TransparentBrush(), new Thickness(0));
+        button.Resources["ButtonBackgroundPointerOver"] = SelectorHoverBrush();
+        button.Resources["ButtonBackgroundFocused"] = SelectorHoverBrush();
+        button.Resources["ButtonBackgroundPressed"] = SelectorPressedBrush();
+        button.PointerEntered -= OnSelectorPointerEntered;
+        button.PointerExited -= OnSelectorPointerExited;
+        button.PointerPressed -= OnSelectorPointerPressed;
+        button.PointerReleased -= OnSelectorPointerEntered;
+        button.PointerEntered += OnSelectorPointerEntered;
+        button.PointerExited += OnSelectorPointerExited;
+        button.PointerPressed += OnSelectorPointerPressed;
+        button.PointerReleased += OnSelectorPointerEntered;
+    }
+
+    private static void OnSelectorPointerEntered(object sender, PointerRoutedEventArgs e)
+    {
+        if (sender is Button button)
+            button.Background = SelectorHoverBrush();
+    }
+
+    private static void OnSelectorPointerExited(object sender, PointerRoutedEventArgs e)
+    {
+        if (sender is Button button)
+            button.Background = TransparentBrush();
+    }
+
+    private static void OnSelectorPointerPressed(object sender, PointerRoutedEventArgs e)
+    {
+        if (sender is Button button)
+            button.Background = SelectorPressedBrush();
+    }
+
+    private void RefreshSelectorLabels()
+    {
+        _permissionSelector.Content = SelectorLabel(Symbol.Help, _selectedAiPermission, 11);
+        _modelSelector.Content = SelectorLabel(Symbol.Find, _selectedAiModel?.Name ?? "选择模型", 11);
+    }
+
+    private static FontIcon ToolbarGlyph(Symbol icon, double viewport, double fontSize)
+    {
+        return new FontIcon
         {
-            Tag = "__add_model__",
+            Glyph = ToolbarGlyphCode(icon),
+            FontFamily = new FontFamily("Segoe Fluent Icons"),
+            FontSize = fontSize,
+            Width = viewport,
+            Height = viewport,
+            Foreground = SecondaryTextBrush(),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+    }
+
+    private static string ToolbarGlyphCode(Symbol icon)
+    {
+        return icon switch
+        {
+            Symbol.Attach => "\uE723",
+            Symbol.Help => "\uE897",
+            Symbol.Find => "\uE721",
+            Symbol.Accept => "\uE73E",
+            Symbol.Permissions => "\uE8D7",
+            Symbol.Add => "\uE710",
+            _ => "\uE897",
+        };
+    }
+
+    private static UIElement SelectorLabel(Symbol icon, string text, double fontSize)
+    {
+        var root = new Grid
+        {
+            Height = 30,
+            VerticalAlignment = VerticalAlignment.Center,
+            ColumnDefinitions =
+            {
+                new ColumnDefinition { Width = GridLength.Auto },
+                new ColumnDefinition(),
+                new ColumnDefinition { Width = GridLength.Auto },
+            },
+        };
+        root.Children.Add(ToolbarGlyph(icon, 18, 13));
+        var label = new TextBlock
+        {
+            Text = text,
+            FontSize = fontSize,
+            Foreground = SecondaryTextBrush(),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center,
+            LineHeight = 14,
+            Margin = new Thickness(6, 0, 4, 0),
+        };
+        Grid.SetColumn(label, 1);
+        root.Children.Add(label);
+        var arrow = new TextBlock
+        {
+            Text = "⌄",
+            FontSize = 10,
+            Foreground = SecondaryTextBrush(),
+            VerticalAlignment = VerticalAlignment.Center,
+            LineHeight = 12,
+        };
+        Grid.SetColumn(arrow, 2);
+        root.Children.Add(arrow);
+        return root;
+    }
+
+    private void OnPermissionSelectorClick(object sender, RoutedEventArgs e)
+    {
+        var flyout = SelectorFlyout(210, 320, out var panel);
+        AddSelectorOption(panel, flyout, Symbol.Help, "请求批准", "敏感操作由用户审批同意", _selectedAiPermission == "请求批准", true, () => SelectPermission("请求批准"));
+        AddSelectorOption(panel, flyout, Symbol.Accept, "替我审批", "AI 自行根据情况审批", _selectedAiPermission == "替我审批", true, () => SelectPermission("替我审批"));
+        AddSelectorOption(panel, flyout, Symbol.Permissions, "完全访问", "放开全部权限，不需要审批", _selectedAiPermission == "完全访问", true, () => SelectPermission("完全访问"));
+        flyout.ShowAt(_permissionSelector);
+    }
+
+    private void OnModelSelectorClick(object sender, RoutedEventArgs e)
+    {
+        var flyout = SelectorFlyout(180, 300, out var panel);
+        foreach (var model in _settings.Current.AiModels)
+        {
+            var captured = model;
+            AddSelectorOption(panel, flyout, Symbol.Find, model.Name, model.ModelId, _selectedAiModel?.ModelId == model.ModelId, true, () =>
+            {
+                _selectedAiModel = captured;
+                RefreshSelectorLabels();
+            });
+        }
+        AddSelectorOption(panel, flyout, Symbol.Add, "添加模型", "进入设置添加模型", false, false, async () => await ShowAddModelDialogAsync());
+        flyout.ShowAt(_modelSelector);
+    }
+
+    private static Flyout SelectorFlyout(double minWidth, double maxWidth, out StackPanel panel)
+    {
+        panel = new StackPanel
+        {
+            MinWidth = minWidth,
+            MaxWidth = maxWidth,
+            Spacing = 4,
+            Padding = new Thickness(6),
+            Background = TransparentBrush(),
+        };
+        var shell = new Border
+        {
+            CornerRadius = new CornerRadius(12),
+            Background = SurfaceBrush(),
+            BorderBrush = BorderLightBrush(),
+            BorderThickness = new Thickness(1),
+            Child = panel,
+        };
+        var flyout = new Flyout
+        {
+            Content = shell,
+            Placement = FlyoutPlacementMode.TopEdgeAlignedRight,
+            FlyoutPresenterStyle = SelectorFlyoutPresenterStyle(),
+        };
+        return flyout;
+    }
+
+    private static Style SelectorFlyoutPresenterStyle()
+    {
+        var style = new Style(typeof(FlyoutPresenter));
+        style.Setters.Add(new Setter(Control.BackgroundProperty, TransparentBrush()));
+        style.Setters.Add(new Setter(Control.BorderBrushProperty, TransparentBrush()));
+        style.Setters.Add(new Setter(Control.BorderThicknessProperty, new Thickness(0)));
+        style.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(0)));
+        return style;
+    }
+
+    private static void AddSelectorOption(StackPanel panel, Flyout flyout, Symbol icon, string title, string description, bool selected, bool showSelection, Action action)
+    {
+        panel.Children.Add(SelectorOptionButton(icon, title, description, panel.MaxWidth, selected, showSelection, () =>
+        {
+            action();
+            flyout.Hide();
+        }));
+    }
+
+    private static void AddSelectorOption(StackPanel panel, Flyout flyout, Symbol icon, string title, string description, bool selected, bool showSelection, Func<Task> action)
+    {
+        panel.Children.Add(SelectorOptionButton(icon, title, description, panel.MaxWidth, selected, showSelection, async () =>
+        {
+            await action();
+            flyout.Hide();
+        }));
+    }
+
+    private static Button SelectorOptionButton(Symbol icon, string title, string description, double maxWidth, bool selected, bool showSelection, Action action)
+    {
+        return SelectorOptionButton(icon, title, description, maxWidth, selected, showSelection, () =>
+        {
+            action();
+            return Task.CompletedTask;
+        });
+    }
+
+    private static Button SelectorOptionButton(Symbol icon, string title, string description, double maxWidth, bool selected, bool showSelection, Func<Task> action)
+    {
+        var button = new Button
+        {
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            VerticalContentAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Padding = new Thickness(8, 6, 8, 6),
+            CornerRadius = new CornerRadius(8),
+            BorderThickness = new Thickness(0),
+            Background = TransparentBrush(),
             Content = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
                 Spacing = 8,
-                Children = { new SymbolIcon(Symbol.Add), new TextBlock { Text = "添加模型" } },
+                VerticalAlignment = VerticalAlignment.Center,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = showSelection && selected ? "✓" : string.Empty,
+                        Width = 16,
+                        FontSize = 12,
+                        FontWeight = Microsoft.UI.Text.FontWeights.Bold,
+                        Foreground = PrimaryBrush(),
+                        VerticalAlignment = VerticalAlignment.Center,
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                    },
+                    ToolbarGlyph(icon, 18, 13),
+                    new StackPanel
+                    {
+                        MaxWidth = Math.Max(120, maxWidth - 78),
+                        VerticalAlignment = VerticalAlignment.Center,
+                        Children =
+                        {
+                            new TextBlock { Text = title, FontSize = 11, Foreground = PrimaryTextBrush(), VerticalAlignment = VerticalAlignment.Center, LineHeight = 14 },
+                            new TextBlock { Text = description, FontSize = 10, Foreground = MutedBrush(), TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center, LineHeight = 13 },
+                        },
+                    },
+                },
             },
-        });
-        _modelCombo.SelectionChanged += OnModelSelectionChanged;
+        };
+        ApplyButtonResources(button, TransparentBrush(), PrimaryTextBrush(), HoverBrush(), SurfaceAltBrush(), TransparentBrush(), new Thickness(0));
+        button.Click += async (_, _) => await action();
+        return button;
+    }
+
+    private void SelectPermission(string permission)
+    {
+        _selectedAiPermission = permission;
+        RefreshSelectorLabels();
+    }
+
+    private void RefreshModelCombo()
+    {
+        if (_selectedAiModel is not null &&
+            !_settings.Current.AiModels.Any(model => ReferenceEquals(model, _selectedAiModel) || model.ModelId == _selectedAiModel.ModelId))
+        {
+            _selectedAiModel = null;
+        }
+        _selectedAiModel ??= _settings.Current.AiModels.FirstOrDefault();
+        RefreshSelectorLabels();
     }
 
     private async void OnModelSelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -2179,38 +3305,818 @@ public sealed class MainWindow : Window
         };
     }
 
-    private void SendAiMessage()
+    private async Task SendAiMessageAsync()
     {
-        var selectedModel = _modelCombo.SelectedItem as ComboBoxItem;
-        if (selectedModel?.Tag is not AiModelSettings)
+        if (_aiIsSending)
+            return;
+
+        if (_selectedAiModel is null)
         {
-            _messageList.Children.Add(MessageBubble(new AiChatMessage
+            AddAiVisibleMessage(new AiChatMessage
             {
                 Role = "AI",
                 Text = "请先去设置内配置并选择 AI 模型。",
                 IsUser = false,
-            }));
+            }, persist: false);
             return;
         }
 
         if (string.IsNullOrWhiteSpace(_aiInput.Text) && _pendingAttachments.Count == 0)
             return;
 
-        var permission = (_permissionCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "请求批准";
-        var text = string.IsNullOrWhiteSpace(_aiInput.Text)
-            ? $"已发送附件。权限：{permission}"
-            : $"{_aiInput.Text.Trim()}\n\n权限：{permission}";
+        var permission = _selectedAiPermission;
+        var userText = _aiInput.Text.Trim();
+        var attachments = _pendingAttachments.ToList();
 
-        _messageList.Children.Add(MessageBubble(new AiChatMessage
+        var visibleUserMessage = new AiChatMessage
         {
             Role = "You",
-            Text = text,
+            Text = userText,
             IsUser = true,
-            Attachments = _pendingAttachments.ToList(),
-        }));
+            Attachments = attachments,
+        };
+        AddAiVisibleMessage(visibleUserMessage);
+        _aiConversation.Add(new AiConversationMessage
+        {
+            Role = "user",
+            Text = userText,
+            Attachments = attachments,
+        });
         _aiInput.Text = string.Empty;
         _pendingAttachments.Clear();
         RenderPendingAttachments();
+        CompressAiContextIfNeeded();
+
+        _aiCancellation?.Dispose();
+        _aiCancellation = new CancellationTokenSource();
+        ResetAiStreamBuffers();
+        SetAiSending(true);
+        var stopwatch = Stopwatch.StartNew();
+        var streamingMessage = AddAiStreamingMessage();
+        try
+        {
+            var response = await _ai.SendStreamingAsync(
+                new AiAgentRequest
+                {
+                    Model = _selectedAiModel,
+                    Messages = _aiConversation.ToList(),
+                    PermissionMode = permission,
+                    CurrentDeviceId = _currentDetailDevice?.DeviceId,
+                    CurrentDeviceName = _currentDetailDevice?.DisplayName,
+                },
+                delta =>
+                {
+                    QueueAiStreamDelta(streamingMessage, delta);
+                    return Task.CompletedTask;
+                },
+                async toolCall => await _aiTools.ExecuteAsync(toolCall, permission, _currentDetailDevice, RequestAiToolApprovalAsync, _aiCancellation.Token),
+                _aiCancellation.Token);
+
+            FlushAiStreamDeltas(streamingMessage);
+            stopwatch.Stop();
+            _aiConversation.AddRange(response.NewMessages);
+            var text = string.IsNullOrWhiteSpace(response.Text)
+                ? streamingMessage.Message.Text
+                : response.Text.Trim();
+            if (string.IsNullOrWhiteSpace(text))
+                text = "操作已完成。";
+            var thinking = string.IsNullOrWhiteSpace(response.ThinkingText)
+                ? streamingMessage.Message.ThinkingText
+                : response.ThinkingText.Trim();
+            streamingMessage.Message.Text = text;
+            streamingMessage.Message.ThinkingText = thinking;
+            streamingMessage.Message.ProcessingSeconds = stopwatch.Elapsed.TotalSeconds;
+            streamingMessage.AnswerText.Text = text;
+            streamingMessage.DurationText.Text = $"处理用时 {FormatDuration(stopwatch.Elapsed.TotalSeconds)}";
+            CompleteStreamingThinking(streamingMessage);
+            _settings.Current.AiMessages.Add(CloneVisibleAiMessage(streamingMessage.Message));
+            SaveAiConversation();
+            ScrollAiMessagesToBottom();
+            Notify("AI 思考完成", $"处理用时 {FormatDuration(stopwatch.Elapsed.TotalSeconds)}", InfoBarSeverity.Success);
+        }
+        catch (OperationCanceledException)
+        {
+            FlushAiStreamDeltas(streamingMessage);
+            stopwatch.Stop();
+            streamingMessage.Message.ProcessingSeconds = stopwatch.Elapsed.TotalSeconds;
+            streamingMessage.Message.Text = string.IsNullOrWhiteSpace(streamingMessage.Message.Text)
+                ? "已暂停生成。"
+                : streamingMessage.Message.Text + "\n\n已暂停生成。";
+            streamingMessage.AnswerText.Text = streamingMessage.Message.Text;
+            streamingMessage.DurationText.Text = $"处理用时 {FormatDuration(stopwatch.Elapsed.TotalSeconds)}";
+            CompleteStreamingThinking(streamingMessage);
+            _settings.Current.AiMessages.Add(CloneVisibleAiMessage(streamingMessage.Message));
+            SaveAiConversation();
+            ScrollAiMessagesToBottom();
+        }
+        catch (Exception ex)
+        {
+            FlushAiStreamDeltas(streamingMessage);
+            stopwatch.Stop();
+            streamingMessage.Message.ProcessingSeconds = stopwatch.Elapsed.TotalSeconds;
+            streamingMessage.Message.Text = $"AI 请求失败：{ex.Message}";
+            streamingMessage.AnswerText.Text = streamingMessage.Message.Text;
+            streamingMessage.DurationText.Text = $"处理用时 {FormatDuration(stopwatch.Elapsed.TotalSeconds)}";
+            CompleteStreamingThinking(streamingMessage);
+            _settings.Current.AiMessages.Add(CloneVisibleAiMessage(streamingMessage.Message));
+            SaveAiConversation();
+            ScrollAiMessagesToBottom();
+        }
+        finally
+        {
+            SetAiSending(false);
+            _aiCancellation?.Dispose();
+            _aiCancellation = null;
+        }
+    }
+
+    private AiStreamingMessageUi AddAiStreamingMessage()
+    {
+        var message = new AiChatMessage
+        {
+            Role = "AI",
+            Text = string.Empty,
+            IsUser = false,
+            CreatedAt = DateTimeOffset.Now,
+        };
+        var textBlock = new TextBlock
+        {
+            Text = string.Empty,
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 13,
+            Foreground = PrimaryTextBrush(),
+        };
+        var durationText = new TextBlock
+        {
+            Text = "正在思考...",
+            FontSize = 10,
+            Foreground = MutedBrush(),
+        };
+        var thinkingText = new TextBlock
+        {
+            Text = string.Empty,
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 12,
+            Foreground = SecondaryTextBrush(),
+            MaxHeight = 110,
+        };
+        var thinkingSummary = new TextBlock
+        {
+            Text = "思考中",
+            FontSize = 11,
+            Foreground = SecondaryTextBrush(),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        };
+        var thinkingBody = new Border
+        {
+            Tag = "ai-thinking-body",
+            Margin = new Thickness(0, 6, 0, 0),
+            Padding = new Thickness(10, 8, 10, 8),
+            CornerRadius = new CornerRadius(10),
+            Background = SurfaceBrush(),
+            BorderBrush = BorderLightBrush(),
+            BorderThickness = new Thickness(1),
+            Child = thinkingText,
+            Visibility = Visibility.Visible,
+        };
+        var thinkingArrow = new TextBlock
+        {
+            Text = "⌃",
+            FontSize = 12,
+            Foreground = SecondaryTextBrush(),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var thinkingToggle = new Button
+        {
+            Tag = "ai-thinking-toggle",
+            Padding = new Thickness(10, 7, 10, 7),
+            CornerRadius = new CornerRadius(10),
+            Background = TransparentBrush(),
+            BorderThickness = new Thickness(0),
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Content = new Grid
+            {
+                ColumnDefinitions =
+                {
+                    new ColumnDefinition(),
+                    new ColumnDefinition { Width = GridLength.Auto },
+                },
+                Children =
+                {
+                    thinkingSummary,
+                    thinkingArrow,
+                },
+            },
+        };
+        Grid.SetColumn(thinkingArrow, 1);
+        ApplyButtonResources(thinkingToggle, TransparentBrush(), SecondaryTextBrush(), HoverBrush(), SurfaceBrush(), TransparentBrush(), new Thickness(0));
+        var thinkingShell = new Border
+        {
+            Tag = "ai-thinking-shell",
+            CornerRadius = new CornerRadius(12),
+            BorderBrush = BorderLightBrush(),
+            BorderThickness = new Thickness(1),
+            Background = TransparentBrush(),
+            Visibility = Visibility.Collapsed,
+            Child = new StackPanel
+            {
+                Children =
+                {
+                    thinkingToggle,
+                    thinkingBody,
+                },
+            },
+        };
+        var thinkingExpanded = true;
+        thinkingToggle.Click += (_, _) =>
+        {
+            thinkingExpanded = !thinkingExpanded;
+            thinkingBody.Visibility = thinkingExpanded ? Visibility.Visible : Visibility.Collapsed;
+            thinkingArrow.Text = thinkingExpanded ? "⌃" : "⌄";
+        };
+        var panel = new StackPanel
+        {
+            HorizontalAlignment = HorizontalAlignment.Left,
+            MaxWidth = 340,
+            Spacing = 4,
+            Margin = new Thickness(0, 0, 0, 16),
+        };
+        panel.Children.Add(new TextBlock
+        {
+            Text = "AI",
+            FontSize = 10,
+            FontWeight = Microsoft.UI.Text.FontWeights.Bold,
+            Foreground = PrimaryBrush(),
+        });
+        panel.Children.Add(new Border
+        {
+            Tag = "ai-bubble",
+            CornerRadius = new CornerRadius(14),
+            Padding = new Thickness(14, 10, 14, 10),
+            Background = SurfaceAltBrush(),
+            Child = new StackPanel
+            {
+                Spacing = 8,
+                Children =
+                {
+                    durationText,
+                    thinkingShell,
+                    textBlock,
+                },
+            },
+        });
+        _messageList.Children.Add(panel);
+        ScrollAiMessagesToBottom();
+        return new AiStreamingMessageUi(message, textBlock, thinkingShell, thinkingText, thinkingSummary, thinkingBody, thinkingArrow, durationText);
+    }
+
+    private void ResetAiStreamBuffers()
+    {
+        lock (_aiStreamLock)
+        {
+            _pendingAiAnswerDelta.Clear();
+            _pendingAiThinkingDelta.Clear();
+            _aiStreamFlushQueued = false;
+            _aiStreamHasAnswer = false;
+        }
+    }
+
+    private void QueueAiStreamDelta(AiStreamingMessageUi streamingMessage, AiStreamDelta delta)
+    {
+        if (string.IsNullOrEmpty(delta.Text))
+            return;
+
+        lock (_aiStreamLock)
+        {
+            if (delta.IsThinking)
+                _pendingAiThinkingDelta.Append(delta.Text);
+            else
+                _pendingAiAnswerDelta.Append(delta.Text);
+
+            if (_aiStreamFlushQueued)
+                return;
+
+            _aiStreamFlushQueued = true;
+        }
+
+        _ = Task.Delay(40, _aiCancellation?.Token ?? CancellationToken.None)
+            .ContinueWith(
+                _ =>
+                {
+                    DispatcherQueue.TryEnqueue(() => FlushAiStreamDeltas(streamingMessage));
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+    }
+
+    private void FlushAiStreamDeltas(AiStreamingMessageUi streamingMessage)
+    {
+        string thinkingDelta;
+        string answerDelta;
+        lock (_aiStreamLock)
+        {
+            thinkingDelta = _pendingAiThinkingDelta.ToString();
+            answerDelta = _pendingAiAnswerDelta.ToString();
+            _pendingAiThinkingDelta.Clear();
+            _pendingAiAnswerDelta.Clear();
+            _aiStreamFlushQueued = false;
+        }
+
+        if (thinkingDelta.Length > 0)
+        {
+            streamingMessage.Message.ThinkingText += thinkingDelta;
+            streamingMessage.ThinkingText.Text = streamingMessage.Message.ThinkingText;
+            streamingMessage.ThinkingSummary.Text = $"思考中 · {BuildThinkingSummary(streamingMessage.Message.ThinkingText)}";
+            streamingMessage.ThinkingShell.Visibility = Visibility.Visible;
+            streamingMessage.ThinkingBody.Visibility = Visibility.Visible;
+            streamingMessage.ThinkingArrow.Text = "⌃";
+        }
+
+        if (answerDelta.Length > 0)
+        {
+            streamingMessage.Message.Text += answerDelta;
+            streamingMessage.AnswerText.Text = streamingMessage.Message.Text;
+            if (!_aiStreamHasAnswer && !string.IsNullOrWhiteSpace(streamingMessage.Message.ThinkingText))
+            {
+                _aiStreamHasAnswer = true;
+                CollapseStreamingThinking(streamingMessage);
+            }
+        }
+
+        if (thinkingDelta.Length > 0 || answerDelta.Length > 0)
+            ScrollAiMessagesToBottom();
+    }
+
+    private static void CollapseStreamingThinking(AiStreamingMessageUi streamingMessage)
+    {
+        streamingMessage.ThinkingBody.Visibility = Visibility.Collapsed;
+        streamingMessage.ThinkingArrow.Text = "⌄";
+    }
+
+    private static void CompleteStreamingThinking(AiStreamingMessageUi streamingMessage)
+    {
+        if (string.IsNullOrWhiteSpace(streamingMessage.Message.ThinkingText))
+        {
+            streamingMessage.ThinkingShell.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        streamingMessage.ThinkingShell.Visibility = Visibility.Visible;
+        streamingMessage.ThinkingSummary.Text = $"思考完成 · {BuildThinkingSummary(streamingMessage.Message.ThinkingText)}";
+        CollapseStreamingThinking(streamingMessage);
+    }
+
+    private static UIElement BuildCollapsedThinkingBlock(string thinkingText)
+    {
+        var content = new TextBlock
+        {
+            Text = thinkingText,
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 12,
+            Foreground = SecondaryTextBrush(),
+            MaxHeight = 120,
+        };
+        var body = new Border
+        {
+            Tag = "ai-thinking-body",
+            Margin = new Thickness(0, 6, 0, 0),
+            Padding = new Thickness(10, 8, 10, 8),
+            CornerRadius = new CornerRadius(10),
+            Background = SurfaceBrush(),
+            BorderBrush = BorderLightBrush(),
+            BorderThickness = new Thickness(1),
+            Child = content,
+            Visibility = Visibility.Collapsed,
+        };
+        var title = new TextBlock
+        {
+            Text = $"思考完成 · {BuildThinkingSummary(thinkingText)}",
+            FontSize = 11,
+            Foreground = SecondaryTextBrush(),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        };
+        var arrow = new TextBlock
+        {
+            Text = "⌄",
+            FontSize = 12,
+            Foreground = SecondaryTextBrush(),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var header = new Grid
+        {
+            ColumnDefinitions =
+            {
+                new ColumnDefinition(),
+                new ColumnDefinition { Width = GridLength.Auto },
+            },
+            Children = { title, arrow },
+        };
+        Grid.SetColumn(arrow, 1);
+        var expanded = false;
+        var toggle = new Button
+        {
+            Tag = "ai-thinking-toggle",
+            Padding = new Thickness(10, 7, 10, 7),
+            CornerRadius = new CornerRadius(10),
+            Background = TransparentBrush(),
+            BorderThickness = new Thickness(0),
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Content = header,
+        };
+        ApplyButtonResources(toggle, TransparentBrush(), SecondaryTextBrush(), HoverBrush(), SurfaceBrush(), TransparentBrush(), new Thickness(0));
+        toggle.Click += (_, _) =>
+        {
+            expanded = !expanded;
+            body.Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
+            arrow.Text = expanded ? "⌃" : "⌄";
+        };
+        return new Border
+        {
+            Tag = "ai-thinking-shell",
+            CornerRadius = new CornerRadius(12),
+            BorderBrush = BorderLightBrush(),
+            BorderThickness = new Thickness(1),
+            Background = TransparentBrush(),
+            Child = new StackPanel
+            {
+                Children =
+                {
+                    toggle,
+                    body,
+                },
+            },
+        };
+    }
+
+    private static string BuildThinkingSummary(string text)
+    {
+        var compact = string.Join(" ", text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        if (string.IsNullOrWhiteSpace(compact))
+            return "查看思考过程";
+        return compact.Length <= 28 ? compact : compact[..28] + "...";
+    }
+
+    private static string FormatDuration(double seconds)
+    {
+        return seconds < 60
+            ? $"{seconds:0.0} 秒"
+            : $"{Math.Floor(seconds / 60):0} 分 {seconds % 60:0} 秒";
+    }
+
+    private static string FormatMessageTime(DateTimeOffset time)
+    {
+        return time.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+    }
+
+    private void AddAiVisibleMessage(AiChatMessage message, bool persist = true)
+    {
+        message.CreatedAt = DateTimeOffset.Now;
+        _messageList.Children.Add(MessageBubble(message));
+        ScrollAiMessagesToBottom();
+        if (persist)
+        {
+            _settings.Current.AiMessages.Add(CloneVisibleAiMessage(message));
+            SaveAiConversation();
+        }
+    }
+
+    private void RebuildAiConversationFromVisibleMessages()
+    {
+        _aiConversation.Clear();
+        foreach (var message in _settings.Current.AiMessages)
+        {
+            _aiConversation.Add(new AiConversationMessage
+            {
+                Role = message.IsUser ? "user" : "assistant",
+                Text = message.Text,
+                ThinkingText = message.ThinkingText,
+                Attachments = message.Attachments.ToList(),
+            });
+        }
+    }
+
+    private void CompressAiContextIfNeeded()
+    {
+        const int keepMessages = 24;
+        const int maxCharacters = 16000;
+        var totalCharacters = _aiConversation.Sum(message => message.Text?.Length ?? 0);
+        if (_aiConversation.Count <= keepMessages + 1 && totalCharacters <= maxCharacters)
+            return;
+
+        var older = _aiConversation.Take(Math.Max(0, _aiConversation.Count - keepMessages)).ToList();
+        var recent = _aiConversation.Skip(Math.Max(0, _aiConversation.Count - keepMessages)).ToList();
+        var summary = BuildLocalContextSummary(older);
+        _aiConversation.Clear();
+        _aiConversation.Add(new AiConversationMessage
+        {
+            Role = "system",
+            Text = "以下是较早对话的本地压缩摘要，用于保持上下文连续：" + Environment.NewLine + summary,
+        });
+        _aiConversation.AddRange(recent);
+    }
+
+    private static string BuildLocalContextSummary(IEnumerable<AiConversationMessage> messages)
+    {
+        var lines = new List<string>();
+        foreach (var message in messages)
+        {
+            if (string.IsNullOrWhiteSpace(message.Text) && message.Attachments.Count == 0)
+                continue;
+
+            var role = message.Role switch
+            {
+                "assistant" => "AI",
+                "tool" => "工具",
+                "system" => "系统",
+                _ => "用户",
+            };
+            var text = string.IsNullOrWhiteSpace(message.Text) ? "[附件或工具上下文]" : message.Text.Trim();
+            if (text.Length > 420)
+                text = text[..420] + "...";
+            lines.Add($"{role}: {text}");
+        }
+
+        var summary = string.Join(Environment.NewLine, lines);
+        return summary.Length > 5000 ? summary[^5000..] : summary;
+    }
+
+    private void SaveAiConversation()
+    {
+        const int maxVisibleMessages = 80;
+        if (_settings.Current.AiMessages.Count > maxVisibleMessages)
+            _settings.Current.AiMessages = _settings.Current.AiMessages.TakeLast(maxVisibleMessages).ToList();
+        _settings.Save();
+    }
+
+    private static AiChatMessage CloneVisibleAiMessage(AiChatMessage message)
+    {
+        return new AiChatMessage
+        {
+            Role = message.Role,
+            Text = message.Text,
+            ThinkingText = message.ThinkingText,
+            ProcessingSeconds = message.ProcessingSeconds,
+            IsUser = message.IsUser,
+            CreatedAt = message.CreatedAt,
+            Attachments = message.Attachments.Select(attachment => new AiAttachment
+            {
+                Name = attachment.Name,
+                Path = attachment.Path,
+                IsImage = attachment.IsImage,
+            }).ToList(),
+        };
+    }
+
+    private void SetAiSending(bool sending)
+    {
+        _aiIsSending = sending;
+        if (_aiSendButton is not null)
+        {
+            _aiSendButton.IsEnabled = true;
+            _aiSendButton.Opacity = 1;
+        }
+        if (_aiSendIcon is not null)
+            _aiSendIcon.Glyph = sending ? "\uE769" : "\uE74A";
+        if (_aiSendCircle is not null)
+            _aiSendCircle.Background = sending ? PrimaryPressedBrush() : PrimaryBrush();
+        _aiInput.PlaceholderText = sending ? "AI 正在生成..." : "要求后续变更...";
+        if (sending)
+            StartAiThinkingAnimation();
+        else
+            StopAiThinkingAnimation();
+    }
+
+    private void StartAiThinkingAnimation()
+    {
+        if (_aiButton is null)
+            return;
+
+        _aiThinkingStoryboard?.Stop();
+        _aiButton.Opacity = 1;
+        var pulse = new DoubleAnimation
+        {
+            From = 1,
+            To = 0.58,
+            Duration = new Duration(TimeSpan.FromMilliseconds(520)),
+            AutoReverse = true,
+            RepeatBehavior = RepeatBehavior.Forever,
+            EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut },
+        };
+        Storyboard.SetTarget(pulse, _aiButton);
+        Storyboard.SetTargetProperty(pulse, "Opacity");
+        _aiThinkingStoryboard = new Storyboard();
+        _aiThinkingStoryboard.Children.Add(pulse);
+        _aiThinkingStoryboard.Begin();
+    }
+
+    private void StopAiThinkingAnimation()
+    {
+        _aiThinkingStoryboard?.Stop();
+        _aiThinkingStoryboard = null;
+        if (_aiButton is not null)
+            _aiButton.Opacity = 1;
+    }
+
+    private void CancelAiGeneration()
+    {
+        _aiCancellation?.Cancel();
+    }
+
+    private Button BuildAiScrollBottomButton()
+    {
+        var glyph = new FontIcon
+        {
+            Glyph = "\uE70D",
+            FontFamily = new FontFamily("Segoe Fluent Icons"),
+            FontSize = 14,
+            Foreground = OnPrimaryBrush(),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var circle = new Border
+        {
+            Width = 34,
+            Height = 34,
+            CornerRadius = new CornerRadius(17),
+            Background = PrimaryBrush(),
+            BorderBrush = PrimaryHoverBrush(),
+            BorderThickness = new Thickness(1),
+            Child = glyph,
+        };
+        var button = new Button
+        {
+            Content = circle,
+            Width = 34,
+            Height = 34,
+            MinWidth = 34,
+            MinHeight = 34,
+            Padding = new Thickness(0),
+            CornerRadius = new CornerRadius(17),
+            Background = TransparentBrush(),
+            BorderThickness = new Thickness(0),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Margin = new Thickness(0, 0, 22, 16),
+            Opacity = 0,
+            Visibility = Visibility.Collapsed,
+        };
+        ApplyButtonResources(button, TransparentBrush(), OnPrimaryBrush(), TransparentBrush(), TransparentBrush(), TransparentBrush(), new Thickness(0));
+        button.PointerEntered += (_, _) => circle.Background = PrimaryHoverBrush();
+        button.PointerExited += (_, _) => circle.Background = PrimaryBrush();
+        button.Click += (_, _) => ScrollAiMessagesToBottom();
+        return button;
+    }
+
+    private void OnAiMessageScrollerViewChanged(object? sender, ScrollViewerViewChangedEventArgs e)
+    {
+        if (_aiMessageScroller is null)
+            return;
+
+        var atBottom = _aiMessageScroller.ScrollableHeight <= 2 ||
+            _aiMessageScroller.VerticalOffset >= _aiMessageScroller.ScrollableHeight - 24;
+        SetAiScrollBottomButtonVisible(!atBottom);
+    }
+
+    private void SetAiScrollBottomButtonVisible(bool visible)
+    {
+        if (_aiScrollBottomButton is null || _aiScrollBottomButtonVisible == visible)
+            return;
+
+        _aiScrollBottomButtonVisible = visible;
+        if (visible)
+            _aiScrollBottomButton.Visibility = Visibility.Visible;
+
+        var fade = new DoubleAnimation
+        {
+            To = visible ? 1 : 0,
+            Duration = new Duration(TimeSpan.FromMilliseconds(150)),
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+        };
+        Storyboard.SetTarget(fade, _aiScrollBottomButton);
+        Storyboard.SetTargetProperty(fade, "Opacity");
+        var storyboard = new Storyboard();
+        storyboard.Children.Add(fade);
+        if (!visible)
+            storyboard.Completed += (_, _) =>
+            {
+                if (!_aiScrollBottomButtonVisible && _aiScrollBottomButton is not null)
+                    _aiScrollBottomButton.Visibility = Visibility.Collapsed;
+            };
+        storyboard.Begin();
+    }
+
+    private void ScrollAiMessagesToBottom()
+    {
+        ScrollAiMessagesToBottomPass(0);
+        SetAiScrollBottomButtonVisible(false);
+    }
+
+    private void ScrollAiMessagesToBottomPass(int pass)
+    {
+        _ = DispatcherQueue.TryEnqueue(() =>
+        {
+            if (_aiMessageScroller is null)
+                return;
+
+            _messageList.UpdateLayout();
+            _aiMessageScroller.UpdateLayout();
+            _aiMessageScroller.ChangeView(null, _aiMessageScroller.ScrollableHeight, null, true);
+            if (pass < 2)
+                ScrollAiMessagesToBottomPass(pass + 1);
+        });
+    }
+
+    private Task RunOnUiThreadAsync(Action action)
+    {
+        var completion = new TaskCompletionSource();
+        if (!DispatcherQueue.TryEnqueue(() =>
+        {
+            try
+            {
+                action();
+                completion.SetResult();
+            }
+            catch (Exception ex)
+            {
+                completion.SetException(ex);
+            }
+        }))
+        {
+            completion.SetException(new InvalidOperationException("无法切换到 UI 线程。"));
+        }
+
+        return completion.Task;
+    }
+
+    private async Task<bool> RequestAiToolApprovalAsync(AiAgentToolCall toolCall, string command)
+    {
+        var approved = false;
+        ContentDialog? dialog = null;
+        var content = new StackPanel
+        {
+            Spacing = 10,
+            Width = 420,
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = "AI 请求执行 ADB 命令",
+                    FontSize = 20,
+                    FontWeight = Microsoft.UI.Text.FontWeights.Bold,
+                    Foreground = PrimaryTextBrush(),
+                },
+                new TextBlock
+                {
+                    Text = "权限模式为“请求批准”，请确认是否允许本次工具调用。",
+                    Foreground = SecondaryTextBrush(),
+                    TextWrapping = TextWrapping.Wrap,
+                },
+                new Border
+                {
+                    CornerRadius = new CornerRadius(12),
+                    Background = ShellBrush(),
+                    Padding = new Thickness(12),
+                    Child = new TextBlock
+                    {
+                        Text = command,
+                        FontFamily = new FontFamily("Consolas"),
+                        TextWrapping = TextWrapping.Wrap,
+                        Foreground = ShellTextBrush(),
+                    },
+                },
+            },
+        };
+        var actions = new Grid
+        {
+            ColumnSpacing = 10,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            ColumnDefinitions =
+            {
+                new ColumnDefinition { Width = GridLength.Auto },
+                new ColumnDefinition { Width = GridLength.Auto },
+            },
+        };
+        var reject = SecondaryButton("拒绝");
+        var allow = PrimaryButton("允许");
+        reject.Click += (_, _) =>
+        {
+            approved = false;
+            dialog?.Hide();
+        };
+        allow.Click += (_, _) =>
+        {
+            approved = true;
+            dialog?.Hide();
+        };
+        actions.Children.Add(reject);
+        Grid.SetColumn(allow, 1);
+        actions.Children.Add(allow);
+        content.Children.Add(actions);
+
+        dialog = DialogChrome(string.Empty, content);
+        await dialog.ShowAsync();
+        return approved;
     }
 
     private UIElement MessageBubble(AiChatMessage message)
@@ -2232,6 +4138,17 @@ public sealed class MainWindow : Window
         });
 
         var body = new StackPanel { Spacing = 8 };
+        if (!message.IsUser && message.ProcessingSeconds is double seconds)
+        {
+            body.Children.Add(new TextBlock
+            {
+                Text = $"处理用时 {FormatDuration(seconds)}",
+                FontSize = 10,
+                Foreground = MutedBrush(),
+            });
+        }
+        if (!message.IsUser && !string.IsNullOrWhiteSpace(message.ThinkingText))
+            body.Children.Add(BuildCollapsedThinkingBlock(message.ThinkingText));
         if (!string.IsNullOrWhiteSpace(message.Text))
         {
             body.Children.Add(new TextBlock
@@ -2254,6 +4171,14 @@ public sealed class MainWindow : Window
                 ? PrimaryBrush()
                 : SurfaceAltBrush(),
             Child = body,
+        });
+        panel.Children.Add(new TextBlock
+        {
+            Text = FormatMessageTime(message.CreatedAt),
+            FontSize = 10,
+            Foreground = MutedBrush(),
+            HorizontalAlignment = message.IsUser ? HorizontalAlignment.Right : HorizontalAlignment.Left,
+            Margin = new Thickness(4, -8, 4, 0),
         });
         return panel;
     }
@@ -2437,6 +4362,7 @@ public sealed class MainWindow : Window
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
+        StyleScrollViewer(dialogScroller);
         AttachWheelScrolling(dialogScroller);
         body.Children.Add(dialogScroller);
         var actions = new Grid
@@ -2633,7 +4559,7 @@ public sealed class MainWindow : Window
 
     private ContentDialog Dialog(string title, UIElement content, string primary)
     {
-        return new ContentDialog
+        var dialog = new ContentDialog
         {
             XamlRoot = _root.XamlRoot,
             Title = string.IsNullOrWhiteSpace(title) ? null : title,
@@ -2646,11 +4572,13 @@ public sealed class MainWindow : Window
             BorderBrush = BorderBrush(),
             Foreground = PrimaryTextBrush(),
         };
+        StyleDialog(dialog);
+        return dialog;
     }
 
     private ContentDialog DialogChrome(string title, UIElement content)
     {
-        return new ContentDialog
+        var dialog = new ContentDialog
         {
             XamlRoot = _root.XamlRoot,
             Title = string.IsNullOrWhiteSpace(title) ? null : title,
@@ -2660,6 +4588,8 @@ public sealed class MainWindow : Window
             BorderBrush = BorderBrush(),
             Foreground = PrimaryTextBrush(),
         };
+        StyleDialog(dialog);
+        return dialog;
     }
 
     private void Notify(string title, string message, InfoBarSeverity severity)
@@ -2691,9 +4621,11 @@ public sealed class MainWindow : Window
         return new StackPanel
         {
             Spacing = 16,
-            Margin = new Thickness(16, 12, 16, 16),
+            Margin = PageMargin(),
         };
     }
+
+    private static Thickness PageMargin() => new(16, 6, 16, 16);
 
     private static UIElement Header(string title, string description)
     {
@@ -2775,6 +4707,37 @@ public sealed class MainWindow : Window
         return button;
     }
 
+    private static Button DangerButton(string text)
+    {
+        var background = s_darkTheme
+            ? new SolidColorBrush(ColorHelper.FromArgb(42, 248, 113, 113))
+            : new SolidColorBrush(ColorHelper.FromArgb(36, 220, 38, 38));
+        var hover = s_darkTheme
+            ? new SolidColorBrush(ColorHelper.FromArgb(62, 248, 113, 113))
+            : new SolidColorBrush(ColorHelper.FromArgb(54, 220, 38, 38));
+        var pressed = s_darkTheme
+            ? new SolidColorBrush(ColorHelper.FromArgb(82, 248, 113, 113))
+            : new SolidColorBrush(ColorHelper.FromArgb(70, 220, 38, 38));
+        var foreground = s_darkTheme
+            ? new SolidColorBrush(ColorHelper.FromArgb(255, 252, 165, 165))
+            : new SolidColorBrush(ColorHelper.FromArgb(255, 185, 28, 28));
+        var border = s_darkTheme
+            ? new SolidColorBrush(ColorHelper.FromArgb(130, 248, 113, 113))
+            : new SolidColorBrush(ColorHelper.FromArgb(110, 220, 38, 38));
+        var button = new Button
+        {
+            Content = text,
+            Background = background,
+            Foreground = foreground,
+            BorderBrush = border,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(14),
+            Padding = new Thickness(14, 8, 14, 8),
+        };
+        ApplyButtonResources(button, background, foreground, hover, pressed, border, new Thickness(1));
+        return button;
+    }
+
     private static Button IconSquareButton(string glyph, double size)
     {
         var button = new Button
@@ -2852,7 +4815,16 @@ public sealed class MainWindow : Window
                     VerticalAlignment = VerticalAlignment.Center,
                     Children =
                     {
-                        new SymbolIcon(icon) { Width = 18, Height = 18 },
+                        new Grid
+                        {
+                            Width = 24,
+                            Height = 24,
+                            Clip = null,
+                            Children =
+                            {
+                                DeviceToolTabIcon(icon),
+                            },
+                        },
                         new TextBlock { Text = text, FontSize = 10, HorizontalAlignment = HorizontalAlignment.Center },
                     },
                 },
@@ -2860,6 +4832,34 @@ public sealed class MainWindow : Window
         };
         ApplyButtonResources(button, TransparentBrush(), SecondaryTextBrush(), TransparentBrush(), TransparentBrush(), TransparentBrush(), new Thickness(0));
         return button;
+    }
+
+    private static FontIcon DeviceToolTabIcon(Symbol icon)
+    {
+        return new FontIcon
+        {
+            Glyph = DeviceToolTabGlyph(icon),
+            FontFamily = new FontFamily("Segoe Fluent Icons"),
+            FontSize = 20,
+            Width = 24,
+            Height = 24,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+    }
+
+    private static string DeviceToolTabGlyph(Symbol icon)
+    {
+        return icon switch
+        {
+            Symbol.Favorite => "\uE734",
+            Symbol.Keyboard => "\uE765",
+            Symbol.AllApps => "\uE71D",
+            Symbol.Folder => "\uE8B7",
+            Symbol.Setting => "\uE713",
+            Symbol.Refresh => "\uE72C",
+            _ => "\uE700",
+        };
     }
 
     private static void ApplyDeviceTabState(Button button, bool active)
@@ -2945,16 +4945,28 @@ public sealed class MainWindow : Window
             Foreground = PrimaryTextBrush(),
             BorderBrush = BorderBrush(),
         };
+        box.UseLayoutRounding = true;
         box.Resources["TextControlBackground"] = SurfaceBrush();
         box.Resources["TextControlBackgroundPointerOver"] = HoverBrush();
         box.Resources["TextControlBackgroundFocused"] = SurfaceBrush();
+        box.Resources["TextControlBackgroundDisabled"] = SurfaceBrush();
+        box.Resources["TextControlForeground"] = PrimaryTextBrush();
+        box.Resources["TextControlForegroundPointerOver"] = PrimaryTextBrush();
+        box.Resources["TextControlForegroundFocused"] = PrimaryTextBrush();
+        box.Resources["TextControlPlaceholderForeground"] = MutedBrush();
+        box.Resources["TextControlPlaceholderForegroundPointerOver"] = MutedBrush();
+        box.Resources["TextControlPlaceholderForegroundFocused"] = MutedBrush();
         box.Resources["TextControlBorderBrush"] = BorderBrush();
+        box.Resources["TextControlBorderBrushPointerOver"] = BorderLightBrush();
         box.Resources["TextControlBorderBrushFocused"] = PrimaryBrush();
+        box.Resources["FocusVisualPrimaryBrush"] = TransparentBrush();
+        box.Resources["FocusVisualSecondaryBrush"] = TransparentBrush();
         return box;
     }
 
     private static void StyleTextBox(TextBox box)
     {
+        box.UseLayoutRounding = true;
         box.Background = SurfaceBrush();
         box.Foreground = PrimaryTextBrush();
         box.BorderBrush = BorderBrush();
@@ -2964,14 +4976,23 @@ public sealed class MainWindow : Window
         box.Resources["TextControlBackground"] = box.Background;
         box.Resources["TextControlBackgroundPointerOver"] = HoverBrush();
         box.Resources["TextControlBackgroundFocused"] = SurfaceBrush();
+        box.Resources["TextControlBackgroundDisabled"] = SurfaceBrush();
         box.Resources["TextControlForeground"] = box.Foreground;
+        box.Resources["TextControlForegroundPointerOver"] = PrimaryTextBrush();
+        box.Resources["TextControlForegroundFocused"] = PrimaryTextBrush();
         box.Resources["TextControlPlaceholderForeground"] = MutedBrush();
+        box.Resources["TextControlPlaceholderForegroundPointerOver"] = MutedBrush();
+        box.Resources["TextControlPlaceholderForegroundFocused"] = MutedBrush();
         box.Resources["TextControlBorderBrush"] = BorderBrush();
+        box.Resources["TextControlBorderBrushPointerOver"] = BorderLightBrush();
         box.Resources["TextControlBorderBrushFocused"] = PrimaryBrush();
+        box.Resources["FocusVisualPrimaryBrush"] = TransparentBrush();
+        box.Resources["FocusVisualSecondaryBrush"] = TransparentBrush();
     }
 
     private static void StylePasswordBox(PasswordBox box)
     {
+        box.UseLayoutRounding = true;
         box.Background = SurfaceBrush();
         box.Foreground = PrimaryTextBrush();
         box.BorderBrush = BorderBrush();
@@ -2981,12 +5002,20 @@ public sealed class MainWindow : Window
         box.Resources["TextControlBackground"] = SurfaceBrush();
         box.Resources["TextControlBackgroundPointerOver"] = HoverBrush();
         box.Resources["TextControlBackgroundFocused"] = SurfaceBrush();
+        box.Resources["TextControlBackgroundDisabled"] = SurfaceBrush();
+        box.Resources["TextControlForeground"] = PrimaryTextBrush();
+        box.Resources["TextControlForegroundPointerOver"] = PrimaryTextBrush();
+        box.Resources["TextControlForegroundFocused"] = PrimaryTextBrush();
         box.Resources["TextControlBorderBrush"] = BorderBrush();
+        box.Resources["TextControlBorderBrushPointerOver"] = BorderLightBrush();
         box.Resources["TextControlBorderBrushFocused"] = PrimaryBrush();
+        box.Resources["FocusVisualPrimaryBrush"] = TransparentBrush();
+        box.Resources["FocusVisualSecondaryBrush"] = TransparentBrush();
     }
 
     private static void StyleComboBox(ComboBox combo)
     {
+        combo.UseLayoutRounding = true;
         combo.Foreground = PrimaryTextBrush();
         combo.Background = TransparentBrush();
         combo.BorderBrush = BorderLightBrush();
@@ -2994,18 +5023,28 @@ public sealed class MainWindow : Window
         combo.Resources["ComboBoxBackground"] = TransparentBrush();
         combo.Resources["ComboBoxBackgroundPointerOver"] = HoverBrush();
         combo.Resources["ComboBoxBackgroundPressed"] = SurfaceAltBrush();
+        combo.Resources["ComboBoxBackgroundFocused"] = HoverBrush();
+        combo.Resources["ComboBoxBackgroundDisabled"] = TransparentBrush();
         combo.Resources["ComboBoxForeground"] = PrimaryTextBrush();
         combo.Resources["ComboBoxForegroundPointerOver"] = PrimaryTextBrush();
+        combo.Resources["ComboBoxForegroundFocused"] = PrimaryTextBrush();
+        combo.Resources["ComboBoxForegroundDisabled"] = SecondaryTextBrush();
         combo.Resources["ComboBoxBorderBrush"] = BorderLightBrush();
         combo.Resources["ComboBoxBorderBrushPointerOver"] = PrimaryBrush();
+        combo.Resources["ComboBoxBorderBrushPressed"] = PrimaryBrush();
+        combo.Resources["ComboBoxBorderBrushFocused"] = PrimaryBrush();
+        combo.Resources["ComboBoxBorderBrushDisabled"] = BorderLightBrush();
         combo.Resources["ComboBoxDropDownBackground"] = SurfaceBrush();
         combo.Resources["ComboBoxItemBackgroundPointerOver"] = HoverBrush();
         combo.Resources["ComboBoxItemBackgroundSelected"] = PrimaryLightBrush();
         combo.Resources["ComboBoxItemForegroundSelected"] = PrimaryBrush();
+        combo.Resources["FocusVisualPrimaryBrush"] = TransparentBrush();
+        combo.Resources["FocusVisualSecondaryBrush"] = TransparentBrush();
     }
 
     private static void StyleListView(ListView list)
     {
+        list.UseLayoutRounding = true;
         list.Background = SurfaceBrush();
         list.BorderBrush = BorderBrush();
         list.BorderThickness = new Thickness(1);
@@ -3013,11 +5052,61 @@ public sealed class MainWindow : Window
         list.Padding = new Thickness(6);
         list.Resources["ListViewItemBackgroundPointerOver"] = HoverBrush();
         list.Resources["ListViewItemBackgroundSelected"] = PrimaryLightBrush();
+        list.Resources["ListViewItemBackgroundSelectedPointerOver"] = PrimaryLightBrush();
+        list.Resources["ListViewItemBackgroundPressed"] = SurfaceAltBrush();
         list.Resources["ListViewItemForegroundSelected"] = PrimaryBrush();
+        list.Resources["FocusVisualPrimaryBrush"] = TransparentBrush();
+        list.Resources["FocusVisualSecondaryBrush"] = TransparentBrush();
+    }
+
+    private static void StyleScrollViewer(ScrollViewer viewer)
+    {
+        viewer.UseLayoutRounding = true;
+        viewer.Background = TransparentBrush();
+        viewer.Resources["ScrollBarTrackFill"] = TransparentBrush();
+        viewer.Resources["ScrollBarTrackFillPointerOver"] = TransparentBrush();
+        viewer.Resources["ScrollBarThumbFill"] = BorderLightBrush();
+        viewer.Resources["ScrollBarThumbFillPointerOver"] = SecondaryTextBrush();
+        viewer.Resources["ScrollBarThumbFillPressed"] = PrimaryBrush();
+        viewer.Resources["ScrollBarButtonBackground"] = TransparentBrush();
+        viewer.Resources["ScrollBarButtonBackgroundPointerOver"] = HoverBrush();
+        viewer.Resources["ScrollBarButtonBackgroundPressed"] = SurfaceAltBrush();
+        viewer.Resources["ScrollBarButtonForeground"] = SecondaryTextBrush();
+        viewer.Resources["ScrollBarButtonForegroundPointerOver"] = PrimaryTextBrush();
+        viewer.Resources["ScrollBarButtonForegroundPressed"] = PrimaryBrush();
+        viewer.Resources["FocusVisualPrimaryBrush"] = TransparentBrush();
+        viewer.Resources["FocusVisualSecondaryBrush"] = TransparentBrush();
+    }
+
+    private static void StyleDialog(ContentDialog dialog)
+    {
+        dialog.UseLayoutRounding = true;
+        dialog.CornerRadius = new CornerRadius(20);
+        dialog.Resources["ContentDialogBackground"] = SurfaceBrush();
+        dialog.Resources["ContentDialogBorderBrush"] = BorderLightBrush();
+        dialog.Resources["ContentDialogForeground"] = PrimaryTextBrush();
+        dialog.Resources["ContentDialogTitleForeground"] = PrimaryTextBrush();
+        dialog.Resources["ContentDialogContentForeground"] = PrimaryTextBrush();
+        dialog.Resources["ContentDialogSeparatorBorderBrush"] = BorderLightBrush();
+        dialog.Resources["ButtonBackground"] = SurfaceBrush();
+        dialog.Resources["ButtonBackgroundPointerOver"] = HoverBrush();
+        dialog.Resources["ButtonBackgroundPressed"] = SurfaceAltBrush();
+        dialog.Resources["ButtonBackgroundFocused"] = HoverBrush();
+        dialog.Resources["ButtonForeground"] = PrimaryTextBrush();
+        dialog.Resources["ButtonForegroundPointerOver"] = PrimaryTextBrush();
+        dialog.Resources["ButtonForegroundPressed"] = PrimaryTextBrush();
+        dialog.Resources["ButtonForegroundFocused"] = PrimaryTextBrush();
+        dialog.Resources["ButtonBorderBrush"] = BorderBrush();
+        dialog.Resources["ButtonBorderBrushPointerOver"] = BorderLightBrush();
+        dialog.Resources["ButtonBorderBrushPressed"] = BorderLightBrush();
+        dialog.Resources["ButtonBorderBrushFocused"] = BorderLightBrush();
+        dialog.Resources["FocusVisualPrimaryBrush"] = TransparentBrush();
+        dialog.Resources["FocusVisualSecondaryBrush"] = TransparentBrush();
     }
 
     private static void ApplyButtonResources(Button button, Brush background, Brush foreground, Brush hover, Brush pressed, Brush border, Thickness borderThickness)
     {
+        button.UseLayoutRounding = true;
         button.Background = background;
         button.Foreground = foreground;
         button.BorderBrush = border;
@@ -3025,12 +5114,80 @@ public sealed class MainWindow : Window
         button.Resources["ButtonBackground"] = background;
         button.Resources["ButtonBackgroundPointerOver"] = hover;
         button.Resources["ButtonBackgroundPressed"] = pressed;
+        button.Resources["ButtonBackgroundFocused"] = hover;
+        button.Resources["ButtonBackgroundDisabled"] = background;
         button.Resources["ButtonForeground"] = foreground;
         button.Resources["ButtonForegroundPointerOver"] = foreground;
         button.Resources["ButtonForegroundPressed"] = foreground;
+        button.Resources["ButtonForegroundFocused"] = foreground;
+        button.Resources["ButtonForegroundDisabled"] = foreground;
         button.Resources["ButtonBorderBrush"] = border;
         button.Resources["ButtonBorderBrushPointerOver"] = border;
         button.Resources["ButtonBorderBrushPressed"] = border;
+        button.Resources["ButtonBorderBrushFocused"] = border;
+        button.Resources["ButtonBorderBrushDisabled"] = border;
+        button.Resources["FocusVisualPrimaryBrush"] = TransparentBrush();
+        button.Resources["FocusVisualSecondaryBrush"] = TransparentBrush();
+    }
+
+    private static void PolishRoundedEdges(UIElement element)
+    {
+        switch (element)
+        {
+            case Border border:
+                border.UseLayoutRounding = true;
+                if (HasRoundedCorners(border.CornerRadius) &&
+                    HasVisibleBrush(border.Background) &&
+                    HasZeroThickness(border.BorderThickness))
+                {
+                    border.BorderThickness = new Thickness(1);
+                    border.BorderBrush = RoundedEdgeBrush();
+                }
+                if (border.Child is not null)
+                    PolishRoundedEdges(border.Child);
+                break;
+            case Panel panel:
+                panel.UseLayoutRounding = true;
+                foreach (var child in panel.Children.OfType<UIElement>())
+                    PolishRoundedEdges(child);
+                break;
+            case ScrollViewer viewer:
+                viewer.UseLayoutRounding = true;
+                if (viewer.Content is UIElement scrollContent)
+                    PolishRoundedEdges(scrollContent);
+                break;
+            case ContentControl control:
+                control.UseLayoutRounding = true;
+                if (control.Content is UIElement content)
+                    PolishRoundedEdges(content);
+                break;
+            case Control control:
+                control.UseLayoutRounding = true;
+                break;
+            case FrameworkElement frameworkElement:
+                frameworkElement.UseLayoutRounding = true;
+                break;
+        }
+    }
+
+    private static bool HasRoundedCorners(CornerRadius radius)
+    {
+        return radius.TopLeft > 0 || radius.TopRight > 0 || radius.BottomRight > 0 || radius.BottomLeft > 0;
+    }
+
+    private static bool HasZeroThickness(Thickness thickness)
+    {
+        return thickness.Left <= 0 && thickness.Top <= 0 && thickness.Right <= 0 && thickness.Bottom <= 0;
+    }
+
+    private static bool HasVisibleBrush(Brush? brush)
+    {
+        return brush switch
+        {
+            null => false,
+            SolidColorBrush solid => solid.Color.A > 0,
+            _ => true,
+        };
     }
 
     private ScrollViewer PageScroller(UIElement content)
@@ -3045,6 +5202,7 @@ public sealed class MainWindow : Window
             IsTabStop = true,
             Padding = new Thickness(0),
         };
+        StyleScrollViewer(viewer);
         _activePageScroller = viewer;
         AttachWheelScrolling(viewer);
         RefreshNativeWheelHooks();
@@ -3085,6 +5243,7 @@ public sealed class MainWindow : Window
             return;
 
         _wndProcDelegate = NativeWindowProc;
+        EnsureWindowMinimumHeight();
         RefreshNativeWheelHooks();
     }
 
@@ -3124,6 +5283,15 @@ public sealed class MainWindow : Window
 
     private IntPtr NativeWindowProc(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam)
     {
+        if (hwnd == _windowHandle && message == WmGetMinMaxInfo)
+        {
+            var result = _hookedWndProcs.TryGetValue(hwnd, out var previousProcForMinMax)
+                ? CallWindowProc(previousProcForMinMax, hwnd, message, wParam, lParam)
+                : DefWindowProc(hwnd, message, wParam, lParam);
+            ApplyMinimumWindowHeight(lParam);
+            return result;
+        }
+
         if ((message == WmMouseWheel || message == WmPointerWheel) && _activePageScroller is not null)
         {
             var delta = unchecked((short)((wParam.ToInt64() >> 16) & 0xffff));
@@ -3139,6 +5307,57 @@ public sealed class MainWindow : Window
             : DefWindowProc(hwnd, message, wParam, lParam);
     }
 
+    private void EnsureWindowMinimumHeight()
+    {
+        if (_windowHandle == IntPtr.Zero || !GetWindowRect(_windowHandle, out var rect))
+            return;
+
+        var minimumWidth = ScaledMinimumWindowWidth();
+        var minimumHeight = ScaledMinimumWindowHeight();
+        var currentWidth = rect.Right - rect.Left;
+        var currentHeight = rect.Bottom - rect.Top;
+        if (currentWidth >= minimumWidth && currentHeight >= minimumHeight)
+            return;
+
+        SetWindowPos(
+            _windowHandle,
+            IntPtr.Zero,
+            0,
+            0,
+            Math.Max(currentWidth, minimumWidth),
+            Math.Max(currentHeight, minimumHeight),
+            SwpNoZOrder | SwpNoMove | SwpNoActivate);
+    }
+
+    private void ApplyMinimumWindowHeight(IntPtr lParam)
+    {
+        if (lParam == IntPtr.Zero)
+            return;
+
+        var info = Marshal.PtrToStructure<MinMaxInfo>(lParam);
+        info.MinimumTrackSize.X = Math.Max(info.MinimumTrackSize.X, ScaledMinimumWindowWidth());
+        info.MinimumTrackSize.Y = Math.Max(info.MinimumTrackSize.Y, ScaledMinimumWindowHeight());
+        Marshal.StructureToPtr(info, lParam, false);
+    }
+
+    private int ScaledMinimumWindowWidth()
+    {
+        var dpi = _windowHandle == IntPtr.Zero ? 96u : GetDpiForWindow(_windowHandle);
+        if (dpi == 0)
+            dpi = 96;
+
+        return (int)Math.Ceiling(MinimumWindowWidthForDeviceDetail * dpi / 96d);
+    }
+
+    private int ScaledMinimumWindowHeight()
+    {
+        var dpi = _windowHandle == IntPtr.Zero ? 96u : GetDpiForWindow(_windowHandle);
+        if (dpi == 0)
+            dpi = 96;
+
+        return (int)Math.Ceiling(MinimumWindowHeightForDeviceTabs * dpi / 96d);
+    }
+
     private static void ScrollPageByWheelDelta(ScrollViewer viewer, int delta)
     {
         var target = Math.Clamp(viewer.VerticalOffset - delta, 0, viewer.ScrollableHeight);
@@ -3146,8 +5365,38 @@ public sealed class MainWindow : Window
     }
 
     private const int GwlWndProc = -4;
+    private const uint WmGetMinMaxInfo = 0x0024;
     private const uint WmMouseWheel = 0x020A;
     private const uint WmPointerWheel = 0x024E;
+    private const uint SwpNoMove = 0x0002;
+    private const uint SwpNoZOrder = 0x0004;
+    private const uint SwpNoActivate = 0x0010;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint
+    {
+        public int X;
+        public int Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MinMaxInfo
+    {
+        public NativePoint Reserved;
+        public NativePoint MaxSize;
+        public NativePoint MaxPosition;
+        public NativePoint MinimumTrackSize;
+        public NativePoint MaximumTrackSize;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
 
     private delegate IntPtr WndProcDelegate(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
 
@@ -3164,6 +5413,15 @@ public sealed class MainWindow : Window
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool EnumChildWindows(IntPtr parentHandle, EnumWindowsProc callback, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDpiForWindow(IntPtr hwnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool GetWindowRect(IntPtr hwnd, out NativeRect rect);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter, int x, int y, int cx, int cy, uint flags);
 
     private static TextBlock BodyText(string text)
     {
@@ -3260,6 +5518,12 @@ public sealed class MainWindow : Window
     private static SolidColorBrush HoverBrush() => s_darkTheme
         ? new SolidColorBrush(ColorHelper.FromArgb(150, 51, 65, 85))
         : new SolidColorBrush(ColorHelper.FromArgb(230, 241, 245, 249));
+    private static SolidColorBrush SelectorHoverBrush() => s_darkTheme
+        ? new SolidColorBrush(ColorHelper.FromArgb(210, 71, 85, 105))
+        : new SolidColorBrush(ColorHelper.FromArgb(255, 235, 241, 247));
+    private static SolidColorBrush SelectorPressedBrush() => s_darkTheme
+        ? new SolidColorBrush(ColorHelper.FromArgb(235, 51, 65, 85))
+        : new SolidColorBrush(ColorHelper.FromArgb(255, 226, 232, 240));
     private static SolidColorBrush ShellBrush() => s_darkTheme
         ? new SolidColorBrush(ColorHelper.FromArgb(255, 2, 6, 23))
         : new SolidColorBrush(ColorHelper.FromArgb(255, 15, 23, 42));
@@ -3298,5 +5562,8 @@ public sealed class MainWindow : Window
     private static SolidColorBrush BorderLightBrush() => s_darkTheme
         ? new SolidColorBrush(ColorHelper.FromArgb(102, 148, 163, 184))
         : new SolidColorBrush(ColorHelper.FromArgb(180, 203, 213, 225));
+    private static SolidColorBrush RoundedEdgeBrush() => s_darkTheme
+        ? new SolidColorBrush(ColorHelper.FromArgb(86, 148, 163, 184))
+        : new SolidColorBrush(ColorHelper.FromArgb(132, 148, 163, 184));
     private static SolidColorBrush TransparentBrush() => new(Colors.Transparent);
 }

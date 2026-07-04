@@ -13,7 +13,7 @@ public sealed class GridBackground : Canvas
         SizeChanged += (_, _) => DrawGrid();
     }
 
-    public double GridSize { get; set; } = 24;
+    public double GridSize { get; set; } = 20;
 
     public Brush? GridLineBrush { get; set; }
 

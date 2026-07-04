@@ -53,6 +53,14 @@
             android:exported="false"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
+        <receiver
+            android:name=".quic.CompanionConnectionReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.adbcontrol.companion.CONFIGURE_CONNECTION" />
+            </intent-filter>
+        </receiver>
+
         <service
             android:name=".input.CompanionInputMethodService"
             android:exported="true"
