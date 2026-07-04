@@ -65,6 +65,21 @@ public sealed class CompanionAppService
         return await ConfigureConnectionAsync(device, quicPort);
     }
 
+    public async Task<bool> IsResponsiveAsync(DeviceModel device, CancellationToken cancellationToken = default)
+    {
+        var result = await ExecuteCommandAsync(
+            device,
+            "android.accessibility.control",
+            "accessibility.status",
+            new Dictionary<string, object?>(),
+            cancellationToken);
+
+        // APP 连接状态表示桌面端能触达伴侣 App 的命令入口；具体能力是否已授权由返回 payload 再表达。
+        return result.Success &&
+            result.Stdout.Contains("Broadcast completed", StringComparison.OrdinalIgnoreCase) &&
+            result.Stdout.Contains("\"requestId\"", StringComparison.OrdinalIgnoreCase);
+    }
+
     public async Task<AdbCommandResult> ExecuteCommandAsync(
         DeviceModel device,
         string capabilityId,

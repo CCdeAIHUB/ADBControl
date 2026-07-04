@@ -1202,9 +1202,15 @@ public sealed class MainWindow : Window
                     result.Success ? $"已下发 QUIC 地址，端口 {_settings.Current.QuicPort}。" : FormatCommandResult(result),
                     result.Success ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
             }
+
+            var wasConnected = device.IsCompanionConnected;
+            device.IsCompanionConnected = installed && await _companion.IsResponsiveAsync(device);
+            if (wasConnected != device.IsCompanionConnected && _currentDetailDevice?.DeviceId == device.DeviceId)
+                ShowDeviceDetail(device);
         }
         catch (Exception ex)
         {
+            device.IsCompanionConnected = false;
             installButton.Visibility = Visibility.Visible;
             Notify("伴侣 App 检测失败", ex.Message, InfoBarSeverity.Warning);
         }
@@ -1248,10 +1254,13 @@ public sealed class MainWindow : Window
             device.IsCompanionInstalled = true;
             installButton.Visibility = Visibility.Collapsed;
             var configure = await _companion.OpenAndConfigureAsync(device, _settings.Current.QuicPort);
+            device.IsCompanionConnected = configure.Success && await _companion.IsResponsiveAsync(device);
             Notify(
                 configure.Success ? "伴侣 App 已安装" : "伴侣 App 已安装但连接配置失败",
                 configure.Success ? $"已通过 ADB 下发 QUIC 连接地址，端口 {_settings.Current.QuicPort}。" : FormatCommandResult(configure),
                 configure.Success ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
+            if (_currentDetailDevice?.DeviceId == device.DeviceId)
+                ShowDeviceDetail(device);
         }
         catch (Exception ex)
         {
