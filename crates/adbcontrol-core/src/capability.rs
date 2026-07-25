@@ -79,20 +79,6 @@ pub fn android_companion_capability_catalog() -> Vec<Capability> {
             true,
         ),
         capability(
-            "android.screen.capture",
-            "Screen capture and casting",
-            "Capture device screen or selected app window and stream frames to Core.",
-            CapabilityTransport::QuicMediaStream,
-            CapabilitySensitivity::Critical,
-            &["stream.open", "stream.close", "screenshot.capture"],
-            &[
-                "android.permission.FOREGROUND_SERVICE",
-                "android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION",
-            ],
-            &["media-projection-consent"],
-            true,
-        ),
-        capability(
             "android.file.read",
             "File read",
             "Read files that the Android companion is allowed to access.",
@@ -253,6 +239,27 @@ pub fn android_companion_capability_catalog() -> Vec<Capability> {
             true,
         ),
         capability(
+            "android.accessibility.control",
+            "Accessibility control",
+            "Perform accessibility-backed global actions and touch gestures after explicit user authorization.",
+            CapabilityTransport::QuicControl,
+            CapabilitySensitivity::Critical,
+            &[
+                "accessibility.status",
+                "accessibility.global.back",
+                "accessibility.global.home",
+                "accessibility.global.recents",
+                "accessibility.global.notifications",
+                "accessibility.global.quickSettings",
+                "accessibility.global.powerDialog",
+                "accessibility.touch.tap",
+                "accessibility.touch.swipe",
+            ],
+            &[],
+            &["accessibility-service"],
+            true,
+        ),
+        capability(
             "android.intent.chain_launch",
             "Chained intent launch",
             "Launch a declared chain of Android intents with strict validation.",
@@ -330,5 +337,18 @@ mod tests {
             .expect("clipboard read capability should exist");
         assert_eq!(clipboard.sensitivity, CapabilitySensitivity::High);
         assert!(clipboard.permission.requires_user_consent);
+
+        let accessibility = catalog
+            .iter()
+            .find(|capability| capability.id == "android.accessibility.control")
+            .expect("accessibility capability should exist");
+        assert_eq!(accessibility.sensitivity, CapabilitySensitivity::Critical);
+        assert!(accessibility
+            .permission
+            .special_permissions
+            .contains(&String::from("accessibility-service")));
+        assert!(accessibility
+            .operations
+            .contains(&String::from("accessibility.touch.tap")));
     }
 }

@@ -10,7 +10,7 @@ import android.os.HandlerThread
 import android.view.Surface
 import com.adbcontrol.companion.core.CompanionCommandContext
 import com.adbcontrol.companion.core.CompanionCommandResult
-import com.adbcontrol.companion.media.EncodedVideoStream
+import com.adbcontrol.companion.media.CameraVideoEncoder
 import com.adbcontrol.companion.media.MediaStreamSink
 import java.io.File
 import java.util.UUID
@@ -74,7 +74,7 @@ class CameraFeatureHandler(
         frameRate: Int,
     ): CompanionCommandResult {
         val device = openCameraDevice(cameraId) ?: return cameraOpenFailed(command.requestId)
-        val encoder = EncodedVideoStream(
+        val encoder = CameraVideoEncoder(
             width = width.coerceIn(240, 4096),
             height = height.coerceIn(240, 4096),
             bitrate = bitrate.coerceIn(256_000, 30_000_000),
@@ -291,7 +291,7 @@ class CameraFeatureHandler(
         val captureSession: CameraCaptureSession,
         val recorder: MediaRecorder?,
         val outputFile: File?,
-        val encoder: EncodedVideoStream?,
+        val encoder: CameraVideoEncoder?,
     ) {
         fun close() {
             runCatching { captureSession.stopRepeating() }

@@ -9,6 +9,14 @@ public sealed class AppSettings
     public List<SavedDeviceSettings> Devices { get; set; } = new();
     public List<AiModelSettings> AiModels { get; set; } = new();
     public List<AiChatMessage> AiMessages { get; set; } = new();
+    public List<string> HardwareMonitorMetrics { get; set; } =
+    [
+        "cpu.usage",
+        "memory.physical",
+        "temperature.max",
+        "display.refresh",
+    ];
+    public Dictionary<string, string> HardwareMonitorMetricColors { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
 
 public sealed class SavedDeviceSettings
@@ -18,6 +26,7 @@ public sealed class SavedDeviceSettings
     public string ConnectionKind { get; set; } = "wireless";
     public string IpAddress { get; set; } = string.Empty;
     public int Port { get; set; }
+    public string MdnsServiceId { get; set; } = string.Empty;
     public string Note { get; set; } = string.Empty;
 }
 

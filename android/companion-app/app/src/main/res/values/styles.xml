@@ -6,4 +6,17 @@
         <item name="android:colorAccent">#22C55E</item>
         <item name="android:windowBackground">#0A111F</item>
     </style>
+    <style name="ProjectionConsentTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:colorAccent">#22C55E</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+    <style name="ConnectionBootstrapTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowDisablePreview">true</item>
+    </style>
 </resources>

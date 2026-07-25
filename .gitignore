@@ -1,8 +1,14 @@
 /target/
+**/target/
 **/*.rs.bk
 **/bin/
 **/obj/
 client/publish/
+android/companion-app/.gradle/
+android/companion-app/.kotlin/
+android/companion-app/**/build/
+android/companion-app/app/.cxx/
+artifacts/
 .DS_Store
 .idea/
 .vscode/

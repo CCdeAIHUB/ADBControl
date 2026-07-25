@@ -1,0 +1,32 @@
+plugins {
+    id 'com.android.library'
+}
+
+def scrcpyServerRoot = rootProject.file('../../third_party/scrcpy/server')
+
+android {
+    namespace 'com.genymobile.scrcpy'
+    compileSdk 36
+
+    defaultConfig {
+        minSdk 29
+        buildConfigField 'String', 'VERSION_NAME', '"4.0"'
+    }
+
+    buildFeatures {
+        aidl true
+        buildConfig true
+    }
+
+    sourceSets {
+        main {
+            manifest.srcFile new File(scrcpyServerRoot, 'src/main/AndroidManifest.xml')
+            java.srcDir new File(scrcpyServerRoot, 'src/main/java')
+            aidl.srcDir new File(scrcpyServerRoot, 'src/main/aidl')
+        }
+    }
+
+    lint {
+        disable 'UseRequiresApi'
+    }
+}

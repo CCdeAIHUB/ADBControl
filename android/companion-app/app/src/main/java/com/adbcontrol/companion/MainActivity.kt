@@ -21,12 +21,12 @@ import com.adbcontrol.companion.core.AndroidCapabilityCatalog
 import com.adbcontrol.companion.core.CapabilitySensitivity
 import com.adbcontrol.companion.core.CompanionCapability
 import com.adbcontrol.companion.core.PermissionGuard
-import com.adbcontrol.companion.screen.ScreenCaptureConsentActivity
-import java.util.UUID
+import com.adbcontrol.companion.quic.QuicCompanionService
 
 class MainActivity : Activity() {
     private lateinit var permissionGuard: PermissionGuard
     private lateinit var content: LinearLayout
+    private var connectionStartRequested = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -38,6 +38,10 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        if (!connectionStartRequested && QuicCompanionService.hasSavedConnection(this)) {
+            connectionStartRequested = true
+            startForegroundService(Intent(this, QuicCompanionService::class.java))
+        }
         if (::content.isInitialized) {
             renderPermissionRows()
         }
@@ -89,7 +93,7 @@ class MainActivity : Activity() {
         }
         stack.addView(label("ADBControl 伴侣 App", 24f, COLOR_TEXT, true))
         stack.addView(spacer(8))
-        stack.addView(label("为桌面端提供投屏、输入、文件、媒体与系统能力。所有敏感能力都需要你在手机端确认授权。", 14f, COLOR_SECONDARY, false))
+        stack.addView(label("为桌面端提供输入、文件、媒体与系统能力。所有敏感能力都需要你在手机端确认授权。", 14f, COLOR_SECONDARY, false))
         stack.addView(spacer(16))
 
         val progress = LinearLayout(this).apply {
@@ -165,11 +169,6 @@ class MainActivity : Activity() {
                 Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")),
             )
             "input-method-service" -> startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
-            "media-projection-consent" -> startActivity(
-                Intent(this, ScreenCaptureConsentActivity::class.java).apply {
-                    putExtra(ScreenCaptureConsentActivity.EXTRA_STREAM_ID, "guide-${UUID.randomUUID()}")
-                },
-            )
             "accessibility-service" -> startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             "foreground-required",
             "background-launch-policy" -> startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
@@ -179,6 +178,7 @@ class MainActivity : Activity() {
             "scoped-storage-or-document-picker",
             "sensitive-clip-flag",
             "explicit-intent-only" -> renderPermissionRows()
+            "media-projection-consent" -> renderPermissionRows()
             else -> startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                 data = Uri.parse("package:$packageName")
             })
@@ -189,7 +189,6 @@ class MainActivity : Activity() {
         return when (grant) {
             "draw-over-apps" -> "打开悬浮窗授权"
             "input-method-service" -> "打开输入法设置"
-            "media-projection-consent" -> "发起投屏授权"
             "accessibility-service" -> "打开无障碍设置"
             "foreground-required" -> "打开应用设置"
             "background-launch-policy" -> "打开应用设置"
@@ -197,6 +196,7 @@ class MainActivity : Activity() {
             "scoped-storage-or-document-picker" -> "重新检查文件授权"
             "sensitive-clip-flag" -> "重新检查剪贴板策略"
             "explicit-intent-only" -> "重新检查 Intent 策略"
+            "media-projection-consent" -> "投屏时确认授权"
             else -> "打开应用设置"
         }
     }
@@ -289,7 +289,6 @@ class MainActivity : Activity() {
         return when (grant) {
             "draw-over-apps" -> "悬浮窗显示"
             "input-method-service" -> "启用 ADBControl 输入法"
-            "media-projection-consent" -> "屏幕采集授权"
             "accessibility-service" -> "启用 ADBControl 无障碍辅助"
             "foreground-required" -> "前台运行要求"
             "background-launch-policy" -> "后台启动策略"
@@ -297,6 +296,7 @@ class MainActivity : Activity() {
             "scoped-storage-or-document-picker" -> "文件选择或沙盒存储"
             "sensitive-clip-flag" -> "敏感剪贴板策略"
             "explicit-intent-only" -> "显式 Intent 限制"
+            "media-projection-consent" -> "每次投屏时由 Android 确认"
             else -> grant
         }
     }

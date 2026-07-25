@@ -7,6 +7,7 @@ public sealed class DeviceModel
     public string ConnectionKind { get; set; } = "wireless";
     public string IpAddress { get; set; } = string.Empty;
     public int Port { get; set; }
+    public string MdnsServiceId { get; set; } = string.Empty;
     public string Note { get; set; } = string.Empty;
     public string Brand { get; set; } = "Unknown";
     public string Model { get; set; } = "Android";

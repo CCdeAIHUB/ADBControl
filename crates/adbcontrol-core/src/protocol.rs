@@ -762,7 +762,7 @@ mod tests {
         assert!(response.ok);
         assert!(states
             .iter()
-            .any(|state| state["capabilityId"] == "android.screen.capture"));
+            .any(|state| state["capabilityId"] == "android.camera.stream"));
     }
 
     #[test]

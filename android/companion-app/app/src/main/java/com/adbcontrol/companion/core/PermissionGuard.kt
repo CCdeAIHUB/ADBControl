@@ -25,7 +25,7 @@ class PermissionGuard(private val context: Context) {
         val evaluation = evaluate(capability)
 
         // Sensitive Android abilities must stop here when runtime permission is missing.
-        // Some special grants, such as MediaProjection consent and IME activation, are
+        // Some special grants, such as IME activation, are
         // interactive states. Their handlers are allowed to launch Android's grant UI
         // and then return a structured recoverable result if the user has not completed it.
         return evaluation
@@ -45,11 +45,11 @@ class PermissionGuard(private val context: Context) {
             "sensitive-clip-flag" -> true
             "package-visibility-query" -> true
             "scoped-storage-or-document-picker" -> true
-            "media-projection-consent" -> true
             "input-method-service" -> true
             "accessibility-service" -> isAccessibilityServiceEnabled()
             "background-launch-policy" -> true
             "explicit-intent-only" -> true
+            "media-projection-consent" -> true
             else -> false
         }
     }

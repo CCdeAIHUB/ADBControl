@@ -112,6 +112,6 @@ mod tests {
         assert!(device
             .permission_states
             .iter()
-            .any(|state| state.capability_id == "android.screen.capture"));
+            .any(|state| state.capability_id == "android.camera.stream"));
     }
 }

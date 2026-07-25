@@ -4,7 +4,7 @@
 
 ## 1. 通用 QUIC Envelope
 
-所有控制消息使用 JSON envelope。大文件、投屏、相机、录音可在 `streamChunk` 中携带二进制帧引用或后续切换为 QUIC datagram / media stream。
+所有控制消息使用 JSON envelope。大文件、相机、录音可在 `streamChunk` 中携带二进制帧引用或后续切换为 QUIC datagram / media stream。
 
 ### Envelope 字段
 
@@ -208,16 +208,16 @@
   "payload":{
     "capabilities":[
       {
-        "id":"android.screen.capture",
-        "transport":"quic-media-stream",
-        "sensitivity":"critical",
-        "operations":["stream.open","stream.close","screenshot.capture"]
-      },
-      {
         "id":"android.volume.media",
         "transport":"quic-control",
         "sensitivity":"medium",
         "operations":["volume.get","volume.set"]
+      },
+      {
+        "id":"android.accessibility.control",
+        "transport":"quic-control",
+        "sensitivity":"critical",
+        "operations":["accessibility.status","accessibility.global.back","accessibility.global.home","accessibility.global.recents","accessibility.global.notifications","accessibility.global.quickSettings","accessibility.global.powerDialog","accessibility.touch.tap","accessibility.touch.swipe"]
       }
     ]
   }
@@ -237,7 +237,7 @@
   "payload":{
     "requestId":"cap-list-1",
     "accepted":true,
-    "registeredCapabilityCount":2
+    "registeredCapabilityCount":3
   }
 }
 ```
@@ -411,9 +411,9 @@
 通道：media / data  
 状态：预留。
 
-用途：打开持续性 stream，例如投屏、相机、录音、文件传输、传感器订阅。
+用途：打开持续性 stream，例如相机、录音、文件传输、传感器订阅。
 
-### 请求：打开投屏
+### 请求：打开相机流
 
 ```json
 {
@@ -426,9 +426,9 @@
   "kind":"streamOpen",
   "payload":{
     "requestId":"ipc-stream-open-1",
-    "streamId":"screen-001",
-    "capabilityId":"android.screen.capture",
-    "operation":"stream.open",
+    "streamId":"camera-001",
+    "capabilityId":"android.camera.stream",
+    "operation":"camera.open",
     "format":"h264",
     "maxFps":30
   }
@@ -449,13 +449,13 @@
   "payload":{
     "requestId":"ipc-stream-open-1",
     "ok":true,
-    "streamId":"screen-001",
+    "streamId":"camera-001",
     "state":"open"
   }
 }
 ```
 
-### 失败响应：用户未同意投屏
+### 失败响应：用户未授予相机权限
 
 ```json
 {
@@ -467,9 +467,9 @@
   "channel":"media",
   "kind":"error",
   "payload":{
-    "errorCode":"COMPANION_MEDIA_PROJECTION_CONSENT_REQUIRED",
-    "message":"Screen capture requires user consent for each MediaProjection session.",
-    "module":"companion.mediaProjection",
+    "errorCode":"COMPANION_CAMERA_PERMISSION_REQUIRED",
+    "message":"Camera streaming requires Android camera permission.",
+    "module":"companion.camera",
     "recoverable":true
   }
 }
@@ -497,7 +497,7 @@
   "channel":"media",
   "kind":"streamChunk",
   "payload":{
-    "streamId":"screen-001",
+    "streamId":"camera-001",
     "sequence":42,
     "timestampNs":1800000000,
     "contentType":"video/h264",
@@ -518,7 +518,7 @@
   "channel":"media",
   "kind":"commandResponse",
   "payload":{
-    "streamId":"screen-001",
+    "streamId":"camera-001",
     "ackSequence":42
   }
 }
@@ -551,7 +551,7 @@
 通道：data / media  
 状态：预留。
 
-用途：关闭持续性 stream，并释放 Android 端资源，例如 MediaProjection、Camera、AudioRecord、文件句柄、Sensor listener。
+用途：关闭持续性 stream，并释放 Android 端资源，例如 Camera、AudioRecord、文件句柄、Sensor listener。
 
 ### 请求
 
@@ -564,7 +564,7 @@
   "channel":"media",
   "kind":"streamClose",
   "payload":{
-    "streamId":"screen-001",
+    "streamId":"camera-001",
     "reason":"frontend-request"
   }
 }
@@ -581,9 +581,9 @@
   "channel":"media",
   "kind":"commandResponse",
   "payload":{
-    "streamId":"screen-001",
+    "streamId":"camera-001",
     "state":"closed",
-    "releasedResources":["mediaProjection","virtualDisplay","encoder"]
+    "releasedResources":["camera","encoder"]
   }
 }
 ```
@@ -600,7 +600,7 @@
   "kind":"error",
   "payload":{
     "errorCode":"COMPANION_STREAM_NOT_FOUND",
-    "message":"Stream is not active: screen-001",
+    "message":"Stream is not active: camera-001",
     "module":"companion.stream",
     "recoverable":true
   }
@@ -646,7 +646,6 @@
 | 能力 | 默认通道 | 说明 |
 |---|---|---|
 | `android.input.ime` | control | 文本、按键、输入会话控制。 |
-| `android.screen.capture` | media | 投屏、截图、视频帧。 |
 | `android.file.read` | data | 文件元数据和文件块。 |
 | `android.file.write` | data | 文件写入块和完成确认。 |
 | `android.camera.stream` | media | 相机帧。 |
@@ -668,6 +667,6 @@
 1. Android Companion 必须先经过 `hello` / `helloAck` 才能发送能力状态。
 2. Core 未识别的 `protocol`、`version`、`kind` 必须失败。
 3. 高敏感能力必须先经过 Android PermissionGuard。
-4. 投屏、相机、录音、短信、电话、剪贴板、文件、悬浮窗、后台弹窗必须写审计日志。
+4. 相机、录音、短信、电话、剪贴板、文件、悬浮窗、后台弹窗必须写审计日志。
 5. `commandRequest` 不允许使用任意脚本或任意 shell 文本。
 6. `streamClose` 必须释放 Android 端资源，不能仅通知 Core。

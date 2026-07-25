@@ -12,10 +12,19 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnablePreviewFeatures>true</EnablePreviewFeatures>
+    <NoWarn>$(NoWarn);CA2252</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.2.0" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.9" />
+    <PackageReference Include="FFmpeg.AutoGen" Version="7.1.1" />
+    <PackageReference Include="Sdcb.FFmpeg.runtime.windows-x64" Version="7.1.0" />
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+    <PackageReference Include="Vortice.DXGI" Version="3.8.3" />
+    <PackageReference Include="Vortice.WinUI" Version="3.8.3" />
   </ItemGroup>
 
   <ItemGroup>
@@ -23,5 +32,12 @@
              Link="companion\ADBControl.Companion.apk"
              CopyToOutputDirectory="PreserveNewest"
              Condition="Exists('..\..\android\companion-app\app\build\outputs\apk\debug\app-debug.apk')" />
+    <Content Include="..\..\third_party\scrcpy\server\build\outputs\apk\release\server-release-unsigned.apk"
+             Link="scrcpy\scrcpy-server-v4.0"
+             CopyToOutputDirectory="PreserveNewest"
+             Condition="Exists('..\..\third_party\scrcpy\server\build\outputs\apk\release\server-release-unsigned.apk')" />
+    <Content Include="$(NuGetPackageRoot)sdcb.ffmpeg.runtime.windows-x64\7.1.0\runtimes\win-x64\native\*.dll"
+             Link="ffmpeg\%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

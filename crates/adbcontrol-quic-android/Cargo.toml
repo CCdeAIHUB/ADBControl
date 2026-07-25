@@ -1,0 +1,27 @@
+[package]
+name = "adbcontrol-quic-android"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+name = "adbcontrol_quic"
+crate-type = ["cdylib"]
+
+[dependencies]
+base64 = "0.22"
+crossbeam-channel = "0.5"
+hex = "0.4"
+jni = "0.21"
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["io-util", "net", "rt-multi-thread", "sync", "time"] }
+url = "2"
+
+[profile.release]
+panic = "unwind"

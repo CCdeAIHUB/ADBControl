@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnablePreviewFeatures>true</EnablePreviewFeatures>
+    <NoWarn>$(NoWarn);CA2252</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\ADBControl.Desktop\Services\AdbConnectionEvaluator.cs" Link="AdbConnectionEvaluator.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\AdbMdnsService.cs" Link="AdbMdnsService.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\AdbService.cs" Link="AdbService.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\AiAgentToolService.cs" Link="AiAgentToolService.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\ScrcpyVideoOptions.cs" Link="ScrcpyVideoOptions.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\PreviewInteractionPolicy.cs" Link="PreviewInteractionPolicy.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\PreviewContentLayout.cs" Link="PreviewContentLayout.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\DeviceHardwareService.cs" Link="DeviceHardwareService.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\DeviceLockService.cs" Link="DeviceLockService.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\DeviceDetailRefreshPolicy.cs" Link="DeviceDetailRefreshPolicy.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\DeviceService.cs" Link="DeviceService.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\HardwareReportExporter.cs" Link="HardwareReportExporter.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\HardwareMonitorLogger.cs" Link="HardwareMonitorLogger.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\PackageLabelParser.cs" Link="PackageLabelParser.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\CompanionAppService.cs" Link="CompanionAppService.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\CompanionQuicServer.cs" Link="CompanionQuicServer.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\CompanionProjectionSession.cs" Link="CompanionProjectionSession.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\ProjectionSession.cs" Link="ProjectionSession.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\ScrcpySession.cs" Link="ScrcpySession.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\ScrcpyFfmpegDecoder.cs" Link="ScrcpyFfmpegDecoder.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\SettingsService.cs" Link="SettingsService.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\TerminalSyntaxHighlighter.cs" Link="TerminalSyntaxHighlighter.cs" />
+    <Compile Include="..\ADBControl.Desktop\Models\DeviceModel.cs" Link="DeviceModel.cs" />
+    <Compile Include="..\ADBControl.Desktop\Models\HardwareMonitoringModels.cs" Link="HardwareMonitoringModels.cs" />
+    <Compile Include="..\ADBControl.Desktop\Models\SettingsModels.cs" Link="SettingsModels.cs" />
+    <Compile Include="..\ADBControl.Desktop\Models\AutomationModels.cs" Link="AutomationModels.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\Automation\*.cs" Link="Automation\%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.9" />
+    <PackageReference Include="FFmpeg.AutoGen" Version="7.1.1" />
+    <PackageReference Include="Sdcb.FFmpeg.runtime.windows-x64" Version="7.1.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="$(NuGetPackageRoot)sdcb.ffmpeg.runtime.windows-x64\7.1.0\runtimes\win-x64\native\*.dll"
+             Link="ffmpeg\%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

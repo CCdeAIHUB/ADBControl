@@ -5,24 +5,21 @@ import android.Manifest
 object AndroidCapabilityCatalog {
     fun defaultCapabilities(): List<CompanionCapability> = listOf(
         CompanionCapability(
+            id = "android.device.power",
+            title = "屏幕唤醒",
+            androidPermissions = listOf(Manifest.permission.WAKE_LOCK),
+            specialGrants = emptyList(),
+            sensitivity = CapabilitySensitivity.LOW,
+            operations = listOf("device.wake"),
+            requiresUserConsent = false,
+        ),
+        CompanionCapability(
             id = "android.input.ime",
             title = "输入法与文本注入",
             androidPermissions = emptyList(),
             specialGrants = listOf("input-method-service"),
             sensitivity = CapabilitySensitivity.HIGH,
             operations = listOf("input.text", "input.key"),
-            requiresUserConsent = true,
-        ),
-        CompanionCapability(
-            id = "android.screen.capture",
-            title = "屏幕采集与投屏",
-            androidPermissions = listOf(
-                Manifest.permission.FOREGROUND_SERVICE,
-                Manifest.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION,
-            ),
-            specialGrants = listOf("media-projection-consent"),
-            sensitivity = CapabilitySensitivity.CRITICAL,
-            operations = listOf("stream.open", "stream.close", "screenshot.capture"),
             requiresUserConsent = true,
         ),
         CompanionCapability(
@@ -156,6 +153,15 @@ object AndroidCapabilityCatalog {
             requiresUserConsent = true,
         ),
         CompanionCapability(
+            id = "android.screen.projection",
+            title = "屏幕投影",
+            androidPermissions = emptyList(),
+            specialGrants = listOf("media-projection-consent"),
+            sensitivity = CapabilitySensitivity.CRITICAL,
+            operations = listOf("projection.start", "projection.stop", "projection.status"),
+            requiresUserConsent = true,
+        ),
+        CompanionCapability(
             id = "android.accessibility.control",
             title = "无障碍辅助控制",
             androidPermissions = emptyList(),
@@ -169,6 +175,8 @@ object AndroidCapabilityCatalog {
                 "accessibility.global.notifications",
                 "accessibility.global.quickSettings",
                 "accessibility.global.powerDialog",
+                "accessibility.touch.tap",
+                "accessibility.touch.swipe",
             ),
             requiresUserConsent = true,
         ),

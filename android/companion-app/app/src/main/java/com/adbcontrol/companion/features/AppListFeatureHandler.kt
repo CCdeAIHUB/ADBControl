@@ -12,12 +12,18 @@ class AppListFeatureHandler(private val context: Context) : FeatureCommandHandle
     override val operations: Set<String> = setOf("app.list")
 
     override fun handle(context: CompanionCommandContext): CompanionCommandResult {
-        val limit = (context.args.intArg("limit") ?: 200).coerceIn(1, 1000)
+        val limit = (context.args.intArg("limit") ?: 200).coerceIn(1, 5_000)
+        val offset = (context.args.intArg("offset") ?: 0).coerceAtLeast(0)
         val includeSystem = context.args.booleanArg("includeSystem")
         val packageManager = this.context.packageManager
-        val applications = installedApplications(packageManager)
+        val visibleApplications = installedApplications(packageManager)
             .asSequence()
             .filter { includeSystem || !it.isSystemApp() }
+            .sortedBy { it.packageName }
+            .toList()
+        val applications = visibleApplications
+            .asSequence()
+            .drop(offset)
             .take(limit)
             .map { app -> app.toPayload(packageManager) }
             .toList()
@@ -27,6 +33,8 @@ class AppListFeatureHandler(private val context: Context) : FeatureCommandHandle
             result = mapOf(
                 "apps" to applications,
                 "count" to applications.size,
+                "total" to visibleApplications.size,
+                "offset" to offset,
                 "includeSystem" to includeSystem,
                 "limit" to limit,
             ),

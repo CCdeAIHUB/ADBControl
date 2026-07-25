@@ -1,6 +1,7 @@
 package com.adbcontrol.companion.features
 
 import android.content.Context
+import android.util.Log
 import com.adbcontrol.companion.core.AndroidCapabilityCatalog
 import com.adbcontrol.companion.core.CompanionCommandContext
 import com.adbcontrol.companion.core.CompanionCommandResult
@@ -17,12 +18,13 @@ class AndroidFeatureDispatcher(
     private val capabilities = AndroidCapabilityCatalog.defaultCapabilities().associateBy { it.id }
     private val handlers: List<FeatureCommandHandler> = listOf(
         InputFeatureHandler(context),
-        ScreenCaptureFeatureHandler(context, mediaStreamSink),
         CameraFeatureHandler(context, mediaStreamSink),
         AudioRecordFeatureHandler(context, mediaStreamSink),
         ClipboardFeatureHandler(context),
         MediaVolumeFeatureHandler(context),
+        DevicePowerFeatureHandler(context),
         AccessibilityFeatureHandler(context),
+        ProjectionFeatureHandler(context),
         AppListFeatureHandler(context),
         FileSandboxFeatureHandler(context),
         TelephonyFeatureHandler(context),
@@ -51,7 +53,7 @@ class AndroidFeatureDispatcher(
         }
 
         val permissionEvaluation = permissionGuard.requireGranted(capability)
-        if (!permissionEvaluation.granted) {
+        if (permissionEvaluation.missingPermissions.isNotEmpty() && !isStatusProbe(context.operation)) {
             return CompanionCommandResult.failure(
                 requestId = context.requestId,
                 errorCode = "COMPANION_PERMISSION_DENIED",
@@ -83,14 +85,26 @@ class AndroidFeatureDispatcher(
                 suggestion = "请刷新权限状态，并让用户授予缺失的 Android 权限。",
             )
         } catch (exception: RuntimeException) {
+            Log.e(
+                "ADBControlFeature",
+                "${context.capabilityId}/${context.operation} failed",
+                exception,
+            )
             CompanionCommandResult.failure(
                 requestId = context.requestId,
                 errorCode = "COMPANION_HANDLER_FAILED",
-                message = exception.message ?: "Android 能力处理器执行失败。",
+                message = exception.message
+                    ?: "Android 能力处理器执行失败：${exception.javaClass.simpleName}",
                 module = "companion.dispatcher",
                 recoverable = true,
             )
         }
+    }
+
+    private fun isStatusProbe(operation: String): Boolean {
+        // Status probes must be callable before the user grants the special permission;
+        // otherwise the desktop side cannot explain what is missing or guide recovery.
+        return operation.endsWith(".status")
     }
 
     private fun com.adbcontrol.companion.core.PermissionEvaluation.describeMissingGrants(): String {

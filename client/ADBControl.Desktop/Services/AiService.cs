@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using ADBControl.Desktop.Models;
+using ADBControl.Desktop.Services.Automation;
 
 namespace ADBControl.Desktop.Services;
 
@@ -98,7 +99,8 @@ public sealed class AiService
         AiAgentRequest request,
         Func<AiStreamDelta, Task> onDelta,
         Func<AiAgentToolCall, Task<AiAgentToolResult>> toolExecutor,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Func<IReadOnlyList<AiAgentToolCall>, CancellationToken, Task<IReadOnlyList<AiConversationMessage>>>? afterToolContextProvider = null)
     {
         if (string.IsNullOrWhiteSpace(request.Model.ModelId))
             throw new InvalidOperationException("AI 模型标识不能为空。");
@@ -176,6 +178,16 @@ public sealed class AiService
                     Text = toolContent,
                 });
             }
+
+            if (afterToolContextProvider is not null)
+            {
+                var contextMessages = await afterToolContextProvider(streamResult.ToolCalls, cancellationToken);
+                foreach (var contextMessage in contextMessages)
+                {
+                    // Post-tool screen observations are scoped to the current request; replaying stale screenshots in later turns would mislead the model.
+                    messages.Add(await BuildMessageAsync(contextMessage, cancellationToken));
+                }
+            }
         }
 
     }
@@ -218,8 +230,17 @@ public sealed class AiService
             "你是 ADBControl 内的 AI Agent。你需要用中文简洁回应用户。" +
             "当需要操作 Android 设备时，只能通过工具调用执行，不能编造执行结果。" +
             $"权限模式：{request.PermissionMode}。{device}" +
-            "可用工具：adb_shell 用于执行 adb shell；companion_call 用于调用伴侣 App 暴露的 Android 能力，" +
-            "包括 android.accessibility.control 的 accessibility.status、accessibility.global.back、accessibility.global.home、accessibility.global.recents、accessibility.global.notifications、accessibility.global.quickSettings、accessibility.global.powerDialog。";
+            "可用工具：adb_shell 用于执行非触控 adb shell；adb_ui_dump 用于读取当前 Android 页面结构；adb_tap/adb_swipe 用于按绝对像素坐标触控；companion_call 用于调用伴侣 App 暴露的 Android 能力，" +
+            "包括 android.input.ime 的 input.text、input.key，以及 android.accessibility.control 的 accessibility.status、accessibility.global.back、accessibility.global.home、accessibility.global.recents、accessibility.global.notifications、accessibility.global.quickSettings、accessibility.global.powerDialog、accessibility.touch.tap、accessibility.touch.swipe。" +
+            "需要输入中文或长文本时，优先使用 Companion input.text，不要用 adb_shell input text。" +
+            "Companion 触控参数：accessibility.touch.tap 使用 args {x,y}；accessibility.touch.swipe 使用 args {startX,startY,endX,endY,durationMs}。" +
+            "禁止通过 adb_shell 执行 input tap、input swipe 或 input touchscreen；必须使用 adb_tap/adb_swipe 或 Companion 触控能力。" +
+            "所有坐标都必须使用最新设备截图的原始像素坐标系，原点在左上角，x 向右增加，y 向下增加；点击按钮时优先点击可见控件或 UI dump bounds 的中心，避免贴边点击。" +
+            "涉及第三方 App 页面判断时，或执行任何会改变屏幕的点击、滑动、返回、主页、多任务、启动应用后，必须调用 adb_ui_dump 读取当前界面结构；" +
+            "桌面端可能会在发送前或工具执行后自动附加当前设备截图；如果 adb_ui_dump 没有返回可用节点，必须优先结合最新截图进行坐标判断，" +
+            "仍然不确定时必须说明无法确认当前页面并重新观察，禁止根据历史页面、过期截图印象或按钮位置猜测当前界面。" +
+            "你还可以使用 task_list/task_get/task_create/task_update/task_run/task_set_enabled/task_delete 管理自动化任务。创建或修改前必须按下面的 DSL 契约生成完整定义：" +
+            AutomationTaskSerializer.AiContract;
     }
 
     private static async Task<Dictionary<string, object?>> BuildMessageAsync(AiConversationMessage message, CancellationToken cancellationToken)
@@ -314,8 +335,8 @@ public sealed class AiService
 
     private static List<Dictionary<string, object?>> BuildTools()
     {
-        return
-        [
+        var tools = new List<Dictionary<string, object?>>
+        {
             new Dictionary<string, object?>
             {
                 ["type"] = "function",
@@ -340,6 +361,116 @@ public sealed class AiService
                             },
                         },
                         ["required"] = new[] { "command" },
+                    },
+                },
+            },
+            new Dictionary<string, object?>
+            {
+                ["type"] = "function",
+                ["function"] = new Dictionary<string, object?>
+                {
+                    ["name"] = "adb_tap",
+                    ["description"] = "按当前设备截图的原始像素坐标点击。用于替代 adb_shell input tap；执行前会读取当前截图尺寸并校验坐标是否在屏幕内。",
+                    ["parameters"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object?>
+                        {
+                            ["x"] = new Dictionary<string, object?>
+                            {
+                                ["type"] = "integer",
+                                ["description"] = "点击点的 x 坐标，使用最新设备截图原始像素坐标。",
+                            },
+                            ["y"] = new Dictionary<string, object?>
+                            {
+                                ["type"] = "integer",
+                                ["description"] = "点击点的 y 坐标，使用最新设备截图原始像素坐标。",
+                            },
+                            ["target"] = new Dictionary<string, object?>
+                            {
+                                ["type"] = "string",
+                                ["description"] = "你认为要点击的可见控件或 UI dump 节点名称，用于审批和审计。",
+                            },
+                            ["reason"] = new Dictionary<string, object?>
+                            {
+                                ["type"] = "string",
+                                ["description"] = "为什么需要点击该位置。",
+                            },
+                        },
+                        ["required"] = new[] { "x", "y", "reason" },
+                    },
+                },
+            },
+            new Dictionary<string, object?>
+            {
+                ["type"] = "function",
+                ["function"] = new Dictionary<string, object?>
+                {
+                    ["name"] = "adb_swipe",
+                    ["description"] = "按当前设备截图的原始像素坐标滑动。用于替代 adb_shell input swipe；执行前会读取当前截图尺寸并校验起止坐标是否在屏幕内。",
+                    ["parameters"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object?>
+                        {
+                            ["startX"] = new Dictionary<string, object?>
+                            {
+                                ["type"] = "integer",
+                                ["description"] = "滑动起点 x 坐标。",
+                            },
+                            ["startY"] = new Dictionary<string, object?>
+                            {
+                                ["type"] = "integer",
+                                ["description"] = "滑动起点 y 坐标。",
+                            },
+                            ["endX"] = new Dictionary<string, object?>
+                            {
+                                ["type"] = "integer",
+                                ["description"] = "滑动终点 x 坐标。",
+                            },
+                            ["endY"] = new Dictionary<string, object?>
+                            {
+                                ["type"] = "integer",
+                                ["description"] = "滑动终点 y 坐标。",
+                            },
+                            ["durationMs"] = new Dictionary<string, object?>
+                            {
+                                ["type"] = "integer",
+                                ["description"] = "滑动持续时间，毫秒。默认 250，最大 3000。",
+                            },
+                            ["target"] = new Dictionary<string, object?>
+                            {
+                                ["type"] = "string",
+                                ["description"] = "你认为要执行滑动的区域或目标，用于审批和审计。",
+                            },
+                            ["reason"] = new Dictionary<string, object?>
+                            {
+                                ["type"] = "string",
+                                ["description"] = "为什么需要滑动。",
+                            },
+                        },
+                        ["required"] = new[] { "startX", "startY", "endX", "endY", "reason" },
+                    },
+                },
+            },
+            new Dictionary<string, object?>
+            {
+                ["type"] = "function",
+                ["function"] = new Dictionary<string, object?>
+                {
+                    ["name"] = "adb_ui_dump",
+                    ["description"] = "读取当前 Android 界面的 uiautomator XML 结构。用于确认页面、按钮文本、可点击节点和控件边界，避免在页面变化后猜测界面。",
+                    ["parameters"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object?>
+                        {
+                            ["reason"] = new Dictionary<string, object?>
+                            {
+                                ["type"] = "string",
+                                ["description"] = "为什么需要读取当前界面结构。",
+                            },
+                        },
                     },
                 },
             },
@@ -380,8 +511,80 @@ public sealed class AiService
                     },
                 },
             },
-        ];
+        };
+        tools.AddRange(BuildAutomationTools());
+        return tools;
     }
+
+    private static IEnumerable<Dictionary<string, object?>> BuildAutomationTools()
+    {
+        yield return Tool("task_list", "列出自动化任务及其当前、最近和下次运行状态。", new Dictionary<string, object?>());
+        yield return Tool("task_get", "读取一个自动化任务的完整 JSON DSL 定义。", new Dictionary<string, object?>
+        {
+            ["taskId"] = StringProperty("任务 ID。"),
+        }, "taskId");
+        yield return Tool("task_create", "创建并持久化一个可真实执行的自动化任务。", new Dictionary<string, object?>
+        {
+            ["definition"] = ObjectProperty("完整任务 JSON DSL 对象。"),
+        }, "definition");
+        yield return Tool("task_update", "用完整 JSON DSL 定义修改现有自动化任务。", new Dictionary<string, object?>
+        {
+            ["taskId"] = StringProperty("任务 ID。"),
+            ["definition"] = ObjectProperty("修改后的完整任务 JSON DSL 对象。"),
+        }, "taskId", "definition");
+        yield return Tool("task_run", "立即运行一个自动化任务。", new Dictionary<string, object?>
+        {
+            ["taskId"] = StringProperty("任务 ID。"),
+        }, "taskId");
+        yield return Tool("task_set_enabled", "启用或停用一个自动化任务的自动触发。", new Dictionary<string, object?>
+        {
+            ["taskId"] = StringProperty("任务 ID。"),
+            ["enabled"] = new Dictionary<string, object?> { ["type"] = "boolean", ["description"] = "是否启用。" },
+        }, "taskId", "enabled");
+        yield return Tool("task_delete", "删除自动化任务及其运行历史。", new Dictionary<string, object?>
+        {
+            ["taskId"] = StringProperty("任务 ID。"),
+        }, "taskId");
+    }
+
+    private static Dictionary<string, object?> Tool(
+        string name,
+        string description,
+        Dictionary<string, object?> properties,
+        params string[] required)
+    {
+        var parameters = new Dictionary<string, object?>
+        {
+            ["type"] = "object",
+            ["properties"] = properties,
+            ["additionalProperties"] = false,
+        };
+        if (required.Length > 0)
+            parameters["required"] = required;
+        return new Dictionary<string, object?>
+        {
+            ["type"] = "function",
+            ["function"] = new Dictionary<string, object?>
+            {
+                ["name"] = name,
+                ["description"] = description,
+                ["parameters"] = parameters,
+            },
+        };
+    }
+
+    private static Dictionary<string, object?> StringProperty(string description) => new()
+    {
+        ["type"] = "string",
+        ["description"] = description,
+    };
+
+    private static Dictionary<string, object?> ObjectProperty(string description) => new()
+    {
+        ["type"] = "object",
+        ["description"] = description,
+        ["additionalProperties"] = true,
+    };
 
     private static ParsedAssistantMessage ParseAssistantMessage(string json)
     {

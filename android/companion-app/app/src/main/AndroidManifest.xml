@@ -13,10 +13,13 @@
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
@@ -49,9 +52,17 @@
             android:exported="false" />
 
         <activity
-            android:name=".screen.ScreenCaptureConsentActivity"
+            android:name=".screen.ProjectionConsentActivity"
+            android:excludeFromRecents="true"
             android:exported="false"
-            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+            android:theme="@style/ProjectionConsentTheme" />
+
+        <activity
+            android:name=".quic.CompanionConnectionActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:permission="android.permission.DUMP"
+            android:theme="@style/ConnectionBootstrapTheme" />
 
         <receiver
             android:name=".quic.CompanionConnectionReceiver"
@@ -96,6 +107,12 @@
         <service
             android:name=".quic.QuicCompanionService"
             android:exported="false"
-            android:foregroundServiceType="mediaProjection|microphone|camera" />
+            android:foregroundServiceType="dataSync" />
+
+        <service
+            android:name=".screen.CompanionProjectionService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection"
+            android:stopWithTask="false" />
     </application>
 </manifest>

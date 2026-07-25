@@ -9,13 +9,15 @@ namespace ADBControl.Desktop.Services;
 public sealed class CompanionAppService
 {
     public const string PackageName = "com.adbcontrol.companion";
-    private const string ConfigureAction = "com.adbcontrol.companion.CONFIGURE_CONNECTION";
     private const string ExecuteCommandAction = "com.adbcontrol.companion.EXECUTE_COMMAND";
+    private const string CommandResultDirectory = "/sdcard/Android/data/com.adbcontrol.companion/files/command-results";
     private readonly AdbService _adb;
+    private readonly CompanionQuicServer? _quicServer;
 
-    public CompanionAppService(AdbService adb)
+    public CompanionAppService(AdbService adb, CompanionQuicServer? quicServer = null)
     {
         _adb = adb;
+        _quicServer = quicServer;
     }
 
     public async Task<bool> IsInstalledAsync(DeviceModel device)
@@ -38,21 +40,43 @@ public sealed class CompanionAppService
         return await _adb.InstallAsync(device.DeviceId, apkPath);
     }
 
+    public Task<AdbCommandResult> UninstallAsync(DeviceModel device)
+        => _adb.UninstallAsync(device.DeviceId, PackageName);
+
+    public static bool IsSignatureMismatch(AdbCommandResult result)
+        => !result.Success && ($"{result.Stdout}\n{result.Stderr}").Contains(
+            "INSTALL_FAILED_UPDATE_INCOMPATIBLE",
+            StringComparison.OrdinalIgnoreCase);
+
     public async Task<AdbCommandResult> OpenAsync(DeviceModel device)
     {
-        return await _adb.ShellAsync(device.DeviceId, $"monkey -p {PackageName} 1");
+        return await _adb.ShellAsync(device.DeviceId, $"am start -W -n {PackageName}/.MainActivity");
     }
 
     public async Task<AdbCommandResult> ConfigureConnectionAsync(DeviceModel device, int quicPort)
     {
-        var host = ResolveLanIPv4Address();
+        if (_quicServer is null)
+            return new AdbCommandResult(1, string.Empty, "桌面端 QUIC 服务尚未配置。");
+        try
+        {
+            await _quicServer.StartAsync();
+        }
+        catch (Exception ex)
+        {
+            return new AdbCommandResult(1, string.Empty, $"桌面端 QUIC 服务启动失败：{ex.Message}");
+        }
+        var host = ResolveLanIPv4Address(device.DeviceId);
         if (host is null)
             return new AdbCommandResult(1, string.Empty, "未找到可用于局域网连接的本机 IPv4 地址。");
 
-        var endpoint = $"quic://{host}:{quicPort}";
+        var activeQuicPort = _quicServer.Port;
+        var endpoint = $"quic://{host}:{activeQuicPort}";
         var command =
-            $"am broadcast -a {ConfigureAction} -n {PackageName}/.quic.CompanionConnectionReceiver " +
-            $"--es host {EscapeShellToken(host)} --ei port {quicPort} --es endpoint {EscapeShellToken(endpoint)} --es deviceId {EscapeShellToken(device.DeviceId)}";
+            $"am start -W -n {PackageName}/.quic.CompanionConnectionActivity " +
+            $"--es host {EscapeShellToken(host)} --ei port {activeQuicPort} --es endpoint {EscapeShellToken(endpoint)} " +
+            $"--es deviceId {EscapeShellToken(device.DeviceId)} " +
+            $"--es serverName {EscapeShellToken(CompanionQuicServer.TlsServerName)} " +
+            $"--es certificateDerBase64 {EscapeShellToken(_quicServer.CertificateDerBase64)}";
         return await _adb.ShellAsync(device.DeviceId, command);
     }
 
@@ -62,11 +86,22 @@ public sealed class CompanionAppService
         if (!open.Success)
             return open;
 
+        await Task.Delay(400);
         return await ConfigureConnectionAsync(device, quicPort);
     }
 
     public async Task<bool> IsResponsiveAsync(DeviceModel device, CancellationToken cancellationToken = default)
     {
+        if (_quicServer is not null)
+        {
+            for (var attempt = 0; attempt < 30; attempt++)
+            {
+                if (_quicServer.IsDeviceConnected(device.DeviceId))
+                    return true;
+                await Task.Delay(100, cancellationToken);
+            }
+            return false;
+        }
         var result = await ExecuteCommandAsync(
             device,
             "android.accessibility.control",
@@ -95,12 +130,28 @@ public sealed class CompanionAppService
         var requestId = Guid.NewGuid().ToString("N");
         var argsJson = JsonSerializer.Serialize(args ?? new Dictionary<string, object?>(), JsonOptions);
         var command =
-            $"am broadcast -a {ExecuteCommandAction} -n {PackageName}/.commands.CompanionCommandReceiver " +
+            $"am broadcast --receiver-foreground -a {ExecuteCommandAction} -n {PackageName}/.commands.CompanionCommandReceiver " +
             $"--es requestId {EscapeShellToken(requestId)} " +
             $"--es capabilityId {EscapeShellToken(capabilityId)} " +
             $"--es operation {EscapeShellToken(operation)} " +
             $"--es argsJson {EscapeShellToken(argsJson)}";
-        return await _adb.ShellAsync(device.DeviceId, command, cancellationToken);
+        var broadcast = await _adb.ShellAsync(device.DeviceId, command, cancellationToken);
+        if (!broadcast.Success)
+            return broadcast;
+
+        var snapshot = await ReadCommandResultSnapshotAsync(device, requestId, cancellationToken);
+        return string.IsNullOrWhiteSpace(snapshot)
+            ? broadcast
+            : broadcast with { Stdout = $"{broadcast.Stdout}\n data={snapshot}" };
+    }
+
+    private async Task<string?> ReadCommandResultSnapshotAsync(DeviceModel device, string requestId, CancellationToken cancellationToken)
+    {
+        var resultPath = $"{CommandResultDirectory}/{requestId}.json";
+        var result = await _adb.ShellAsync(device.DeviceId, $"cat {EscapeShellToken(resultPath)}", cancellationToken);
+        return result.Success && !string.IsNullOrWhiteSpace(result.Stdout)
+            ? result.Stdout.Trim()
+            : null;
     }
 
     private static string? ResolveCompanionApkPath()
@@ -116,7 +167,7 @@ public sealed class CompanionAppService
         return candidates.FirstOrDefault(File.Exists);
     }
 
-    private static string? ResolveLanIPv4Address()
+    public static string? ResolveLanIPv4Address(string? remoteDeviceId = null)
     {
         var candidates = NetworkInterface.GetAllNetworkInterfaces()
             .Where(adapter => adapter.OperationalStatus == OperationalStatus.Up &&
@@ -126,10 +177,36 @@ public sealed class CompanionAppService
             .Where(address => address.Address.AddressFamily == AddressFamily.InterNetwork)
             .Select(address => address.Address)
             .Where(address => !IPAddress.IsLoopback(address) && !address.ToString().StartsWith("169.254.", StringComparison.Ordinal))
-            .Select(address => address.ToString())
             .ToList();
+        if (candidates.Count == 0)
+            return null;
 
-        return candidates.FirstOrDefault();
+        var remoteText = remoteDeviceId?.Split(':', 2)[0];
+        if (!IPAddress.TryParse(remoteText, out var remote) || remote.AddressFamily != AddressFamily.InterNetwork)
+            return candidates[0].ToString();
+
+        var remoteBytes = remote.GetAddressBytes();
+        return candidates
+            .OrderByDescending(candidate => CommonPrefixBits(candidate.GetAddressBytes(), remoteBytes))
+            .First()
+            .ToString();
+    }
+
+    private static int CommonPrefixBits(byte[] left, byte[] right)
+    {
+        var bits = 0;
+        for (var index = 0; index < Math.Min(left.Length, right.Length); index++)
+        {
+            var difference = left[index] ^ right[index];
+            if (difference == 0)
+            {
+                bits += 8;
+                continue;
+            }
+            bits += System.Numerics.BitOperations.LeadingZeroCount((uint)difference) - 24;
+            break;
+        }
+        return bits;
     }
 
     private static string EscapeShellToken(string value)

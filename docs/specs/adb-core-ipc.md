@@ -163,7 +163,6 @@ Core 已实现 `CompanionSessionManager`：
 Android Companion 已实现 `AndroidFeatureDispatcher` 与以下 handler：
 
 - 输入法：`input.text`、`input.key`；
-- 屏幕采集：`stream.open` 拉起授权，`screenshot.capture` 通过 MediaProjection + ImageReader + VirtualDisplay 保存 PNG，`stream.close` 关闭 projection；
 - 相机：`camera.open`、`camera.close`；
 - 录音：`audio.record.start`、`audio.record.stop`；
 - 剪贴板：`clipboard.read`、`clipboard.write`；

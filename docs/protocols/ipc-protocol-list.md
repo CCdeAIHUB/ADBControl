@@ -370,18 +370,18 @@
   "ok":true,
   "result":[
     {
-      "id":"android.screen.capture",
-      "title":"Screen capture and casting",
+      "id":"android.accessibility.control",
+      "title":"Accessibility control",
       "provider":"android-companion",
-      "transport":"quic-media-stream",
+      "transport":"quic-control",
       "sensitivity":"critical",
       "permission":{
-        "androidPermissions":["android.permission.FOREGROUND_SERVICE","android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"],
-        "specialPermissions":["media-projection-consent"],
+        "androidPermissions":[],
+        "specialPermissions":["accessibility-service"],
         "requiresUserConsent":true,
         "auditRequired":true
       },
-      "operations":["stream.open","stream.close","screenshot.capture"]
+      "operations":["accessibility.status","accessibility.global.back","accessibility.global.home","accessibility.global.recents","accessibility.global.notifications","accessibility.global.quickSettings","accessibility.global.powerDialog","accessibility.touch.tap","accessibility.touch.swipe"]
     }
   ]
 }
@@ -572,7 +572,7 @@
 
 状态：预留。
 
-用途：前端请求 Core 打开一个持续性数据流或媒体流，例如投屏、相机、录音、传感器订阅。
+用途：前端请求 Core 打开一个持续性数据流或媒体流，例如相机、录音、传感器订阅。
 
 ### 请求
 
@@ -582,8 +582,8 @@
   "method":"stream.open",
   "params":{
     "deviceId":"android-companion-sample",
-    "capabilityId":"android.screen.capture",
-    "operation":"stream.open",
+    "capabilityId":"android.camera.stream",
+    "operation":"camera.open",
     "options":{"format":"h264","maxFps":30}
   }
 }
@@ -596,9 +596,9 @@
   "id":"stream-open-1",
   "ok":true,
   "result":{
-    "streamId":"screen-001",
+    "streamId":"camera-001",
     "deviceId":"android-companion-sample",
-    "capabilityId":"android.screen.capture",
+    "capabilityId":"android.camera.stream",
     "transport":"quic-media-stream",
     "state":"opening"
   }
@@ -613,7 +613,7 @@
   "ok":false,
   "error":{
     "errorCode":"STREAM_PERMISSION_DENIED",
-    "message":"Screen capture requires media projection consent before opening stream.",
+    "message":"Camera streaming requires camera permission before opening stream.",
     "module":"companion.stream",
     "recoverable":true
   }
@@ -631,13 +631,13 @@
 ### 请求
 
 ```json
-{"id":"stream-close-1","method":"stream.close","params":{"streamId":"screen-001"}}
+{"id":"stream-close-1","method":"stream.close","params":{"streamId":"camera-001"}}
 ```
 
 ### 成功
 
 ```json
-{"id":"stream-close-1","ok":true,"result":{"streamId":"screen-001","state":"closed"}}
+{"id":"stream-close-1","ok":true,"result":{"streamId":"camera-001","state":"closed"}}
 ```
 
 ### 失败
@@ -648,7 +648,7 @@
   "ok":false,
   "error":{
     "errorCode":"STREAM_NOT_FOUND",
-    "message":"Stream is not active: screen-001",
+    "message":"Stream is not active: camera-001",
     "module":"companion.stream",
     "recoverable":true
   }

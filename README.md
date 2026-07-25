@@ -1,6 +1,16 @@
 # ADBControl
 
-ADBControl 是一个跨平台 ADB 后端核心项目。当前阶段落地后端核心、Android 伴侣 App 能力协议、Android 功能执行层、媒体能力执行层、Android 纯 QUIC transport 适配边界、Core Quinn 纯 QUIC server wrapper、Core Companion ingress、Core 设备配对/信任模型和 ADB 资产 packaging 流程，不实现前端 UI。
+ADBControl 是一个包含 WinUI 桌面客户端、跨平台 ADB 后端核心和 Android 伴侣 App 的设备管理项目。当前阶段已落地设备管理前端、ADB 与 scrcpy 投屏接入、Android 能力协议、纯 QUIC transport 适配边界、Core Companion ingress、设备配对/信任模型和 ADB 资产 packaging 流程。
+
+## scrcpy 投屏集成
+
+设备详情页使用双投屏后端。ADB 可用时，ADBControl 从 `third_party/scrcpy/` 直接编译 **scrcpy 4.0** Android 服务端源码，并把服务端 class 打包进伴侣 APK；桌面端以已安装 APK 的 `base.apk` 作为 CLASSPATH，通过 `app_process` 启动服务，因此不需要 MediaProjection 弹窗。伴侣 APK 不存在时才回退到临时推送的独立 server 构建产物。
+
+ADB 不可用而伴侣 App 的 QUIC 会话可用时，手机端通过 Android MediaProjection 获取画面并明确显示系统授权弹窗，使用 MediaCodec 编码 H.264，再通过原生 QUIC 视频流发送到桌面端；控制操作通过无障碍服务执行。桌面端两条路径共用 FFmpeg/libavcodec 解码和 Direct3D 交换链渲染，并且只有新后端首帧真正呈现后才隐藏原截图预览。项目不会启动外部 scrcpy 窗口，也不要求用户单独安装 scrcpy。
+
+引入版本为 `v4.0`，上游提交 `2322868e9e256eb5fce0b3d659ab2a409f29bae1`。scrcpy 代码遵循 Apache License 2.0，完整许可证及上游信息见 `third_party/scrcpy/LICENSE` 和 `third_party/scrcpy/UPSTREAM.md`。
+
+桌面解码使用 MIT 许可的 `FFmpeg.AutoGen 7.1.1` 绑定和 `Sdcb.FFmpeg.runtime.windows-x64 7.1.0` 原生运行库。当前运行库 NuGet 包声明为 GPL-3.0-only，分发桌面程序时必须同时遵守该许可证；版本、来源和分发提示见 `third_party/ffmpeg/NOTICE.md`。
 
 ## 第一阶段目标
 
@@ -31,7 +41,6 @@ Android device
 第二阶段能力范围：
 
 - 输入法 / 输入相关能力；
-- 投屏 / 屏幕采集；
 - 文件读取、写入、传输；
 - 相机；
 - 录音 / 麦克风；
@@ -50,8 +59,6 @@ Android device
 Android Companion App 已新增 `features` 执行层和 `AndroidFeatureDispatcher`。当前已经有具体执行代码的能力：
 
 - `input.text` / `input.key`：通过 ADBControl Companion IME 向当前输入连接提交文本或按键；
-- `stream.open` / `stream.close`：无授权时拉起 Android MediaProjection 授权；有授权后启动屏幕 H.264/MP4 编码会话并写入 sandbox；
-- `screenshot.capture`：使用 MediaProjection + ImageReader + VirtualDisplay 抓取一帧并保存为 Companion App sandbox 内 PNG 文件；
 - `camera.open` / `camera.close`：通过 Camera2 + MediaRecorder surface 录制 H.264/MP4 到 sandbox；
 - `audio.record.start` / `audio.record.stop`：通过 AudioRecord 边录边写 PCM，并将 PCM chunk 推送到 `MediaStreamSink`；
 - `clipboard.read` / `clipboard.write`：读取和写入文本剪贴板；
@@ -64,27 +71,21 @@ Android Companion App 已新增 `features` 执行层和 `AndroidFeatureDispatche
 - `sensor.subscribe` / `sensor.unsubscribe`：注册/取消运动传感器监听，并保存最近样本；
 - `ui.surface.show`：拉起 Companion 主界面；
 - `overlay.show` / `overlay.hide`：显示/隐藏悬浮窗；
+- `accessibility.status` / `accessibility.global.*` / `accessibility.touch.tap` / `accessibility.touch.swipe`：通过无障碍辅助读取启用状态、执行全局动作和坐标触控手势；
 - `intent.chainLaunch`：按显式 package/class 链式启动 Activity。
 
 ### Android QUIC / Media transport
 
-已新增：
+当前投屏链路已包含：
 
-- `NativeQuicTransport`：Android 侧纯 QUIC transport 适配边界，只接受 `quic://` endpoint；
-- `NativeQuicEngine`：后续 JNI / native QUIC engine 必须实现的接口；
-- `NativeQuicEngineProvider`：允许后续 JNI / NDK 实现向 Companion Service 注入真实 engine；
-- `QuicMediaStreamSink`：把媒体 stream open/chunk/close 包装为 `STREAM_OPEN`、`STREAM_CHUNK`、`STREAM_CLOSE` envelope；
-- `QuicCompanionService.connect(endpoint, deviceId)`：创建 native QUIC transport，发送 hello，并把音频 media sink 切换到 QUIC envelope sink；
-- `SandboxFileMediaStreamSink`：本地文件 sink，用于无网络或测试环境下保留媒体数据。
+- `crates/adbcontrol-quic-android`：基于 Quinn、rustls 和 Tokio 的 Android JNI 原生 QUIC 客户端，构建 `arm64-v8a` 与 `x86_64` 两种 ABI；
+- `NativeQuicTransport` / `JniNativeQuicEngine`：连接 `quic://` endpoint，按桌面证书 DER 精确校验 TLS 身份，并承载控制双向流和 H.264 单向流；
+- `QuicCompanionService`：前台保活、连接配置持久化、自动重连、hello/helloAck、能力清单和命令请求响应；
+- `CompanionProjectionService` / `CompanionScreenEncoder`：MediaProjection 授权、MediaCodec H.264 低延迟编码、关键帧恢复和有界发送队列；
+- `CompanionQuicServer`：WinUI 进程内的 System.Net.Quic 服务端，管理设备会话、命令响应、视频流和连接日志；
+- `ProjectionSession`：ADB/scrcpy 优先，连接不可用或启动失败时切换到伴侣 App 后端；停止投屏只结束视频会话，不关闭伴侣 App 的 QUIC 控制连接。
 
-仍明确未完成的部分：
-
-- Android native QUIC engine 的 JNI / native 实现；
-- 屏幕/相机实时 chunk 级编码输出 drain 到 QUIC media sink；
-- 证书持久化文件和 UI 配对确认页面；
-- 设备会话恢复。
-
-这些部分已进入权限、session、router、handler、media sink、transport、trust 和 ingress 边界，后续应在不改变 IPC/QUIC 契约的前提下接入纯 QUIC native engine、媒体低延迟编码输出和持久化信任存储。
+控制流和视频流的字节级约定见 `docs/protocols/companion-quic-wire.md`。首次配置会保存桌面端地址和证书；之后用户重新打开伴侣 App 时可使用已保存配置恢复连接，不要求 ADB 持续在线。
 
 ### Core Companion pairing / trust
 
@@ -157,6 +158,9 @@ Core 已新增 `CompanionCommandRouter` 抽象，并让 `device.invoke` 接入 r
 assets/adb/                  # ADB 资产 manifest 与后续二进制放置位置
 crates/adbcontrol-core/       # 后端核心 crate
 android/companion-app/        # Android 伴侣 App 工程与能力执行层
+third_party/scrcpy/            # 引入的 scrcpy 4.0 Android 服务端源码与许可证
+third_party/ffmpeg/            # FFmpeg 绑定/运行库版本与许可证告知
+client/ADBControl.Desktop/     # WinUI 桌面端及 scrcpy socket/渲染集成
 docs/adr/                     # 架构决策记录
 docs/specs/                   # 行为 spec / TDD 场景说明
 docs/protocols/               # IPC / QUIC 协议清单与示例
@@ -181,6 +185,14 @@ cd android/companion-app
 ```
 
 当前仓库尚未提交 Gradle Wrapper，Android 构建需要本机已有 Gradle 或后续补充 wrapper。
+
+构建引入的 scrcpy 服务端源码：
+
+```powershell
+.\scripts\build-scrcpy-server.ps1
+```
+
+Android 伴侣 App 的常规构建会把 scrcpy server class 直接合并进 APK。上述脚本生成的独立 `server-release-unsigned.apk` 仅作为未安装伴侣 App 时的兼容回退产物；两种方式都不依赖外部 scrcpy 桌面可执行文件。
 
 ## 运行核心
 
@@ -228,5 +240,6 @@ cargo run -p adbcontrol-core
 - 不把平台差异写进业务层；
 - 不提交真实 ADB 二进制到普通代码提交；
 - 不复制完整 AOSP 源码到主仓库；
+- scrcpy 上游源码、版本和许可证变更必须同步更新 `third_party/scrcpy/UPSTREAM.md`；
 - 不在 Android Companion 权限缺失时继续执行敏感能力；
 - 所有公共协议变更必须同步更新 spec、测试和文档。
