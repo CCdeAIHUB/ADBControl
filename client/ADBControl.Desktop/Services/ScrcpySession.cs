@@ -15,7 +15,6 @@ public sealed class ScrcpySession : IAsyncDisposable
     private const ulong ConfigPacketFlag = 1UL << 62;
     private const ulong KeyFramePacketFlag = 1UL << 61;
     private const ulong PacketFlagsMask = SessionPacketFlag | ConfigPacketFlag | KeyFramePacketFlag;
-    private const ulong GenericFingerPointerId = ulong.MaxValue - 1;
     private static readonly object LogSync = new();
 
     private readonly AdbService _adb;
@@ -190,27 +189,25 @@ public sealed class ScrcpySession : IAsyncDisposable
             _cancellation.Token);
     }
 
-    public async Task SendTouchAsync(int action, int x, int y, uint pointerId, CancellationToken cancellationToken = default)
+    public async Task SendTouchAsync(
+        int action,
+        ProjectionTouchPosition position,
+        uint pointerId,
+        CancellationToken cancellationToken = default)
     {
         var stream = _controlStream;
-        var size = FrameSize;
-        if (stream is null || size.Width <= 0 || size.Height <= 0)
+        if (stream is null)
             return;
 
-        var message = new byte[32];
-        message[0] = 2;
-        message[1] = checked((byte)action);
-        BinaryPrimitives.WriteUInt64BigEndian(message.AsSpan(2, 8), GenericFingerPointerId - pointerId);
-        BinaryPrimitives.WriteInt32BigEndian(message.AsSpan(10, 4), Math.Clamp(x, 0, size.Width - 1));
-        BinaryPrimitives.WriteInt32BigEndian(message.AsSpan(14, 4), Math.Clamp(y, 0, size.Height - 1));
-        BinaryPrimitives.WriteUInt16BigEndian(message.AsSpan(18, 2), checked((ushort)size.Width));
-        BinaryPrimitives.WriteUInt16BigEndian(message.AsSpan(20, 2), checked((ushort)size.Height));
-        BinaryPrimitives.WriteUInt16BigEndian(message.AsSpan(22, 2), action == 1 ? (ushort)0 : ushort.MaxValue);
-        BinaryPrimitives.WriteInt32BigEndian(message.AsSpan(24, 4), 0);
-        BinaryPrimitives.WriteInt32BigEndian(message.AsSpan(28, 4), 0);
+        var message = ScrcpyControlMessageEncoder.EncodeTouch(action, position, pointerId);
         await WriteControlMessageAsync(message, cancellationToken);
         if (action != 2)
-            Log(_sessionId, action == 0 ? "control.touch.down" : "control.touch.up", $"x={x}; y={y}; pointer={pointerId}");
+        {
+            Log(
+                _sessionId,
+                action == 0 ? "control.touch.down" : "control.touch.up",
+                $"x={position.X}; y={position.Y}; frame={position.Space.Width}x{position.Space.Height}; pointer={pointerId}");
+        }
     }
 
     public async Task SendKeycodeAsync(int action, int keycode, CancellationToken cancellationToken = default)

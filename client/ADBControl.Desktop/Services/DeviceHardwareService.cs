@@ -17,20 +17,50 @@ public sealed class DeviceHardwareService
 
     public async Task<DeviceHardwareSnapshot> CollectAsync(string deviceId, CancellationToken cancellationToken = default)
     {
-        var hardwareTask = _adb.ShellAsync(deviceId, SnapshotCommand, cancellationToken);
-        var frameTask = _adb.ShellAsync(deviceId, AppFrameCommand, cancellationToken);
-        await Task.WhenAll(hardwareTask, frameTask);
-        var result = await hardwareTask;
-        var frameResult = await frameTask;
+        var result = await _adb.ShellAsync(deviceId, SnapshotCommand, cancellationToken);
+        if (!result.Success && IsTransientHardwareFailure(result))
+        {
+            await Task.Delay(250, cancellationToken);
+            result = await _adb.ShellAsync(deviceId, SnapshotCommand, cancellationToken);
+        }
         if (!result.Success)
-            throw new InvalidOperationException(string.IsNullOrWhiteSpace(result.Stderr) ? "无法读取设备硬件信息。" : result.Stderr.Trim());
+        {
+            var detail = string.Join(Environment.NewLine, new[] { result.Stderr, result.Stdout }
+                .Where(value => !string.IsNullOrWhiteSpace(value)))
+                .Trim();
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(detail) ? "无法读取设备硬件信息。" : detail);
+        }
+
+        // Some vendor adbd implementations become unstable when two long shell commands share
+        // one wireless transport. Collect frame telemetry after the required hardware snapshot.
+        AdbCommandResult? frameResult = null;
+        try
+        {
+            frameResult = await _adb.ShellAsync(deviceId, AppFrameCommand, cancellationToken);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException)
+        {
+            // Frame telemetry is optional; the hardware snapshot remains valid and visible.
+        }
 
         var capturedAt = DateTimeOffset.Now;
-        var frameRaw = frameResult.Success ? ParseKeyValueOutput(frameResult.Stdout) : new Dictionary<string, string>();
+        var frameRaw = frameResult?.Success == true
+            ? ParseKeyValueOutput(frameResult.Stdout)
+            : new Dictionary<string, string>();
         var appFps = CalculateAppFps(deviceId, Value(frameRaw, "app_frame_times"));
         return ParseSnapshot(result.Stdout, capturedAt, appFps);
     }
 
+    public static bool IsTransientHardwareFailure(AdbCommandResult result)
+    {
+        var message = $"{result.Stdout}\n{result.Stderr}";
+        return message.Contains("device offline", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("device not found", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("no devices", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("closed", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("transport", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("timeout", StringComparison.OrdinalIgnoreCase);
+    }
     public static DeviceHardwareSnapshot ParseSnapshot(string output, DateTimeOffset? capturedAt = null, double? appFps = null)
     {
         var raw = ParseKeyValueOutput(output);
@@ -232,8 +262,8 @@ public sealed class DeviceHardwareService
         cpu_cores=$(getconf _NPROCESSORS_ONLN 2>/dev/null)
         [ -n "$cpu_cores" ] || cpu_cores=$(grep -c '^processor' /proc/cpuinfo 2>/dev/null)
         echo cpu_cores="$cpu_cores"
-        echo cpu_freqs="$(for path in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq; do [ -r "$path" ] || continue; core=${path#/sys/devices/system/cpu/}; core=${core%%/*}; value=$(cat "$path" 2>/dev/null); [ -n "$value" ] && printf '%s:%s,' "$core" "$value"; done)"
-        echo cpu_max_freqs="$(for path in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/cpuinfo_max_freq; do [ -r "$path" ] || continue; core=${path#/sys/devices/system/cpu/}; core=${core%%/*}; value=$(cat "$path" 2>/dev/null); [ -n "$value" ] && printf '%s:%s,' "$core" "$value"; done)"
+        echo cpu_freqs="$(for path in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq; do [ -r "$path" ] || continue; core=${path#/sys/devices/system/cpu/}; core=${core%%/*}; value=""; IFS= read -r value < "$path" 2>/dev/null || true; [ -n "$value" ] && printf '%s:%s,' "$core" "$value"; done)"
+        echo cpu_max_freqs="$(for path in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/cpuinfo_max_freq; do [ -r "$path" ] || continue; core=${path#/sys/devices/system/cpu/}; core=${core%%/*}; value=""; IFS= read -r value < "$path" 2>/dev/null || true; [ -n "$value" ] && printf '%s:%s,' "$core" "$value"; done)"
         battery_dump="$(dumpsys battery)"
         echo battery_level=$(printf '%s\n' "$battery_dump" | grep -m1 'level:' | cut -d: -f2-)
         echo battery_status=$(printf '%s\n' "$battery_dump" | grep -m1 'status:' | cut -d: -f2-)
@@ -248,7 +278,7 @@ public sealed class DeviceHardwareService
         echo thermal_service="$thermal_service"
         temperatures=""
         if [ -z "$thermal_service" ]; then
-            temperatures="$(for path in /sys/class/thermal/thermal_zone*/temp; do [ -r "$path" ] || continue; zone=${path%/temp}; name=$(cat "$zone/type" 2>/dev/null); value=$(cat "$path" 2>/dev/null); [ -n "$value" ] && printf '%s:%s,' "${name:-thermal}" "$value"; done)"
+            temperatures="$(for path in /sys/class/thermal/thermal_zone*/temp; do [ -r "$path" ] || continue; zone=${path%/temp}; name=""; value=""; IFS= read -r name < "$zone/type" 2>/dev/null || true; IFS= read -r value < "$path" 2>/dev/null || true; [ -n "$value" ] && printf '%s:%s,' "${name:-thermal}" "$value"; done)"
         fi
         echo temperatures="$temperatures"
         gpu_path=""

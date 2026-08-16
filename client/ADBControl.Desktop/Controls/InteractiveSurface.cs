@@ -22,15 +22,22 @@ public sealed class InteractiveSurface : UserControl
 {
     private readonly InteractiveSurfacePalette _palette;
     private readonly Border _frame;
+    private readonly bool _preserveContentForeground;
     private bool _isPressed;
     private bool _isPointerOver;
     private bool _isSelected;
     private bool _isEnabled = true;
     private bool _invokedFromPointerRelease;
 
-    public InteractiveSurface(UIElement content, InteractiveSurfacePalette palette, CornerRadius cornerRadius, Thickness padding)
+    public InteractiveSurface(
+        UIElement content,
+        InteractiveSurfacePalette palette,
+        CornerRadius cornerRadius,
+        Thickness padding,
+        bool preserveContentForeground = false)
     {
         _palette = palette;
+        _preserveContentForeground = preserveContentForeground;
         _frame = new Border
         {
             Child = content,
@@ -127,7 +134,7 @@ public sealed class InteractiveSurface : UserControl
         {
             _frame.Background = _palette.SelectedBackground;
             _frame.BorderBrush = _palette.SelectedBorder;
-            ApplyForeground(_frame.Child, _palette.SelectedForeground);
+            ApplyPaletteForeground(_palette.SelectedForeground);
             return;
         }
 
@@ -137,9 +144,14 @@ public sealed class InteractiveSurface : UserControl
                 ? _palette.HoverBackground
                 : _palette.Background;
         _frame.BorderBrush = _palette.Border;
-        ApplyForeground(_frame.Child, _palette.Foreground);
+        ApplyPaletteForeground(_palette.Foreground);
     }
 
+    private void ApplyPaletteForeground(Brush foreground)
+    {
+        if (!_preserveContentForeground)
+            ApplyForeground(_frame.Child, foreground);
+    }
     private static void ApplyForeground(UIElement? element, Brush foreground)
     {
         switch (element)

@@ -389,16 +389,36 @@ public sealed class AutomationTaskPage : UserControl
                 TextWrapping = TextWrapping.NoWrap,
                 FontFamily = new FontFamily("Cascadia Mono, Consolas"),
                 FontSize = 12,
+                Width = 760,
+                Height = 440,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                VerticalAlignment = VerticalAlignment.Stretch,
+                IsSpellCheckEnabled = false,
+                IsTextPredictionEnabled = false,
             };
             ScrollViewer.SetHorizontalScrollBarVisibility(editor, ScrollBarVisibility.Auto);
             ScrollViewer.SetVerticalScrollBarVisibility(editor, ScrollBarVisibility.Auto);
             StyleTextBox(editor, string.Empty);
-            editor.MinWidth = 760;
-            editor.MinHeight = 440;
-            editor.MaxHeight = 560;
+            AutomationProperties.SetName(editor, "任务定义 JSON 编辑器");
             var content = new StackPanel { Spacing = 10 };
             if (existing is null)
                 content.Children.Add(BuildTemplateSelector(editor));
+            content.Children.Add(new TextBlock
+            {
+                Text = "任务定义 JSON",
+                FontSize = 13,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = TextBrush(),
+            });
+            content.Children.Add(new TextBlock
+            {
+                Text = existing is null
+                    ? "可直接编辑完整 JSON DSL；保存前会校验任务结构。"
+                    : "以下是任务的完整 JSON DSL，包括由 AI 创建的触发器、权限和动作。",
+                FontSize = 12,
+                Foreground = MutedBrush(),
+                TextWrapping = TextWrapping.Wrap,
+            });
             content.Children.Add(editor);
             var result = await Dialog(existing is null ? "新建任务" : "编辑任务", content, "保存", "取消").ShowAsync();
             json = editor.Text;

@@ -2,6 +2,7 @@ package com.adbcontrol.companion.features
 
 import com.adbcontrol.companion.core.CompanionCommandContext
 import com.adbcontrol.companion.core.CompanionCommandResult
+import org.json.JSONArray
 
 interface FeatureCommandHandler {
     val capabilityIds: Set<String>
@@ -44,4 +45,16 @@ fun Map<String, Any?>.booleanArg(name: String): Boolean {
 @Suppress("UNCHECKED_CAST")
 fun Map<String, Any?>.mapListArg(name: String): List<Map<String, Any?>> {
     return this[name] as? List<Map<String, Any?>> ?: emptyList()
+}
+
+fun Map<String, Any?>.stringListArg(name: String): List<String> {
+    val value = this[name] ?: return emptyList()
+    return when (value) {
+        is JSONArray -> (0 until value.length()).mapNotNull { index ->
+            value.optString(index, "").takeIf { it.isNotBlank() }
+        }
+        is Iterable<*> -> value.mapNotNull { item -> item?.toString()?.takeIf { it.isNotBlank() } }
+        is Array<*> -> value.mapNotNull { item -> item?.toString()?.takeIf { it.isNotBlank() } }
+        else -> emptyList()
+    }
 }

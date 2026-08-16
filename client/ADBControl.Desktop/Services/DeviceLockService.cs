@@ -4,8 +4,16 @@ using ADBControl.Desktop.Models;
 
 namespace ADBControl.Desktop.Services;
 
-public sealed class DeviceLockService
+public sealed class DeviceLockService : IDeviceLockStateSource
 {
+    private static readonly TimeSpan CompanionStateTimeout = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan AdbStateTimeout = TimeSpan.FromSeconds(3);
+    private const string AdbStateQuery = """
+        dumpsys window policy 2>/dev/null | grep -i -E 'keyguard|lockscreen|screenState|interactiveState|showing|mIsShowing' || true
+        dumpsys window 2>/dev/null | grep -i -E 'mKeyguardShowing|mShowingLockscreen|isStatusBarKeyguard|mDreamingLockscreen|keyguardShowing' || true
+        dumpsys power 2>/dev/null | grep -i -E 'mWakefulness=|mScreenOn=|Display Power: state=' || true
+        dumpsys trust 2>/dev/null | grep -i -E '\(current\).*deviceLocked=' || true
+        """;
     private readonly AdbService _adb;
     private readonly CompanionQuicServer? _companionQuic;
 
@@ -17,8 +25,47 @@ public sealed class DeviceLockService
 
     public async Task<DeviceLockState> GetStateAsync(string deviceId, CancellationToken cancellationToken = default)
     {
-        var result = await _adb.ShellAsync(deviceId, "dumpsys window policy; dumpsys window", cancellationToken);
-        return result.Success ? ParseState(result.Stdout) : DeviceLockState.Unknown;
+        var companionState = await TryGetCompanionStateAsync(deviceId, cancellationToken);
+        if (companionState != DeviceLockState.Unknown)
+            return companionState;
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(AdbStateTimeout);
+        try
+        {
+            var result = await _adb.ShellAsync(deviceId, AdbStateQuery, timeout.Token);
+            return result.Success ? ParseState(result.Stdout) : DeviceLockState.Unknown;
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return DeviceLockState.Unknown;
+        }
+    }
+
+    private async Task<DeviceLockState> TryGetCompanionStateAsync(string deviceId, CancellationToken cancellationToken)
+    {
+        if (_companionQuic is null || !_companionQuic.TryGetDevice(deviceId, out var session) || session is null)
+            return DeviceLockState.Unknown;
+
+        try
+        {
+            var envelope = await session.SendCommandAsync(
+                "android.device.power",
+                "device.state",
+                new Dictionary<string, object?>(),
+                CompanionStateTimeout,
+                cancellationToken);
+            return TryParseCompanionState(envelope, out var state) ? state : DeviceLockState.Unknown;
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return DeviceLockState.Unknown;
+        }
+        catch (Exception ex) when (ex is TimeoutException or IOException or JsonException or InvalidOperationException)
+        {
+            // Older Companion versions do not expose device.state; ADB remains the compatibility source.
+            return DeviceLockState.Unknown;
+        }
     }
 
     public async Task<AdbCommandResult> UnlockAsync(string deviceId, string? pin, CancellationToken cancellationToken = default)
@@ -210,18 +257,114 @@ public sealed class DeviceLockService
         if (string.IsNullOrWhiteSpace(output))
             return DeviceLockState.Unknown;
 
-        if (Regex.IsMatch(output, @"(?:screenState\s*=\s*SCREEN_STATE_OFF|interactiveState\s*=\s*INTERACTIVE_STATE_SLEEP|mWakefulness\s*=\s*Asleep)", RegexOptions.IgnoreCase))
+        if (Regex.IsMatch(
+            output,
+            @"(?:screenState\s*=\s*SCREEN_STATE_(?:OFF|TURNING_OFF)|interactiveState\s*=\s*INTERACTIVE_STATE_(?:SLEEP|GOING_TO_SLEEP)|mWakefulness\s*=\s*(?:Asleep|Dozing)|mScreenOn\s*=\s*false|Display\s+Power\s*:\s*state\s*=\s*OFF)",
+            RegexOptions.IgnoreCase))
+        {
             return DeviceLockState.Locked;
+        }
 
-        var values = Regex.Matches(output, @"(?:mKeyguardShowing|mShowingLockscreen|isStatusBarKeyguard|mDreamingLockscreen)\s*[=:]\s*(true|false)", RegexOptions.IgnoreCase)
-            .Select(match => bool.TryParse(match.Groups[1].Value, out var value) ? value : (bool?)null)
-            .Where(value => value is not null)
-            .Select(value => value!.Value)
-            .ToList();
+        var values = ReadBooleanSignals(
+            output,
+            @"(?:mKeyguardShowing|mShowingLockscreen|isStatusBarKeyguard|mDreamingLockscreen|keyguardShowing|mIsShowing|isKeyguardLocked|isDeviceLocked)");
+        var delegateShowing = Regex.Match(
+            output,
+            @"KeyguardServiceDelegate[\s\S]{0,1024}?\bshowing\s*[=:]\s*(true|false|1|0)\b",
+            RegexOptions.IgnoreCase);
+        if (delegateShowing.Success)
+            values.Add(ParseBooleanSignal(delegateShowing.Groups[1].Value));
+
+        var showingAndNotOccluded = ReadBooleanSignals(output, @"showingAndNotOccluded");
+        if (showingAndNotOccluded.Any(value => value))
+            values.Add(true);
+
+        var currentUserLock = Regex.Match(
+            output,
+            @"(?im)^[^\r\n]*\(\s*current\s*\)[^\r\n]*\bdeviceLocked\s*[=:]\s*(true|false|1|0)\b");
+        if (currentUserLock.Success)
+        {
+            values.Add(ParseBooleanSignal(currentUserLock.Groups[1].Value));
+        }
+        else
+        {
+            var deviceLocked = Regex.Matches(
+                output,
+                @"\bdeviceLocked\s*[=:]\s*(true|false|1|0)\b",
+                RegexOptions.IgnoreCase);
+            if (deviceLocked.Count == 1)
+                values.Add(ParseBooleanSignal(deviceLocked[0].Groups[1].Value));
+        }
 
         if (values.Count == 0)
             return DeviceLockState.Unknown;
         return values.Any(value => value) ? DeviceLockState.Locked : DeviceLockState.Unlocked;
+    }
+
+    public static bool TryParseCompanionState(JsonElement envelope, out DeviceLockState state)
+    {
+        state = DeviceLockState.Unknown;
+        if (envelope.ValueKind != JsonValueKind.Object ||
+            !envelope.TryGetProperty("payload", out var payload) ||
+            payload.ValueKind != JsonValueKind.Object ||
+            !payload.TryGetProperty("ok", out var ok) ||
+            ok.ValueKind != JsonValueKind.True ||
+            !payload.TryGetProperty("result", out var result) ||
+            result.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        var hasInteractive = TryReadJsonBoolean(result, "isInteractive", out var isInteractive);
+        var hasKeyguard = TryReadJsonBoolean(result, "isKeyguardLocked", out var isKeyguardLocked);
+        var hasDeviceLock = TryReadJsonBoolean(result, "isDeviceLocked", out var isDeviceLocked);
+        if (hasInteractive && !isInteractive || hasKeyguard && isKeyguardLocked || hasDeviceLock && isDeviceLocked)
+        {
+            state = DeviceLockState.Locked;
+            return true;
+        }
+        if (hasInteractive && isInteractive && hasKeyguard && !isKeyguardLocked && hasDeviceLock && !isDeviceLocked)
+        {
+            state = DeviceLockState.Unlocked;
+            return true;
+        }
+
+        if (result.TryGetProperty("state", out var stateValue) && stateValue.ValueKind == JsonValueKind.String)
+        {
+            state = stateValue.GetString()?.ToLowerInvariant() switch
+            {
+                "locked" => DeviceLockState.Locked,
+                "unlocked" => DeviceLockState.Unlocked,
+                _ => DeviceLockState.Unknown,
+            };
+            return state != DeviceLockState.Unknown;
+        }
+        return false;
+    }
+
+    private static List<bool> ReadBooleanSignals(string output, string fieldPattern)
+    {
+        return Regex.Matches(
+                output,
+                $@"\b{fieldPattern}\s*[=:]\s*(true|false|1|0)\b",
+                RegexOptions.IgnoreCase)
+            .Select(match => ParseBooleanSignal(match.Groups[1].Value))
+            .ToList();
+    }
+
+    private static bool ParseBooleanSignal(string value)
+        => value.Equals("true", StringComparison.OrdinalIgnoreCase) || value == "1";
+
+    private static bool TryReadJsonBoolean(JsonElement value, string propertyName, out bool result)
+    {
+        result = false;
+        if (!value.TryGetProperty(propertyName, out var property) ||
+            property.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+        {
+            return false;
+        }
+        result = property.GetBoolean();
+        return true;
     }
 
     public static bool TryParseScreenSize(string output, out int width, out int height)

@@ -11,20 +11,40 @@
 
   <ItemGroup>
     <Compile Include="..\ADBControl.Desktop\Services\AdbConnectionEvaluator.cs" Link="AdbConnectionEvaluator.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\IAdbConnectionGateway.cs" Link="IAdbConnectionGateway.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\DeviceConnectivityPolicy.cs" Link="DeviceConnectivityPolicy.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\DeviceConnectionLogger.cs" Link="DeviceConnectionLogger.cs" />
     <Compile Include="..\ADBControl.Desktop\Services\AdbMdnsService.cs" Link="AdbMdnsService.cs" />
     <Compile Include="..\ADBControl.Desktop\Services\AdbService.cs" Link="AdbService.cs" />
     <Compile Include="..\ADBControl.Desktop\Services\AiAgentToolService.cs" Link="AiAgentToolService.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\AiChoiceRequestParser.cs" Link="AiChoiceRequestParser.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\AiConversationPolicy.cs" Link="AiConversationPolicy.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\AiDeviceTargetResolver.cs" Link="AiDeviceTargetResolver.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\AiProviderCompatibility.cs" Link="AiProviderCompatibility.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\AiRequestFailure.cs" Link="AiRequestFailure.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\AiRequestLogger.cs" Link="AiRequestLogger.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\AiStreamRenderPolicy.cs" Link="AiStreamRenderPolicy.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\IAiDeviceInventory.cs" Link="IAiDeviceInventory.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\MouseWheelScrollPolicy.cs" Link="MouseWheelScrollPolicy.cs" />
     <Compile Include="..\ADBControl.Desktop\Services\ScrcpyVideoOptions.cs" Link="ScrcpyVideoOptions.cs" />
     <Compile Include="..\ADBControl.Desktop\Services\PreviewInteractionPolicy.cs" Link="PreviewInteractionPolicy.cs" />
     <Compile Include="..\ADBControl.Desktop\Services\PreviewContentLayout.cs" Link="PreviewContentLayout.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\PreviewCoordinateMapper.cs" Link="PreviewCoordinateMapper.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\ScrcpyControlMessageEncoder.cs" Link="ScrcpyControlMessageEncoder.cs" />
     <Compile Include="..\ADBControl.Desktop\Services\DeviceHardwareService.cs" Link="DeviceHardwareService.cs" />
     <Compile Include="..\ADBControl.Desktop\Services\DeviceLockService.cs" Link="DeviceLockService.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\DeviceLockStateMonitor.cs" Link="DeviceLockStateMonitor.cs" />
     <Compile Include="..\ADBControl.Desktop\Services\DeviceDetailRefreshPolicy.cs" Link="DeviceDetailRefreshPolicy.cs" />
     <Compile Include="..\ADBControl.Desktop\Services\DeviceService.cs" Link="DeviceService.cs" />
     <Compile Include="..\ADBControl.Desktop\Services\HardwareReportExporter.cs" Link="HardwareReportExporter.cs" />
     <Compile Include="..\ADBControl.Desktop\Services\HardwareMonitorLogger.cs" Link="HardwareMonitorLogger.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\HardwareTemperaturePresentation.cs" Link="HardwareTemperaturePresentation.cs" />
     <Compile Include="..\ADBControl.Desktop\Services\PackageLabelParser.cs" Link="PackageLabelParser.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\DevicePackageCatalogService.cs" Link="DevicePackageCatalogService.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\PackageNameResolver.cs" Link="PackageNameResolver.cs" />
     <Compile Include="..\ADBControl.Desktop\Services\CompanionAppService.cs" Link="CompanionAppService.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\CompanionInstallWorkflow.cs" Link="CompanionInstallWorkflow.cs" />
+    <Compile Include="..\ADBControl.Desktop\Services\CompanionInstallLogger.cs" Link="CompanionInstallLogger.cs" />
     <Compile Include="..\ADBControl.Desktop\Services\CompanionQuicServer.cs" Link="CompanionQuicServer.cs" />
     <Compile Include="..\ADBControl.Desktop\Services\CompanionProjectionSession.cs" Link="CompanionProjectionSession.cs" />
     <Compile Include="..\ADBControl.Desktop\Services\ProjectionSession.cs" Link="ProjectionSession.cs" />

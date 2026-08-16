@@ -1,3 +1,4 @@
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using ADBControl.Desktop.Models;
 using ADBControl.Desktop.Services.Automation;
@@ -6,15 +7,26 @@ namespace ADBControl.Desktop.Services;
 
 public sealed class AiAgentToolService
 {
+    private static readonly JsonSerializerOptions ReadableJsonOptions = new()
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+
     private readonly AdbService _adb;
     private readonly CompanionAppService _companion;
     private readonly IAutomationTaskManager? _automation;
+    private readonly IAiDeviceInventory? _inventory;
 
-    public AiAgentToolService(AdbService adb, CompanionAppService companion, IAutomationTaskManager? automation = null)
+    public AiAgentToolService(
+        AdbService adb,
+        CompanionAppService companion,
+        IAutomationTaskManager? automation = null,
+        IAiDeviceInventory? inventory = null)
     {
         _adb = adb;
         _companion = companion;
         _automation = automation;
+        _inventory = inventory;
     }
 
     public async Task<AiAgentToolResult> ExecuteAsync(
@@ -27,6 +39,12 @@ public sealed class AiAgentToolService
         if (toolCall.Name.StartsWith("task_", StringComparison.Ordinal))
             return await ExecuteAutomationToolAsync(toolCall, permissionMode, requestApproval, cancellationToken);
 
+        if (string.Equals(toolCall.Name, "device_list", StringComparison.Ordinal))
+            return ExecuteDeviceList(toolCall, currentDevice);
+
+        if (string.Equals(toolCall.Name, "ask_user_choice", StringComparison.Ordinal))
+            return Failure(toolCall, "AI_CHOICE_UI_REQUIRED: 该工具必须由 AI 对话界面处理。");
+
         if (!string.Equals(toolCall.Name, "adb_shell", StringComparison.Ordinal) &&
             !string.Equals(toolCall.Name, "adb_ui_dump", StringComparison.Ordinal) &&
             !string.Equals(toolCall.Name, "adb_tap", StringComparison.Ordinal) &&
@@ -36,8 +54,13 @@ public sealed class AiAgentToolService
             return Failure(toolCall, $"不支持的工具：{toolCall.Name}");
         }
 
-        if (currentDevice is null || string.IsNullOrWhiteSpace(currentDevice.DeviceId))
-            return Failure(toolCall, "当前没有打开的设备详情页，无法执行设备工具。");
+        var target = AiDeviceTargetResolver.Resolve(
+            _inventory,
+            currentDevice,
+            ReadStringArgument(toolCall.ArgumentsJson, "deviceId"));
+        if (!target.Success)
+            return Failure(toolCall, $"{target.ErrorCode}: {target.Message}");
+        currentDevice = target.Device!;
 
         if (string.Equals(toolCall.Name, "companion_call", StringComparison.Ordinal))
             return await ExecuteCompanionCallAsync(toolCall, permissionMode, currentDevice, requestApproval, cancellationToken);
@@ -76,6 +99,28 @@ public sealed class AiAgentToolService
         {
             return Failure(toolCall, ex.Message);
         }
+    }
+
+    private AiAgentToolResult ExecuteDeviceList(AiAgentToolCall toolCall, DeviceModel? currentDevice)
+    {
+        var devices = _inventory?.GetDevices() ??
+            (currentDevice is null ? Array.Empty<DeviceModel>() : new[] { currentDevice });
+        return new AiAgentToolResult
+        {
+            ToolCallId = toolCall.Id,
+            Name = toolCall.Name,
+            Success = true,
+            Content = JsonSerializer.Serialize(devices.Select(device => new
+            {
+                deviceId = device.DeviceId,
+                displayName = string.IsNullOrWhiteSpace(device.DisplayName) ? device.DeviceId : device.DisplayName,
+                device.Model,
+                device.AndroidVersion,
+                connectionKind = device.ConnectionKind,
+                adbConnected = device.IsConnected,
+                companionConnected = device.IsCompanionConnected,
+            }), ReadableJsonOptions),
+        };
     }
 
     private async Task<AiAgentToolResult> ExecuteAutomationToolAsync(

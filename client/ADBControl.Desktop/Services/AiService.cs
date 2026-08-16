@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -13,15 +14,45 @@ public sealed class AiService
         WriteIndented = false,
     };
 
-    private readonly HttpClient _http = new()
+    private readonly HttpClient _http;
+    private readonly IAiRequestLogger _logger;
+
+    public AiService(IAiRequestLogger? logger = null, HttpClient? httpClient = null)
     {
-        Timeout = TimeSpan.FromSeconds(90),
-    };
+        _logger = logger ?? new AiRequestLogger();
+        _http = httpClient ?? new HttpClient { Timeout = TimeSpan.FromSeconds(90) };
+    }
 
     public async Task<AiAgentResponse> SendAsync(
         AiAgentRequest request,
         Func<AiAgentToolCall, Task<AiAgentToolResult>> toolExecutor,
         CancellationToken cancellationToken = default)
+    {
+        var traceId = Guid.NewGuid().ToString("N");
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            return await SendCoreAsync(request, toolExecutor, traceId, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            var failure = AiRequestFailureClassifier.FromException(ex, traceId, ex is TaskCanceledException);
+            await TryLogFailureAsync(request.Model, failure, stopwatch.ElapsedMilliseconds, cancellationToken);
+            if (ex is AiRequestException)
+                throw;
+            throw new AiRequestException(failure, ex);
+        }
+    }
+
+    private async Task<AiAgentResponse> SendCoreAsync(
+        AiAgentRequest request,
+        Func<AiAgentToolCall, Task<AiAgentToolResult>> toolExecutor,
+        string traceId,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(request.Model.ModelId))
             throw new InvalidOperationException("AI 模型标识不能为空。");
@@ -31,8 +62,13 @@ public sealed class AiService
             throw new InvalidOperationException("AI API Key 不能为空。");
 
         var endpoint = NormalizeChatCompletionsEndpoint(request.Model.ApiUrl);
-        var messages = await BuildMessagesAsync(request, cancellationToken);
+        var profile = AiProviderCompatibility.Resolve(request.Model);
+        var preparedMessages = AiProviderCompatibility.PrepareMessages(request.Messages, profile, out var omittedImages);
+        var warnings = new List<AiAgentWarning>();
+        AddImageCompatibilityWarning(warnings, omittedImages, profile.ProviderName);
+        var messages = await BuildMessagesAsync(request, preparedMessages, cancellationToken);
         var newMessages = new List<AiConversationMessage>();
+        var imageRetryUsed = false;
 
         while (true)
         {
@@ -40,7 +76,7 @@ public sealed class AiService
             {
                 ["model"] = request.Model.ModelId,
                 ["messages"] = messages,
-                ["tools"] = BuildTools(),
+                ["tools"] = BuildTools(request.AllowInteractiveChoices),
                 ["tool_choice"] = "auto",
                 ["temperature"] = 0.2,
             };
@@ -54,7 +90,20 @@ public sealed class AiService
             using var response = await _http.SendAsync(httpRequest, cancellationToken);
             var json = await response.Content.ReadAsStringAsync(cancellationToken);
             if (!response.IsSuccessStatusCode)
-                throw new InvalidOperationException($"AI 请求失败：HTTP {(int)response.StatusCode} {response.ReasonPhrase}\n{TrimForUi(json)}");
+            {
+                var failure = AiRequestFailureClassifier.FromHttp((int)response.StatusCode, response.ReasonPhrase, json, traceId);
+                if (!imageRetryUsed &&
+                    failure.ErrorCode == "AI_REQUEST_IMAGE_UNSUPPORTED" &&
+                    RemoveImageContent(messages) is var removedImages && removedImages > 0)
+                {
+                    await TryLogFailureAsync(request.Model, failure, 0, cancellationToken);
+                    imageRetryUsed = true;
+                    profile = profile with { SupportsImageContent = false };
+                    AddImageCompatibilityWarning(warnings, removedImages, profile.ProviderName);
+                    continue;
+                }
+                throw new AiRequestException(failure);
+            }
 
             var assistant = ParseAssistantMessage(json);
             messages.Add(assistant.RawMessage);
@@ -66,6 +115,7 @@ public sealed class AiService
                 {
                     Text = assistant.Text,
                     NewMessages = newMessages,
+                    Warnings = warnings,
                 };
             }
 
@@ -102,6 +152,34 @@ public sealed class AiService
         CancellationToken cancellationToken = default,
         Func<IReadOnlyList<AiAgentToolCall>, CancellationToken, Task<IReadOnlyList<AiConversationMessage>>>? afterToolContextProvider = null)
     {
+        var traceId = Guid.NewGuid().ToString("N");
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            return await SendStreamingCoreAsync(request, onDelta, toolExecutor, traceId, cancellationToken, afterToolContextProvider);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            var failure = AiRequestFailureClassifier.FromException(ex, traceId, ex is TaskCanceledException);
+            await TryLogFailureAsync(request.Model, failure, stopwatch.ElapsedMilliseconds, cancellationToken);
+            if (ex is AiRequestException)
+                throw;
+            throw new AiRequestException(failure, ex);
+        }
+    }
+
+    private async Task<AiAgentResponse> SendStreamingCoreAsync(
+        AiAgentRequest request,
+        Func<AiStreamDelta, Task> onDelta,
+        Func<AiAgentToolCall, Task<AiAgentToolResult>> toolExecutor,
+        string traceId,
+        CancellationToken cancellationToken,
+        Func<IReadOnlyList<AiAgentToolCall>, CancellationToken, Task<IReadOnlyList<AiConversationMessage>>>? afterToolContextProvider)
+    {
         if (string.IsNullOrWhiteSpace(request.Model.ModelId))
             throw new InvalidOperationException("AI 模型标识不能为空。");
         if (string.IsNullOrWhiteSpace(request.Model.ApiUrl))
@@ -110,10 +188,15 @@ public sealed class AiService
             throw new InvalidOperationException("AI API Key 不能为空。");
 
         var endpoint = NormalizeChatCompletionsEndpoint(request.Model.ApiUrl);
-        var messages = await BuildMessagesAsync(request, cancellationToken);
+        var profile = AiProviderCompatibility.Resolve(request.Model);
+        var preparedMessages = AiProviderCompatibility.PrepareMessages(request.Messages, profile, out var omittedImages);
+        var warnings = new List<AiAgentWarning>();
+        AddImageCompatibilityWarning(warnings, omittedImages, profile.ProviderName);
+        var messages = await BuildMessagesAsync(request, preparedMessages, cancellationToken);
         var newMessages = new List<AiConversationMessage>();
         var finalText = new StringBuilder();
         var finalThinking = new StringBuilder();
+        var imageRetryUsed = false;
 
         while (true)
         {
@@ -121,7 +204,7 @@ public sealed class AiService
             {
                 ["model"] = request.Model.ModelId,
                 ["messages"] = messages,
-                ["tools"] = BuildTools(),
+                ["tools"] = BuildTools(request.AllowInteractiveChoices),
                 ["tool_choice"] = "auto",
                 ["temperature"] = 0.2,
                 ["stream"] = true,
@@ -137,10 +220,26 @@ public sealed class AiService
             if (!response.IsSuccessStatusCode)
             {
                 var errorJson = await response.Content.ReadAsStringAsync(cancellationToken);
-                throw new InvalidOperationException($"AI 请求失败：HTTP {(int)response.StatusCode} {response.ReasonPhrase}\n{TrimForUi(errorJson)}");
+                var failure = AiRequestFailureClassifier.FromHttp((int)response.StatusCode, response.ReasonPhrase, errorJson, traceId);
+                if (!imageRetryUsed &&
+                    failure.ErrorCode == "AI_REQUEST_IMAGE_UNSUPPORTED" &&
+                    RemoveImageContent(messages) is var removedImages && removedImages > 0)
+                {
+                    await TryLogFailureAsync(request.Model, failure, 0, cancellationToken);
+                    imageRetryUsed = true;
+                    profile = profile with { SupportsImageContent = false };
+                    AddImageCompatibilityWarning(warnings, removedImages, profile.ProviderName);
+                    continue;
+                }
+                throw new AiRequestException(failure);
             }
 
-            var streamResult = await ReadStreamingAssistantAsync(response, onDelta, cancellationToken);
+            // SSE providers can emit hundreds of tiny JSON chunks. Parse them on the pool so
+            // the caller's WinUI synchronization context remains responsive while streaming.
+            var streamResult = await Task.Run(() => ReadStreamingAssistantAsync(
+                response,
+                onDelta,
+                cancellationToken), cancellationToken);
             finalText.Append(streamResult.Text);
             finalThinking.Append(streamResult.ThinkingText);
             messages.Add(streamResult.RawMessage);
@@ -153,6 +252,7 @@ public sealed class AiService
                     Text = finalText.ToString(),
                     ThinkingText = finalThinking.ToString(),
                     NewMessages = newMessages,
+                    Warnings = warnings,
                 };
             }
 
@@ -182,7 +282,9 @@ public sealed class AiService
             if (afterToolContextProvider is not null)
             {
                 var contextMessages = await afterToolContextProvider(streamResult.ToolCalls, cancellationToken);
-                foreach (var contextMessage in contextMessages)
+                var preparedContext = AiProviderCompatibility.PrepareMessages(contextMessages, profile, out var omittedContextImages);
+                AddImageCompatibilityWarning(warnings, omittedContextImages, profile.ProviderName);
+                foreach (var contextMessage in preparedContext)
                 {
                     // Post-tool screen observations are scoped to the current request; replaying stale screenshots in later turns would mislead the model.
                     messages.Add(await BuildMessageAsync(contextMessage, cancellationToken));
@@ -204,7 +306,10 @@ public sealed class AiService
         return new Uri($"{trimmed.TrimEnd('/')}/chat/completions");
     }
 
-    private static async Task<List<Dictionary<string, object?>>> BuildMessagesAsync(AiAgentRequest request, CancellationToken cancellationToken)
+    private static async Task<List<Dictionary<string, object?>>> BuildMessagesAsync(
+        AiAgentRequest request,
+        IReadOnlyList<AiConversationMessage> conversationMessages,
+        CancellationToken cancellationToken)
     {
         var messages = new List<Dictionary<string, object?>>
         {
@@ -215,7 +320,7 @@ public sealed class AiService
             },
         };
 
-        foreach (var message in request.Messages)
+        foreach (var message in conversationMessages)
             messages.Add(await BuildMessageAsync(message, cancellationToken));
 
         return messages;
@@ -223,14 +328,25 @@ public sealed class AiService
 
     private static string BuildSystemPrompt(AiAgentRequest request)
     {
-        var device = string.IsNullOrWhiteSpace(request.CurrentDeviceId)
-            ? "当前没有打开的设备详情页。"
-            : $"当前设备：{request.CurrentDeviceName} ({request.CurrentDeviceId})。";
+        var currentDevice = request.KnownDevices.FirstOrDefault(device =>
+            string.Equals(device.DeviceId, request.CurrentDeviceId, StringComparison.OrdinalIgnoreCase));
+        if (currentDevice is null && !string.IsNullOrWhiteSpace(request.CurrentDeviceId))
+        {
+            currentDevice = new DeviceModel
+            {
+                DeviceId = request.CurrentDeviceId,
+                DisplayName = request.CurrentDeviceName ?? request.CurrentDeviceId,
+            };
+        }
+        var deviceContext = AiConversationPolicy.BuildDeviceContext(currentDevice, request.KnownDevices);
+        var interactionRules = AiConversationPolicy.BuildInteractionRules(request.AllowInteractiveChoices);
         return
             "你是 ADBControl 内的 AI Agent。你需要用中文简洁回应用户。" +
             "当需要操作 Android 设备时，只能通过工具调用执行，不能编造执行结果。" +
-            $"权限模式：{request.PermissionMode}。{device}" +
-            "可用工具：adb_shell 用于执行非触控 adb shell；adb_ui_dump 用于读取当前 Android 页面结构；adb_tap/adb_swipe 用于按绝对像素坐标触控；companion_call 用于调用伴侣 App 暴露的 Android 能力，" +
+            $"权限模式：{request.PermissionMode}。{deviceContext}{interactionRules}" +
+            "查询设备清单、数量或连接状态时直接使用现有设备上下文，必要时调用 device_list，不得要求用户先进入设备详情页。" +
+            "只有执行具体设备操作时才需要目标设备；工具参数可传 deviceId。目标不明确时先调用 device_list，再通过单选提问让用户选择，不得自行猜测。" +
+            "可用设备工具：adb_shell 用于执行非触控 adb shell；adb_ui_dump 用于读取 Android 页面结构；adb_tap/adb_swipe 用于按绝对像素坐标触控；companion_call 用于调用伴侣 App 暴露的 Android 能力，" +
             "包括 android.input.ime 的 input.text、input.key，以及 android.accessibility.control 的 accessibility.status、accessibility.global.back、accessibility.global.home、accessibility.global.recents、accessibility.global.notifications、accessibility.global.quickSettings、accessibility.global.powerDialog、accessibility.touch.tap、accessibility.touch.swipe。" +
             "需要输入中文或长文本时，优先使用 Companion input.text，不要用 adb_shell input text。" +
             "Companion 触控参数：accessibility.touch.tap 使用 args {x,y}；accessibility.touch.swipe 使用 args {startX,startY,endX,endY,durationMs}。" +
@@ -333,7 +449,7 @@ public sealed class AiService
         return $"data:{mime};base64,{Convert.ToBase64String(bytes)}";
     }
 
-    private static List<Dictionary<string, object?>> BuildTools()
+    private static List<Dictionary<string, object?>> BuildTools(bool allowInteractiveChoices)
     {
         var tools = new List<Dictionary<string, object?>>
         {
@@ -512,8 +628,60 @@ public sealed class AiService
                 },
             },
         };
+        tools.Insert(0, Tool(
+            "device_list",
+            "列出 ADBControl 中全部已知设备及 ADB、伴侣连接状态；不需要打开设备详情页。",
+            new Dictionary<string, object?>()));
+        if (allowInteractiveChoices)
+        {
+            tools.Insert(1, Tool(
+                "ask_user_choice",
+                "在当前回复过程中向用户提出有限选项问题。只允许单选或多选；需要文字输入时不要调用此工具。",
+                new Dictionary<string, object?>
+                {
+                    ["question"] = StringProperty("要展示给用户的问题。"),
+                    ["selectionMode"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "string",
+                        ["enum"] = new[] { "single", "multiple" },
+                        ["description"] = "single 为单选，multiple 为多选。",
+                    },
+                    ["options"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "array",
+                        ["items"] = new Dictionary<string, object?> { ["type"] = "string" },
+                        ["minItems"] = 2,
+                        ["maxItems"] = 8,
+                        ["description"] = "2-8 个互不重复的选项。",
+                    },
+                },
+                "question", "selectionMode", "options"));
+        }
+        AddOptionalDeviceIdToDeviceTools(tools);
         tools.AddRange(BuildAutomationTools());
         return tools;
+    }
+
+    private static void AddOptionalDeviceIdToDeviceTools(List<Dictionary<string, object?>> tools)
+    {
+        var deviceTools = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "adb_shell", "adb_ui_dump", "adb_tap", "adb_swipe", "companion_call",
+        };
+        foreach (var tool in tools)
+        {
+            if (!tool.TryGetValue("function", out var functionValue) ||
+                functionValue is not Dictionary<string, object?> function ||
+                function.GetValueOrDefault("name") is not string name ||
+                !deviceTools.Contains(name) ||
+                function.GetValueOrDefault("parameters") is not Dictionary<string, object?> parameters ||
+                parameters.GetValueOrDefault("properties") is not Dictionary<string, object?> properties)
+            {
+                continue;
+            }
+
+            properties["deviceId"] = StringProperty("目标设备的 deviceId。省略时使用当前详情设备；没有当前设备时必须先查询并选择。");
+        }
     }
 
     private static IEnumerable<Dictionary<string, object?>> BuildAutomationTools()
@@ -640,7 +808,7 @@ public sealed class AiService
         Func<AiStreamDelta, Task> onDelta,
         CancellationToken cancellationToken)
     {
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
         using var reader = new StreamReader(stream);
         var text = new StringBuilder();
         var thinking = new StringBuilder();
@@ -649,7 +817,7 @@ public sealed class AiService
         while (!reader.EndOfStream)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var line = await reader.ReadLineAsync(cancellationToken);
+            var line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("data:", StringComparison.Ordinal))
                 continue;
 
@@ -672,7 +840,7 @@ public sealed class AiService
                     thinking.Append(chunk.Text);
                 else
                     text.Append(chunk.Text);
-                await onDelta(chunk);
+                await onDelta(chunk).ConfigureAwait(false);
             }
 
             if (delta.TryGetProperty("tool_calls", out var calls) && calls.ValueKind == JsonValueKind.Array)
@@ -791,6 +959,74 @@ public sealed class AiService
         };
     }
 
+    private static void AddImageCompatibilityWarning(List<AiAgentWarning> warnings, int omittedImages, string providerName)
+    {
+        if (omittedImages <= 0 || warnings.Any(warning => warning.Code == "AI_IMAGE_INPUT_OMITTED"))
+            return;
+        warnings.Add(new AiAgentWarning
+        {
+            Code = "AI_IMAGE_INPUT_OMITTED",
+            Message = $"{providerName} 当前不接受图像内容，本轮已省略 {omittedImages} 张截图或图片。",
+        });
+    }
+
+    private static int RemoveImageContent(List<Dictionary<string, object?>> messages)
+    {
+        var removed = 0;
+        foreach (var message in messages)
+        {
+            if (message.GetValueOrDefault("content") is not List<Dictionary<string, object?>> content)
+                continue;
+            var removedFromMessage = content.RemoveAll(item =>
+                item.GetValueOrDefault("type") is string type &&
+                string.Equals(type, "image_url", StringComparison.Ordinal));
+            if (removedFromMessage == 0)
+                continue;
+
+            removed += removedFromMessage;
+            var note = $"[兼容性提示：当前模型不支持图像输入，本轮已省略 {removedFromMessage} 张图像。]";
+            var textPart = content.FirstOrDefault(item =>
+                item.GetValueOrDefault("type") is string type && string.Equals(type, "text", StringComparison.Ordinal));
+            if (textPart is null)
+            {
+                content.Add(new Dictionary<string, object?> { ["type"] = "text", ["text"] = note });
+            }
+            else
+            {
+                var existing = textPart.GetValueOrDefault("text") as string;
+                textPart["text"] = string.IsNullOrWhiteSpace(existing) ? note : $"{existing}\n\n{note}";
+            }
+        }
+        return removed;
+    }
+
+    private async Task TryLogFailureAsync(
+        AiModelSettings model,
+        AiRequestFailure failure,
+        long elapsedMs,
+        CancellationToken _)
+    {
+        var providerHost = Uri.TryCreate(model.ApiUrl, UriKind.Absolute, out var uri) ? uri.Host : string.Empty;
+        try
+        {
+            await _logger.WriteAsync(new AiRequestLogEntry(
+                failure.TraceId,
+                providerHost,
+                model.ModelId,
+                failure.HttpStatusCode.HasValue ? "response" : "transport",
+                failure.HttpStatusCode,
+                failure.ErrorCode,
+                failure.ProviderErrorType,
+                failure.ProviderErrorCode,
+                failure.ProviderMessage,
+                elapsedMs), CancellationToken.None);
+        }
+        catch (Exception logException)
+        {
+            // Diagnostics must never replace the original AI failure shown to the user.
+            Debug.WriteLine($"Failed to write AI request log: {logException}");
+        }
+    }
     private static string TrimForUi(string value)
     {
         if (string.IsNullOrWhiteSpace(value))

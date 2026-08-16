@@ -8,7 +8,7 @@ public sealed record AdbCommandResult(int ExitCode, string Stdout, string Stderr
     public bool Success => ExitCode == 0;
 }
 
-public sealed class AdbService
+public sealed class AdbService : IAdbConnectionGateway
 {
     private static readonly TimeSpan DefaultCommandTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan FileTransferTimeout = TimeSpan.FromMinutes(3);
@@ -57,7 +57,13 @@ public sealed class AdbService
 
     public async Task<AdbCommandResult> ShellAsync(string deviceId, string command, CancellationToken cancellationToken)
     {
-        return await RunAsync(DefaultCommandTimeout, cancellationToken, "-s", deviceId, "shell", command);
+        return await RunAsync(DefaultCommandTimeout, cancellationToken, "-s", deviceId, "shell", NormalizeShellCommand(command));
+    }
+
+    internal static string NormalizeShellCommand(string command)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        return command.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
     }
 
     public async Task<AdbCommandResult> TapAsync(string deviceId, int x, int y)

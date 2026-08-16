@@ -147,11 +147,33 @@ public sealed class CompanionAppService
 
     private async Task<string?> ReadCommandResultSnapshotAsync(DeviceModel device, string requestId, CancellationToken cancellationToken)
     {
+        const int maxAttempts = 8;
         var resultPath = $"{CommandResultDirectory}/{requestId}.json";
-        var result = await _adb.ShellAsync(device.DeviceId, $"cat {EscapeShellToken(resultPath)}", cancellationToken);
-        return result.Success && !string.IsNullOrWhiteSpace(result.Stdout)
-            ? result.Stdout.Trim()
-            : null;
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            var result = await _adb.ShellAsync(device.DeviceId, $"cat {EscapeShellToken(resultPath)}", cancellationToken);
+            if (result.Success && !string.IsNullOrWhiteSpace(result.Stdout))
+                return result.Stdout.Trim();
+            if (!ShouldRetryCommandResultSnapshot(result, attempt, maxAttempts))
+                return null;
+            await Task.Delay(100, cancellationToken);
+        }
+
+        return null;
+    }
+
+    internal static bool ShouldRetryCommandResultSnapshot(
+        AdbCommandResult result,
+        int attempt,
+        int maxAttempts)
+    {
+        if (attempt < 0 || maxAttempts <= 0 || attempt >= maxAttempts - 1)
+            return false;
+        if (result.Success)
+            return string.IsNullOrWhiteSpace(result.Stdout);
+
+        var message = $"{result.Stdout}\n{result.Stderr}";
+        return message.Contains("No such file or directory", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string? ResolveCompanionApkPath()

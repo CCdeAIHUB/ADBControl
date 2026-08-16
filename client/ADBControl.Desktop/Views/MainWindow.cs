@@ -38,9 +38,14 @@ public sealed class MainWindow : Window
     private readonly CompanionQuicServer _companionQuic;
     private readonly Task _companionQuicStartTask;
     private readonly CompanionAppService _companion;
+    private readonly CompanionInstallWorkflow _companionInstall;
     private readonly DeviceHardwareService _hardware;
+    private readonly PackageNameResolver _packageNames = new();
+    private readonly DevicePackageCatalogService _packageCatalog;
     private readonly DeviceLockService _deviceLock;
+    private readonly DeviceLockStateMonitor _deviceLockMonitor;
     private readonly HardwareReportExporter _hardwareReportExporter = new();
+    private readonly WindowsNotificationService _systemNotifications = new();
 
     private readonly Grid _root = new();
     private readonly Grid _contentHost = new();
@@ -60,8 +65,13 @@ public sealed class MainWindow : Window
 
     private ScrollViewer? _activePageScroller;
     private IntPtr _windowHandle;
+    private readonly LowLevelMouseWheelInput _lowLevelWheelInput = new();
+    private readonly CancellationTokenSource _wheelFallbackCancellation = new();
     private readonly Dictionary<IntPtr, IntPtr> _hookedWndProcs = new();
     private WndProcDelegate? _wndProcDelegate;
+    private int _nativeWheelDispatchDepth;
+    private DeferredWheelFallback? _pendingLowLevelWheelFallback;
+    private bool _lowLevelWheelFallbackScheduled;
     private GridBackground? _background;
     private Border? _navDock;
     private Border? _deviceDock;
@@ -89,17 +99,19 @@ public sealed class MainWindow : Window
     private Button? _videoMirrorStopButton;
     private long _videoMirrorStartVersion;
     private bool _devicePreviewRefreshInProgress;
+    private bool _devicePreviewFullScreen;
     private double _devicePreviewIntervalSeconds = 3;
     private readonly Dictionary<string, string> _sessionUnlockPins = new(StringComparer.Ordinal);
     private DispatcherTimer? _wirelessDiscoveryTimer;
     private bool _wirelessDiscoveryInProgress;
     private long _deviceDetailStateRefreshVersion;
+    private int _deviceDetailOperationDepth;
     private readonly HashSet<string> _companionConfigurationRequests = new(StringComparer.Ordinal);
     private StackPanel? _detailConnectionBadges;
     private readonly Dictionary<string, (Image Image, TextBlock Status)> _deviceCardPreviews = new();
     private readonly Dictionary<string, Window> _hardwareMonitorWindows = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _previewFrameHashes = new();
-    private readonly Dictionary<string, (int Width, int Height)> _previewFrameSizes = new();
+    private readonly Dictionary<string, (int Width, int Height)> _previewImageFrameSizes = new();
     private readonly Dictionary<string, long> _previewFrameSerials = new();
     private PreviewTouchState? _previewTouch;
     private readonly SemaphoreSlim _previewTouchDispatchLock = new(1, 1);
@@ -124,7 +136,7 @@ public sealed class MainWindow : Window
     private bool _isAiPanelResizing;
     private bool _aiScrollBottomButtonVisible;
     private bool _aiStreamFlushQueued;
-    private bool _aiStreamHasAnswer;
+    private bool _aiStreamScrollQueued;
     private double _aiPanelWidth = 400;
     private double _deviceToolPaneWidth = 400;
     private readonly object _aiStreamLock = new();
@@ -141,9 +153,28 @@ public sealed class MainWindow : Window
 
     private sealed record NavButtonInfo(string Text, Symbol Symbol, bool UsesDeviceGlyph = false, bool IsTablet = false);
 
-    private sealed record PreviewTouchState(DeviceModel Device, Image Image, Point StartPoint, DateTimeOffset StartedAt, uint PointerId);
+    private enum PreviewTouchRoute
+    {
+        ScreenshotAdb,
+        Projection,
+    }
 
-    private sealed record LockedPreviewSurface(Border Root, TextBlock StateText, TextBlock PinText, FrameworkElement Keypad);
+    private sealed record PreviewTouchState(
+        DeviceModel Device,
+        Point StartPoint,
+        DateTimeOffset StartedAt,
+        uint PointerId,
+        PreviewTouchRoute Route,
+        ProjectionTouchPosition StartDevicePosition,
+        ProjectionTouchPosition LastDevicePosition);
+
+    private sealed record LockedPreviewSurface(
+        Border Root,
+        TextBlock StateText,
+        TextBlock HintText,
+        TextBlock PinText,
+        FrameworkElement Keypad,
+        FrameworkElement UnlockActions);
 
     private sealed record DeviceFileItem(string Name, string Path, bool IsDirectory, string SizeText, string ModifiedText, string Extension);
 
@@ -182,33 +213,47 @@ public sealed class MainWindow : Window
 
     private sealed record AiStreamingMessageUi(
         AiChatMessage Message,
+        FrameworkElement Root,
         TextBlock AnswerText,
         Border ThinkingShell,
         TextBlock ThinkingText,
         TextBlock ThinkingSummary,
         Border ThinkingBody,
         TextBlock ThinkingArrow,
-        TextBlock DurationText);
+        TextBlock DurationText,
+        StringBuilder AnswerBuffer,
+        StringBuilder ThinkingBuffer)
+    {
+        public bool HasAnswer { get; set; }
+    }
 
     public MainWindow()
     {
         _settings.Load();
-        _devices = new DeviceService(_settings, _adb);
+        _devices = new DeviceService(_settings, _adb, new DeviceConnectionLogger());
         _companionQuic = new CompanionQuicServer(_settings.Current.QuicPort);
         _companionQuic.DeviceConnectionChanged += OnCompanionDeviceConnectionChanged;
         _companionQuicStartTask = _companionQuic.StartAsync();
         _companion = new CompanionAppService(_adb, _companionQuic);
+        _packageCatalog = new DevicePackageCatalogService(
+            new DevicePackageCatalogGateway(_adb, _companion),
+            _packageNames);
+        _companionInstall = new CompanionInstallWorkflow(
+            new CompanionInstallGateway(_devices, _companion),
+            new CompanionInstallLogger());
         var automationDatabase = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "ADBControl",
             "automation.sqlite");
         _automation = new AutomationTaskService(automationDatabase, new AdbAutomationDeviceGateway(_adb, _companion));
-        _aiTools = new AiAgentToolService(_adb, _companion, _automation);
+        _aiTools = new AiAgentToolService(_adb, _companion, _automation, _devices);
         _automation.AiExecutor = ExecuteAutomationAiAsync;
         _automation.AiOutputProduced += OnAutomationAiOutputProduced;
         _automationStartTask = _automation.StartAsync();
         _hardware = new DeviceHardwareService(_adb);
         _deviceLock = new DeviceLockService(_adb, _companionQuic);
+        _deviceLockMonitor = new DeviceLockStateMonitor(_deviceLock);
+        _deviceLockMonitor.StateChanged += OnDeviceLockStateChanged;
 
         Title = "ADBControl";
         ExtendsContentIntoTitleBar = true;
@@ -244,6 +289,11 @@ public sealed class MainWindow : Window
         Closed += async (_, _) =>
         {
             _wirelessDiscoveryTimer?.Stop();
+            _wheelFallbackCancellation.Cancel();
+            _lowLevelWheelInput.Wheel -= OnLowLevelMouseWheel;
+            _lowLevelWheelInput.Dispose();
+            _deviceLockMonitor.StateChanged -= OnDeviceLockStateChanged;
+            await _deviceLockMonitor.DisposeAsync();
             foreach (var monitorWindow in _hardwareMonitorWindows.Values.ToList())
                 monitorWindow.Close();
             _hardwareMonitorWindows.Clear();
@@ -251,6 +301,8 @@ public sealed class MainWindow : Window
             await StopDeviceVideoMirrorCoreAsync(restartPreview: false, reason: "window_closed");
             await _companionQuic.DisposeAsync();
             RestoreNativeWheelHook();
+            _wheelFallbackCancellation.Dispose();
+            _systemNotifications.Dispose();
             await _automation.DisposeAsync();
         };
     }
@@ -524,8 +576,10 @@ public sealed class MainWindow : Window
 
     private void Navigate(string page)
     {
+        ExitDevicePreviewFullScreen();
         StopDeviceVideoMirror(restartPreview: false);
         StopDevicePreview();
+        _deviceLockMonitor.Stop();
         StopDeviceListPreview();
         _currentDetailDevice = null;
         UpdateDeviceNav(_pinnedDeviceNavDevice);
@@ -710,6 +764,10 @@ public sealed class MainWindow : Window
 
     private void ShowDevices(bool refreshState = true)
     {
+        if (DeviceDetailRefreshPolicy.ShouldExitFullScreen(_devicePreviewFullScreen, enteringDeviceDetail: false))
+            ExitDevicePreviewFullScreen();
+        _deviceLockMonitor.Stop();
+        _currentDetailDevice = null;
         _contentHost.Children.Clear();
         _deviceCardPreviews.Clear();
         var panel = PageStack();
@@ -969,7 +1027,10 @@ public sealed class MainWindow : Window
         StopDevicePreview();
         StopDeviceListPreview();
         if (wasCurrentDetail)
+        {
+            _deviceLockMonitor.Stop();
             _currentDetailDevice = null;
+        }
         if (wasPinned)
         {
             _pinnedDeviceNavDevice = null;
@@ -1109,7 +1170,7 @@ public sealed class MainWindow : Window
             CornerRadius = new CornerRadius(20),
             BorderBrush = BorderBrush(),
             BorderThickness = new Thickness(1),
-            Background = SurfaceBrush(),
+            Background = FrostedSurfaceBrush(),
             Padding = new Thickness(20),
             Child = root,
         };
@@ -1129,11 +1190,22 @@ public sealed class MainWindow : Window
         return card;
     }
 
+    private void ExitDevicePreviewFullScreen()
+    {
+        if (!_devicePreviewFullScreen)
+            return;
+        AppWindow.SetPresenter(Microsoft.UI.Windowing.AppWindowPresenterKind.Default);
+        _root.RowDefinitions[0].Height = new GridLength(36);
+        _root.RowDefinitions[2].Height = new GridLength(88);
+        _contentFrame.Margin = new Thickness(10, 4, 10, 8);
+        _devicePreviewFullScreen = false;
+    }
     private void ShowDeviceDetail(DeviceModel device, bool refreshState = true)
     {
         _activePageScroller = null;
         StopDeviceVideoMirror(restartPreview: false);
         StopDevicePreview();
+        _deviceLockMonitor.Stop();
         StopDeviceListPreview();
         _currentDetailDevice = device;
         _pinnedDeviceNavDevice = device;
@@ -1162,6 +1234,17 @@ public sealed class MainWindow : Window
                 new ColumnDefinition { Width = GridLength.Auto },
             },
         };
+        var companionInstallStatus = new CompanionInstallStatusView(new CompanionInstallStatusPalette(
+            SurfaceAltBrush(),
+            BorderLightBrush(),
+            PrimaryTextBrush(),
+            SecondaryTextBrush(),
+            PrimaryBrush(),
+            new SolidColorBrush(Colors.MediumSeaGreen),
+            new SolidColorBrush(Colors.Orange),
+            new SolidColorBrush(Colors.OrangeRed)));
+        if (_companionInstall.TryGetLatestStatus(device.DeviceId, out var latestInstallStatus) && latestInstallStatus is not null)
+            companionInstallStatus.Apply(latestInstallStatus);
         var back = IconSquareButton("‹", 56);
         back.HorizontalAlignment = HorizontalAlignment.Left;
         back.Click += (_, _) => Navigate("设备");
@@ -1186,7 +1269,7 @@ public sealed class MainWindow : Window
         var companionInstall = SecondaryButton("安装伴侣 App");
         companionInstall.VerticalAlignment = VerticalAlignment.Center;
         companionInstall.Visibility = device.IsCompanionInstalled ? Visibility.Collapsed : Visibility.Visible;
-        companionInstall.Click += async (_, _) => await InstallCompanionFromDetailAsync(device, companionInstall);
+        companionInstall.Click += async (_, _) => await InstallCompanionFromDetailAsync(device, companionInstall, companionInstallStatus);
         Grid.SetColumn(companionInstall, 3);
         headerRow.Children.Add(companionInstall);
         var connectionAction = DetailActionSurface(device.IsConnected ? "断开连接" : "连接设备");
@@ -1207,7 +1290,11 @@ public sealed class MainWindow : Window
         headerRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         headerRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         headerRow.Children.Add(detailDelete);
-        panel.Children.Add(headerRow);
+        panel.Children.Add(new StackPanel
+        {
+            Spacing = 10,
+            Children = { headerRow, companionInstallStatus.Root },
+        });
 
         var layout = new Grid
         {
@@ -1264,7 +1351,7 @@ public sealed class MainWindow : Window
             if (ReferenceEquals(_detailPreviewLayer, previewLayer))
                 UpdateDetailVideoSurfaceBounds();
         };
-        AttachPreviewTouchHandlers(previewLayer, previewImage, device);
+        AttachPreviewTouchHandlers(previewLayer, device);
         var previewControls = BuildPreviewControls(device, previewImage, previewStatus, lockedPreview);
         var previewShell = new Grid
         {
@@ -1285,14 +1372,17 @@ public sealed class MainWindow : Window
         };
         Grid.SetColumn(previewLayer, 0);
         Grid.SetColumn(previewControls, 1);
-        var previewContent = new Grid
+        var fullScreenButton = SecondaryButton("全屏");
+        var drawerButton = SecondaryButton("控制面板");
+        drawerButton.Visibility = Visibility.Collapsed;
+        var previewHeading = new Grid
         {
-            MinHeight = 0,
-            VerticalAlignment = VerticalAlignment.Stretch,
-            RowDefinitions =
+            Margin = new Thickness(0, 0, 0, 12),
+            ColumnDefinitions =
             {
-                new RowDefinition { Height = GridLength.Auto },
-                new RowDefinition(),
+                new ColumnDefinition(),
+                new ColumnDefinition { Width = GridLength.Auto },
+                new ColumnDefinition { Width = GridLength.Auto },
             },
             Children =
             {
@@ -1302,10 +1392,22 @@ public sealed class MainWindow : Window
                     FontSize = 18,
                     FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
                     Foreground = PrimaryTextBrush(),
-                    Margin = new Thickness(0, 0, 0, 12),
+                    VerticalAlignment = VerticalAlignment.Center,
                 },
-                previewShell,
+                WithColumn(drawerButton, 1),
+                WithColumn(fullScreenButton, 2),
             },
+        };
+        var previewContent = new Grid
+        {
+            MinHeight = 0,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            RowDefinitions =
+            {
+                new RowDefinition { Height = GridLength.Auto },
+                new RowDefinition(),
+            },
+            Children = { previewHeading, previewShell },
         };
         var previewCard = Card(previewContent);
         previewCard.VerticalAlignment = VerticalAlignment.Stretch;
@@ -1318,11 +1420,69 @@ public sealed class MainWindow : Window
         Grid.SetColumn(deviceSplitHandle, 1);
         layout.Children.Add(deviceSplitHandle);
 
-        var toolsCard = Card(BuildDeviceToolTabs(device));
+        var collapseDrawerButton = SecondaryButton("收起控制");
+        collapseDrawerButton.HorizontalAlignment = HorizontalAlignment.Right;
+        collapseDrawerButton.Visibility = Visibility.Collapsed;
+        var deviceToolTabs = (FrameworkElement)BuildDeviceToolTabs(device);
+        Grid.SetRow(deviceToolTabs, 1);
+        var toolsContent = new Grid
+        {
+            RowSpacing = 10,
+            RowDefinitions =
+            {
+                new RowDefinition { Height = GridLength.Auto },
+                new RowDefinition(),
+            },
+            Children =
+            {
+                collapseDrawerButton,
+                deviceToolTabs,
+            },
+        };
+        var toolsCard = Card(toolsContent);
         toolsCard.VerticalAlignment = VerticalAlignment.Stretch;
+        toolsCard.HorizontalAlignment = HorizontalAlignment.Stretch;
         toolsCard.MinHeight = 0;
         Grid.SetColumn(toolsCard, 2);
+        Canvas.SetZIndex(toolsCard, 20);
         layout.Children.Add(toolsCard);
+
+        void ApplyPreviewFullScreen(bool enabled)
+        {
+            _devicePreviewFullScreen = enabled;
+            AppWindow.SetPresenter(enabled
+                ? Microsoft.UI.Windowing.AppWindowPresenterKind.FullScreen
+                : Microsoft.UI.Windowing.AppWindowPresenterKind.Default);
+            _root.RowDefinitions[0].Height = enabled ? new GridLength(0) : new GridLength(36);
+            _root.RowDefinitions[2].Height = enabled ? new GridLength(0) : new GridLength(88);
+            _contentFrame.Margin = enabled ? new Thickness(0) : new Thickness(10, 4, 10, 8);
+            headerRow.Visibility = enabled ? Visibility.Collapsed : Visibility.Visible;
+            Grid.SetColumnSpan(previewCard, enabled ? 3 : 1);
+            Canvas.SetZIndex(previewCard, enabled ? 10 : 0);
+            deviceSplitHandle.Visibility = enabled ? Visibility.Collapsed : Visibility.Visible;
+            toolsCard.Visibility = enabled ? Visibility.Collapsed : Visibility.Visible;
+            toolsCard.HorizontalAlignment = enabled ? HorizontalAlignment.Right : HorizontalAlignment.Stretch;
+            toolsCard.Width = enabled ? _deviceToolPaneWidth : double.NaN;
+            drawerButton.Visibility = enabled ? Visibility.Visible : Visibility.Collapsed;
+            drawerButton.Content = "控制面板";
+            collapseDrawerButton.Visibility = Visibility.Collapsed;
+            fullScreenButton.Content = enabled ? "退出全屏" : "全屏";
+        }
+
+        fullScreenButton.Click += (_, _) => ApplyPreviewFullScreen(!_devicePreviewFullScreen);
+        drawerButton.Click += (_, _) =>
+        {
+            var show = toolsCard.Visibility != Visibility.Visible;
+            toolsCard.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+            collapseDrawerButton.Visibility = DeviceDetailRefreshPolicy.ShouldShowDrawerClose(_devicePreviewFullScreen, show)
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        };
+        collapseDrawerButton.Click += (_, _) =>
+        {
+            toolsCard.Visibility = Visibility.Collapsed;
+            collapseDrawerButton.Visibility = Visibility.Collapsed;
+        };
         Grid.SetRow(layout, 1);
         panel.Children.Add(layout);
         _contentHost.Children.Add(panel);
@@ -1331,7 +1491,16 @@ public sealed class MainWindow : Window
         _detailVideoSurface = videoSurface;
         _detailPreviewStatus = previewStatus;
         _detailLockedPreview = lockedPreview;
-        StartDevicePreview(device, previewImage, previewStatus, lockedPreview);
+        var companionConnected = device.IsCompanionConnected || _companionQuic.IsDeviceConnected(device.DeviceId);
+        if (device.IsConnected || companionConnected)
+            _deviceLockMonitor.Start(device.DeviceId);
+        else
+            _deviceLockMonitor.Stop();
+        ApplyPreviewLockState(_deviceLockMonitor.GetCurrentState(device.DeviceId), previewImage, previewStatus, lockedPreview);
+        if (device.IsConnected)
+            StartDevicePreview(device, previewImage, previewStatus, lockedPreview);
+        if (_devicePreviewFullScreen)
+            ApplyPreviewFullScreen(enabled: true);
         if (refreshState)
             _ = RefreshDeviceDetailStateAsync(device);
     }
@@ -1409,14 +1578,13 @@ public sealed class MainWindow : Window
             try
             {
                 var result = await action();
-                if (!result.Success)
-                    device.IsConnected = false;
+                MarkDeviceOfflineIfUnavailable(device, result);
                 if (showSuccess || !result.Success)
                     Notify(result.Success ? "操作已执行" : "操作失败", result.Success ? label : FormatCommandResult(result), result.Success ? InfoBarSeverity.Success : InfoBarSeverity.Error);
             }
             catch (Exception ex)
             {
-                device.IsConnected = false;
+                MarkDeviceOfflineIfUnavailable(device, ex);
                 Notify("操作失败", ex.Message, InfoBarSeverity.Error);
             }
         };
@@ -1430,19 +1598,20 @@ public sealed class MainWindow : Window
         {
             if (!await EnsureDeviceReadyAsync(device, false))
             {
-                status.Text = $"设备离线：{device.DeviceId}";
-                status.Visibility = Visibility.Visible;
+                ApplyPreviewLockState(DeviceLockState.Unknown, previewImage, status, lockedPreview);
                 return new AdbCommandResult(1, string.Empty, "设备离线。");
             }
 
             var lockState = await _deviceLock.GetStateAsync(device.DeviceId);
+            var projectionActive = _scrcpySession?.IsRunning == true &&
+                string.Equals(_scrcpySession.DeviceId, device.DeviceId, StringComparison.Ordinal);
             if (lockState != DeviceLockState.Unlocked)
             {
-                ApplyPreviewLockState(lockState, previewImage, status, lockedPreview);
+                ApplyPreviewLockState(lockState, previewImage, status, lockedPreview, projectionActive);
                 return new AdbCommandResult(0, "设备处于锁屏或锁屏状态未知，已暂停截图。", string.Empty);
             }
 
-            ApplyPreviewLockState(lockState, previewImage, status, lockedPreview);
+            ApplyPreviewLockState(lockState, previewImage, status, lockedPreview, projectionActive);
             status.Text = "正在刷新截图...";
             status.Visibility = Visibility.Visible;
             var png = await _adb.ScreencapPngAsync(device.DeviceId);
@@ -1455,7 +1624,7 @@ public sealed class MainWindow : Window
         {
             if (IsPreviewFrameRequestCurrent("detail", device.DeviceId, serial))
             {
-                device.IsConnected = false;
+                MarkDeviceOfflineIfUnavailable(device, ex);
                 status.Text = $"截图失败：{ex.Message}";
                 status.Visibility = Visibility.Visible;
             }
@@ -1473,6 +1642,16 @@ public sealed class MainWindow : Window
             Foreground = PrimaryTextBrush(),
             HorizontalAlignment = HorizontalAlignment.Center,
             TextWrapping = TextWrapping.Wrap,
+        };
+        var hint = new TextBlock
+        {
+            Text = string.Empty,
+            FontSize = 12,
+            Foreground = SecondaryTextBrush(),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            TextAlignment = TextAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+            MaxWidth = 420,
         };
         var pinText = new TextBlock
         {
@@ -1608,17 +1787,33 @@ public sealed class MainWindow : Window
                 Spacing = 12,
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
-                Children = { state, unlockActions, keypad },
+                Children = { state, hint, unlockActions, keypad },
             },
         };
-        return new LockedPreviewSurface(root, state, pinText, keypad);
+        return new LockedPreviewSurface(root, state, hint, pinText, keypad, unlockActions);
     }
 
-    private void ApplyPreviewLockState(DeviceLockState lockState, Image previewImage, TextBlock status, LockedPreviewSurface lockedPreview)
+    private void ApplyPreviewLockState(
+        DeviceLockState lockState,
+        Image previewImage,
+        TextBlock status,
+        LockedPreviewSurface lockedPreview,
+        bool projectionActive = false)
     {
-        if (lockState == DeviceLockState.Unlocked)
+        var detailDevice = _currentDetailDevice;
+        var adbConnected = detailDevice?.IsConnected == true;
+        var companionConnected = detailDevice is not null &&
+            (detailDevice.IsCompanionConnected || _companionQuic.IsDeviceConnected(detailDevice.DeviceId));
+        var presentation = DeviceDetailRefreshPolicy.ResolvePreviewPresentation(
+            adbConnected,
+            companionConnected,
+            lockState,
+            projectionActive);
+        if (presentation.Overlay == DevicePreviewOverlay.None)
         {
-            previewImage.Visibility = Visibility.Visible;
+            previewImage.Visibility = presentation.ShowScreenshot ? Visibility.Visible : Visibility.Collapsed;
+            if (projectionActive)
+                status.Visibility = Visibility.Collapsed;
             lockedPreview.Root.Visibility = Visibility.Collapsed;
             lockedPreview.Keypad.Visibility = Visibility.Collapsed;
             return;
@@ -1629,11 +1824,44 @@ public sealed class MainWindow : Window
         previewImage.Visibility = Visibility.Collapsed;
         status.Visibility = Visibility.Collapsed;
         lockedPreview.Root.Visibility = Visibility.Visible;
-        lockedPreview.StateText.Text = lockState == DeviceLockState.Locked
-            ? "设备当前处于锁屏状态"
-            : "无法确认设备锁屏状态，已暂停截图";
-        if (lockState == DeviceLockState.Unknown)
+        lockedPreview.StateText.Text = presentation.Title;
+        lockedPreview.HintText.Text = presentation.Hint;
+        lockedPreview.UnlockActions.Visibility = presentation.ShowUnlockActions
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        if (!presentation.ShowUnlockActions)
             lockedPreview.Keypad.Visibility = Visibility.Collapsed;
+    }
+
+    private void OnDeviceLockStateChanged(object? sender, DeviceLockStateChangedEventArgs args)
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            var device = _currentDetailDevice;
+            if (device is null ||
+                !string.Equals(device.DeviceId, args.DeviceId, StringComparison.Ordinal) ||
+                _detailPreviewImage is null ||
+                _detailPreviewStatus is null ||
+                _detailLockedPreview is null)
+            {
+                return;
+            }
+
+            var projectionActive = _scrcpySession?.IsRunning == true &&
+                string.Equals(_scrcpySession.DeviceId, args.DeviceId, StringComparison.Ordinal);
+            if (projectionActive)
+            {
+                _scrcpySession?.WriteDiagnostic(
+                    "device.lock_state.changed",
+                    $"previous={args.PreviousState}; current={args.State}; error={args.ErrorCode ?? "none"}");
+            }
+            ApplyPreviewLockState(
+                args.State,
+                _detailPreviewImage,
+                _detailPreviewStatus,
+                _detailLockedPreview,
+                projectionActive);
+        });
     }
 
     private async Task<AdbCommandResult> UnlockDeviceAsync(DeviceModel device, string pin)
@@ -1653,7 +1881,14 @@ public sealed class MainWindow : Window
             if (_detailPreviewImage is not null && _detailPreviewStatus is not null && _detailLockedPreview is not null)
             {
                 var state = await _deviceLock.GetStateAsync(device.DeviceId);
-                ApplyPreviewLockState(state, _detailPreviewImage, _detailPreviewStatus, _detailLockedPreview);
+                var projectionActive = _scrcpySession?.IsRunning == true &&
+                    string.Equals(_scrcpySession.DeviceId, device.DeviceId, StringComparison.Ordinal);
+                ApplyPreviewLockState(
+                    state,
+                    _detailPreviewImage,
+                    _detailPreviewStatus,
+                    _detailLockedPreview,
+                    projectionActive);
             }
         }
         else
@@ -2001,6 +2236,9 @@ public sealed class MainWindow : Window
         bool? previousAdbConnected = null)
     {
         var refreshVersion = Interlocked.Increment(ref _deviceDetailStateRefreshVersion);
+        if (Volatile.Read(ref _deviceDetailOperationDepth) > 0)
+            return;
+
         var wasAdbConnected = previousAdbConnected ?? device.IsConnected;
         var wasCompanionInstalled = device.IsCompanionInstalled;
         var wasCompanionConnected = device.IsCompanionConnected;
@@ -2048,92 +2286,108 @@ public sealed class MainWindow : Window
             string.Equals(_scrcpySession.DeviceId, device.DeviceId, StringComparison.Ordinal);
         if (refreshVersion == _deviceDetailStateRefreshVersion &&
             ReferenceEquals(_currentDetailDevice, device) &&
-            DeviceDetailRefreshPolicy.ShouldRebuild(videoActive, adbStateChanged, companionStateChanged))
+            DeviceDetailRefreshPolicy.ShouldRebuild(
+                videoActive,
+                adbStateChanged,
+                companionStateChanged,
+                detailOperationActive: Volatile.Read(ref _deviceDetailOperationDepth) > 0))
         {
             ShowDeviceDetail(device, refreshState: false);
         }
     }
 
-    private async Task InstallCompanionFromDetailAsync(DeviceModel device, Button installButton)
+    private async Task InstallCompanionFromDetailAsync(
+        DeviceModel device,
+        Button installButton,
+        CompanionInstallStatusView installStatus)
     {
-        if (!await EnsureDeviceReadyAsync(device))
-        {
-            Notify("需要 ADB 连接", "请先让该设备处于 ADB 已连接状态，再安装伴侣 App。", InfoBarSeverity.Warning);
-            return;
-        }
-
         var originalContent = installButton.Content;
+        Interlocked.Increment(ref _deviceDetailOperationDepth);
+        Interlocked.Increment(ref _deviceDetailStateRefreshVersion);
         installButton.IsEnabled = false;
-        installButton.Content = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 8,
-            Children =
-            {
-                new TextBlock { Text = "•••", Foreground = PrimaryBrush(), FontSize = 14, VerticalAlignment = VerticalAlignment.Center },
-                new TextBlock
-                {
-                    Text = "安装中...",
-                    Foreground = SecondaryTextBrush(),
-                    VerticalAlignment = VerticalAlignment.Center,
-                },
-            },
-        };
+        installButton.Content = "安装进行中";
+        Notify("正在安装伴侣 App", "安装进度已显示在当前设备详情页，请保持手机解锁。", InfoBarSeverity.Informational);
 
         try
         {
-            var install = await _companion.InstallAsync(device);
-            if (!install.Success)
-            {
-                Notify("伴侣 App 安装失败", FormatCommandResult(install), InfoBarSeverity.Error);
-                return;
-            }
-
-            device.IsCompanionInstalled = true;
-            installButton.Visibility = Visibility.Collapsed;
-            var configure = await _companion.ConfigureConnectionAsync(device, _settings.Current.QuicPort);
-            device.IsCompanionConnected = configure.Success && await _companion.IsResponsiveAsync(device);
+            var result = await _companionInstall.RunAsync(
+                device,
+                _settings.Current.QuicPort,
+                status =>
+                {
+                    if (_currentDetailDevice?.DeviceId == device.DeviceId)
+                        installStatus.Apply(status);
+                });
+            installButton.Visibility = result.PackageInstalled ? Visibility.Collapsed : Visibility.Visible;
+            UpdateDetailConnectionBadges(device);
+            var message = result.Error is null
+                ? $"安装和连接均已完成。trace {result.TraceId[..12]}"
+                : $"{result.Error.Message} {result.Error.Suggestion} 错误码：{result.Error.ErrorCode}；trace：{result.TraceId[..12]}";
             Notify(
-                configure.Success ? "伴侣 App 已安装" : "伴侣 App 已安装但连接配置失败",
-                configure.Success ? $"已通过 ADB 下发 QUIC 连接地址，端口 {_companionQuic.Port}。" : FormatCommandResult(configure),
-                configure.Success ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
-            if (_currentDetailDevice?.DeviceId == device.DeviceId)
-                ShowDeviceDetail(device, refreshState: false);
+                result.Success
+                    ? result.CompanionConnected ? "伴侣 App 安装成功" : "伴侣 App 已安装，连接待完成"
+                    : "伴侣 App 安装失败",
+                message,
+                result.Success
+                    ? result.CompanionConnected ? InfoBarSeverity.Success : InfoBarSeverity.Warning
+                    : InfoBarSeverity.Error);
         }
         catch (Exception ex)
         {
-            Notify("伴侣 App 安装失败", ex.Message, InfoBarSeverity.Error);
+            Debug.WriteLine($"Companion install UI binding failed: {ex}");
+            Notify(
+                "伴侣 App 安装流程异常",
+                $"安装流程未能完成，请查看 {CompanionInstallLogger.LogPath} 后重试。",
+                InfoBarSeverity.Error);
         }
         finally
         {
+            Interlocked.Decrement(ref _deviceDetailOperationDepth);
+            Interlocked.Increment(ref _deviceDetailStateRefreshVersion);
             installButton.IsEnabled = true;
             installButton.Content = originalContent;
         }
     }
 
-    private void AttachPreviewTouchHandlers(Grid previewLayer, Image previewImage, DeviceModel device)
+    private void AttachPreviewTouchHandlers(Grid previewLayer, DeviceModel device)
     {
         previewLayer.PointerPressed += (_, e) =>
         {
-            if (!e.GetCurrentPoint(previewLayer).Properties.IsLeftButtonPressed)
+            var point = e.GetCurrentPoint(previewLayer);
+            if (!point.Properties.IsLeftButtonPressed ||
+                !TryMapPreviewPoint(previewLayer, device.DeviceId, point.Position, out var mapped))
                 return;
 
-            var point = e.GetCurrentPoint(previewLayer);
-            _previewTouch = new PreviewTouchState(device, previewImage, point.Position, DateTimeOffset.Now, point.PointerId);
+            var route = IsScrcpyTouchActive(device)
+                ? PreviewTouchRoute.Projection
+                : PreviewTouchRoute.ScreenshotAdb;
+            _previewTouch = new PreviewTouchState(
+                device,
+                point.Position,
+                DateTimeOffset.Now,
+                point.PointerId,
+                route,
+                mapped,
+                mapped);
             previewLayer.CapturePointer(e.Pointer);
             e.Handled = true;
-            if (IsScrcpyTouchActive(device))
-                _ = SendScrcpyTouchFromPreviewAsync(previewLayer, device, point.Position, point.PointerId, action: 0);
+            if (route == PreviewTouchRoute.Projection)
+                _ = SendProjectionTouchAsync(device, mapped, point.PointerId, action: 0);
         };
 
         previewLayer.PointerMoved += (_, e) =>
         {
-            if (_previewTouch is not { } touch || touch.PointerId != e.Pointer.PointerId || !IsScrcpyTouchActive(device))
+            if (_previewTouch is not { Route: PreviewTouchRoute.Projection } touch ||
+                touch.PointerId != e.Pointer.PointerId ||
+                !IsScrcpyTouchActive(device))
                 return;
             var point = e.GetCurrentPoint(previewLayer);
-            if (!point.Properties.IsLeftButtonPressed)
+            if (!point.Properties.IsLeftButtonPressed ||
+                !TryMapPreviewPoint(previewLayer, device.DeviceId, point.Position, out var mapped) ||
+                mapped.Space != touch.StartDevicePosition.Space)
                 return;
-            _ = SendScrcpyTouchFromPreviewAsync(previewLayer, device, point.Position, point.PointerId, action: 2);
+            _previewTouch = touch with { LastDevicePosition = mapped };
+            _ = SendProjectionTouchAsync(device, mapped, point.PointerId, action: 2);
             e.Handled = true;
         };
 
@@ -2147,41 +2401,73 @@ public sealed class MainWindow : Window
             previewLayer.ReleasePointerCapture(e.Pointer);
             e.Handled = true;
             var endPoint = e.GetCurrentPoint(previewLayer).Position;
-            if (IsScrcpyTouchActive(device))
-                await SendScrcpyTouchFromPreviewAsync(previewLayer, device, endPoint, e.Pointer.PointerId, action: 1);
+            if (touch.Route == PreviewTouchRoute.Projection)
+            {
+                ProjectionTouchPosition? candidate = TryMapPreviewPoint(
+                    previewLayer,
+                    device.DeviceId,
+                    endPoint,
+                    out var mapped)
+                    ? mapped
+                    : null;
+                var releasePosition = PreviewCoordinateMapper.ResolveGesturePosition(
+                    touch.LastDevicePosition,
+                    candidate);
+                await SendProjectionTouchAsync(
+                    device,
+                    releasePosition,
+                    e.Pointer.PointerId,
+                    action: 1,
+                    isTapGesture: PreviewInteractionPolicy.IsTapGesture(
+                        touch.StartPoint.X,
+                        touch.StartPoint.Y,
+                        endPoint.X,
+                        endPoint.Y));
+            }
             else
+            {
                 await SendPreviewTouchAsync(previewLayer, touch, endPoint);
+            }
         };
 
         previewLayer.PointerCanceled += (_, e) =>
         {
-            if (_previewTouch?.PointerId == e.Pointer.PointerId)
-                _previewTouch = null;
+            var touch = _previewTouch;
+            if (touch?.PointerId != e.Pointer.PointerId)
+                return;
+            _previewTouch = null;
             previewLayer.ReleasePointerCapture(e.Pointer);
+            e.Handled = true;
+            if (touch.Route == PreviewTouchRoute.Projection)
+                _ = CancelProjectionTouchAsync(touch.Device, touch.LastDevicePosition, touch.PointerId);
         };
 
-        previewLayer.PointerCaptureLost += (_, _) => _previewTouch = null;
+        previewLayer.PointerCaptureLost += (_, _) =>
+        {
+            var touch = _previewTouch;
+            _previewTouch = null;
+            if (touch?.Route == PreviewTouchRoute.Projection)
+                _ = CancelProjectionTouchAsync(touch.Device, touch.LastDevicePosition, touch.PointerId);
+        };
     }
 
     private bool IsScrcpyTouchActive(DeviceModel device)
         => _scrcpySession?.IsRunning == true &&
             string.Equals(_scrcpySession.DeviceId, device.DeviceId, StringComparison.Ordinal);
 
-    private async Task SendScrcpyTouchFromPreviewAsync(
-        FrameworkElement previewLayer,
+    private async Task SendProjectionTouchAsync(
         DeviceModel device,
-        Point point,
+        ProjectionTouchPosition position,
         uint pointerId,
-        int action)
+        int action,
+        bool isTapGesture = false)
     {
         var session = _scrcpySession;
         if (session?.IsRunning != true || !string.Equals(session.DeviceId, device.DeviceId, StringComparison.Ordinal))
             return;
-        if (!TryMapPreviewPoint(previewLayer, _detailPreviewImage!, device.DeviceId, point, out var mapped))
-            return;
         try
         {
-            await session.SendTouchAsync(action, mapped.X, mapped.Y, pointerId);
+            await session.SendTouchAsync(action, position, pointerId, isTapGesture);
         }
         catch (Exception ex)
         {
@@ -2189,10 +2475,28 @@ public sealed class MainWindow : Window
         }
     }
 
+    private async Task CancelProjectionTouchAsync(
+        DeviceModel device,
+        ProjectionTouchPosition position,
+        uint pointerId)
+    {
+        var session = _scrcpySession;
+        if (session?.IsRunning != true || !string.Equals(session.DeviceId, device.DeviceId, StringComparison.Ordinal))
+            return;
+        try
+        {
+            await session.CancelTouchAsync(position, pointerId);
+        }
+        catch (Exception ex)
+        {
+            Notify("scrcpy 触控取消失败", ex.Message, InfoBarSeverity.Error);
+        }
+    }
+
     private async Task SendPreviewTouchAsync(FrameworkElement previewLayer, PreviewTouchState touch, Point endPoint)
     {
-        if (!TryMapPreviewPoint(previewLayer, touch.Image, touch.Device.DeviceId, touch.StartPoint, out var start) ||
-            !TryMapPreviewPoint(previewLayer, touch.Image, touch.Device.DeviceId, endPoint, out var end))
+        var start = touch.StartDevicePosition;
+        if (!TryMapPreviewPoint(previewLayer, start.Space, endPoint, out var end))
             return;
 
         var dispatchVersion = Interlocked.Increment(ref _previewTouchDispatchVersion);
@@ -2215,8 +2519,11 @@ public sealed class MainWindow : Window
             }
 
             var elapsed = Math.Max(1, (int)(DateTimeOffset.Now - touch.StartedAt).TotalMilliseconds);
-            var distance = Math.Sqrt(Math.Pow(end.X - start.X, 2) + Math.Pow(end.Y - start.Y, 2));
-            var result = distance < 8
+            var result = PreviewInteractionPolicy.IsTapGesture(
+                touch.StartPoint.X,
+                touch.StartPoint.Y,
+                endPoint.X,
+                endPoint.Y)
                 ? elapsed >= 500
                     ? await _adb.SwipeAsync(touch.Device.DeviceId, start.X, start.Y, start.X, start.Y, Math.Max(650, elapsed))
                     : await _adb.TapAsync(touch.Device.DeviceId, start.X, start.Y)
@@ -2229,7 +2536,7 @@ public sealed class MainWindow : Window
                     PreviewInteractionPolicy.CalculateSwipeDurationMs(elapsed));
             if (!result.Success)
             {
-                touch.Device.IsConnected = false;
+                MarkDeviceOfflineIfUnavailable(touch.Device, result);
                 Notify("触控失败", FormatCommandResult(result), InfoBarSeverity.Error);
             }
         }
@@ -2239,32 +2546,40 @@ public sealed class MainWindow : Window
         }
     }
 
-    private bool TryMapPreviewPoint(FrameworkElement previewLayer, Image image, string deviceId, Point point, out (int X, int Y) devicePoint)
+    private bool TryMapPreviewPoint(
+        FrameworkElement previewLayer,
+        string deviceId,
+        Point point,
+        out ProjectionTouchPosition devicePoint)
     {
         devicePoint = default;
-        if (!_previewFrameSizes.TryGetValue($"detail:{deviceId}", out var frame) || frame.Width <= 0 || frame.Height <= 0)
-            return false;
+        var screenshotSpace = _previewImageFrameSizes.TryGetValue($"detail:{deviceId}", out var screenshot)
+            ? new PreviewCoordinateSpace(screenshot.Width, screenshot.Height)
+            : default;
+        var session = _scrcpySession;
+        var projectionActive = session?.IsRunning == true &&
+            string.Equals(session.DeviceId, deviceId, StringComparison.Ordinal);
+        var projectionFrame = projectionActive ? session!.FrameSize : default;
+        var coordinateSpace = PreviewCoordinateMapper.ResolveActiveSpace(
+            screenshotSpace,
+            new PreviewCoordinateSpace(projectionFrame.Width, projectionFrame.Height),
+            projectionActive);
+        return TryMapPreviewPoint(previewLayer, coordinateSpace, point, out devicePoint);
+    }
 
-        var layerWidth = previewLayer.ActualWidth;
-        var layerHeight = previewLayer.ActualHeight;
-        if (layerWidth <= 0 || layerHeight <= 0)
-            return false;
-
-        // The preview image uses Stretch.Uniform, so clicks on letterboxed margins must not be sent to the device.
-        var scale = Math.Min(layerWidth / frame.Width, layerHeight / frame.Height);
-        var renderedWidth = frame.Width * scale;
-        var renderedHeight = frame.Height * scale;
-        var offsetX = (layerWidth - renderedWidth) / 2d;
-        var offsetY = (layerHeight - renderedHeight) / 2d;
-        var imageX = point.X - offsetX;
-        var imageY = point.Y - offsetY;
-        if (imageX < 0 || imageY < 0 || imageX > renderedWidth || imageY > renderedHeight)
-            return false;
-
-        var x = (int)Math.Clamp(Math.Round(imageX / scale), 0, frame.Width - 1);
-        var y = (int)Math.Clamp(Math.Round(imageY / scale), 0, frame.Height - 1);
-        devicePoint = (x, y);
-        return true;
+    private static bool TryMapPreviewPoint(
+        FrameworkElement previewLayer,
+        PreviewCoordinateSpace coordinateSpace,
+        Point point,
+        out ProjectionTouchPosition devicePoint)
+    {
+        return PreviewCoordinateMapper.TryMapUniform(
+            previewLayer.ActualWidth,
+            previewLayer.ActualHeight,
+            coordinateSpace,
+            point.X,
+            point.Y,
+            out devicePoint);
     }
 
     private UIElement BuildDeviceToolTabs(DeviceModel device)
@@ -2298,12 +2613,6 @@ public sealed class MainWindow : Window
         var buttons = new List<Button>();
         FrameworkElement? fillViewportContent = null;
 
-        // 根据连接状态决定能力可用性：
-        // - ADB 未连接：所有依赖 ADB 的功能禁用
-        // - APP 未连接：仅影响 Companion 增强能力（硬件信息中部分字段）
-        // - 两个都未连接：全部禁用
-        var adbConnected = device.IsConnected;
-
         var items = new (string Title, Symbol Icon, Func<UIElement> Build, bool RequiresAdb)[]
         {
             ("控制", Symbol.Favorite, () => BuildDeviceControls(device), true),
@@ -2316,8 +2625,10 @@ public sealed class MainWindow : Window
 
         void Select(int index)
         {
-            // ADB 未连接时，所有依赖 ADB 的 tab 不可选中，显示未连接提示。
-            if (items[index].RequiresAdb && !adbConnected)
+            // Read the live model state on every click. The detail page is built before the
+            // asynchronous connectivity refresh, so capturing IsConnected here leaves tabs
+            // permanently disabled even after the header changes to "ADB connected".
+            if (!DeviceDetailRefreshPolicy.CanUseAdbTool(items[index].RequiresAdb, device.IsConnected))
             {
                 contentScroller.Content = BuildDisconnectedNotice();
                 contentScroller.ChangeView(null, 0, null, true);
@@ -2349,9 +2660,6 @@ public sealed class MainWindow : Window
         {
             var index = i;
             var tab = DeviceToolTabButton(items[i].Title, items[i].Icon);
-            // ADB 未连接时禁用所有依赖 ADB 的 tab
-            if (items[i].RequiresAdb && !adbConnected)
-                tab.IsEnabled = false;
             tab.Click += (_, _) => Select(index);
             buttons.Add(tab);
             tabs.Children.Add(tab);
@@ -2606,158 +2914,135 @@ public sealed class MainWindow : Window
 
     private UIElement BuildAdbTerminal(DeviceModel device)
     {
+        const string prompt = "$ adb shell ";
         var commandExecuting = false;
-        var input = RoundedTextBox("wm size 或 pm list packages");
-        var output = new RichTextBlock
+        var promptStart = prompt.Length;
+        var historyIndex = 0;
+        var history = new List<string>();
+        var terminal = new TextBox
         {
-            TextWrapping = TextWrapping.Wrap,
-            MinHeight = 300,
+            Text = prompt,
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.NoWrap,
+            MinHeight = 360,
             FontFamily = new FontFamily("Cascadia Mono, Consolas"),
-            FontSize = 12,
+            FontSize = 13,
             Foreground = ShellTextBrush(),
+            Background = ShellBrush(),
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(14),
         };
-        var outputScroller = new ScrollViewer
-        {
-            Content = output,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            Padding = new Thickness(12),
-            MinHeight = 300,
-        };
-        StyleScrollViewer(outputScroller);
-        AttachWheelScrolling(outputScroller);
+        StyleShellTerminal(terminal);
+        ScrollViewer.SetHorizontalScrollBarVisibility(terminal, ScrollBarVisibility.Auto);
+        ScrollViewer.SetVerticalScrollBarVisibility(terminal, ScrollBarVisibility.Auto);
+        terminal.SelectionStart = terminal.Text.Length;
 
-        void AddLine(string text, Brush brush)
+        void ReplaceCurrentCommand(string command)
         {
-            var paragraph = new Paragraph { Margin = new Thickness(0, 0, 0, 3) };
-            paragraph.Inlines.Add(new Run { Text = text, Foreground = brush });
-            output.Blocks.Add(paragraph);
+            terminal.Text = terminal.Text[..promptStart] + command;
+            terminal.SelectionStart = terminal.Text.Length;
         }
 
-        void RenderCommand(string command)
-        {
-            output.Blocks.Clear();
-            var paragraph = new Paragraph { Margin = new Thickness(0, 0, 0, 5) };
-            paragraph.Inlines.Add(new Run { Text = $"adb -s {device.DeviceId} shell ", Foreground = PrimaryBrush() });
-            var tokens = TerminalSyntaxHighlighter.Tokenize(command);
-            for (var index = 0; index < tokens.Count; index++)
-            {
-                var token = tokens[index];
-                paragraph.Inlines.Add(new Run
-                {
-                    Text = (index == 0 ? string.Empty : " ") + token.Text,
-                    Foreground = TerminalTokenBrush(token.Kind),
-                });
-            }
-            output.Blocks.Add(paragraph);
-        }
-
-        void RenderResult(AdbCommandResult result)
-        {
-            var combined = FormatCommandResult(result).Replace("\r", string.Empty, StringComparison.Ordinal);
-            foreach (var line in combined.Split('\n'))
-                AddLine(line, TerminalSyntaxHighlighter.IsErrorLine(line) || !result.Success ? TerminalErrorBrush() : ShellTextBrush());
-            _ = DispatcherQueue.TryEnqueue(() => outputScroller.ChangeView(null, outputScroller.ScrollableHeight, null, false));
-        }
-
-        var run = PrimaryButton("运行");
         async Task ExecuteAsync()
         {
-            var command = input.Text.Trim();
-            if (commandExecuting || string.IsNullOrWhiteSpace(command))
+            if (commandExecuting)
                 return;
+            var command = terminal.Text[promptStart..].Trim();
+            if (string.IsNullOrWhiteSpace(command))
+                return;
+
             commandExecuting = true;
-            input.IsReadOnly = true;
-            run.IsEnabled = false;
-            RenderCommand(command);
-            AddLine("执行中...", MutedBrush());
+            terminal.IsReadOnly = true;
+            history.Remove(command);
+            history.Add(command);
+            historyIndex = history.Count;
+            terminal.Text = terminal.Text[..promptStart] + command + Environment.NewLine + "正在执行...";
+            terminal.SelectionStart = terminal.Text.Length;
             try
             {
+                string response;
                 if (!await EnsureDeviceReadyAsync(device))
-                    AddLine("设备离线。", TerminalErrorBrush());
+                {
+                    response = "设备离线。";
+                }
                 else
                 {
                     var result = await _adb.ShellAsync(device.DeviceId, command);
-                    RenderCommand(command);
-                    RenderResult(result);
-                    if (!result.Success)
-                        device.IsConnected = false;
+                    response = FormatCommandResult(result).TrimEnd();
+                    MarkDeviceOfflineIfUnavailable(device, result);
                 }
+
+                var executingMarker = terminal.Text.LastIndexOf("正在执行...", StringComparison.Ordinal);
+                if (executingMarker >= 0)
+                    terminal.Text = terminal.Text[..executingMarker] + response;
             }
             catch (Exception ex)
             {
-                device.IsConnected = false;
-                RenderCommand(command);
-                AddLine(ex.Message, TerminalErrorBrush());
+                MarkDeviceOfflineIfUnavailable(device, ex);
+                var executingMarker = terminal.Text.LastIndexOf("正在执行...", StringComparison.Ordinal);
+                if (executingMarker >= 0)
+                    terminal.Text = terminal.Text[..executingMarker] + ex.Message;
             }
             finally
             {
-                input.IsReadOnly = false;
-                run.IsEnabled = true;
+                terminal.Text = terminal.Text.TrimEnd() + Environment.NewLine + prompt;
+                promptStart = terminal.Text.Length;
+                terminal.IsReadOnly = false;
                 commandExecuting = false;
-                input.Focus(FocusState.Programmatic);
+                terminal.SelectionStart = terminal.Text.Length;
+                terminal.Focus(FocusState.Programmatic);
             }
         }
 
-        run.Click += async (_, _) => await ExecuteAsync();
-        input.KeyDown += async (_, e) =>
+        KeyEventHandler terminalKeyHandler = async (_, e) =>
         {
-            if (e.Key is not (VirtualKey.Enter or VirtualKey.Accept) || input.IsReadOnly)
+            if (commandExecuting)
                 return;
-            e.Handled = true;
-            await ExecuteAsync();
-        };
-
-        var prompt = new Grid
-        {
-            ColumnSpacing = 8,
-            ColumnDefinitions =
+            if (e.Key is VirtualKey.Enter or VirtualKey.Accept)
             {
-                new ColumnDefinition { Width = GridLength.Auto },
-                new ColumnDefinition(),
-                new ColumnDefinition { Width = GridLength.Auto },
-            },
+                e.Handled = true;
+                await ExecuteAsync();
+                return;
+            }
+            if (e.Key == VirtualKey.Up && history.Count > 0)
+            {
+                e.Handled = true;
+                historyIndex = Math.Max(0, historyIndex - 1);
+                ReplaceCurrentCommand(history[historyIndex]);
+                return;
+            }
+            if (e.Key == VirtualKey.Down && history.Count > 0)
+            {
+                e.Handled = true;
+                historyIndex = Math.Min(history.Count, historyIndex + 1);
+                ReplaceCurrentCommand(historyIndex == history.Count ? string.Empty : history[historyIndex]);
+                return;
+            }
+            if (terminal.SelectionStart < promptStart)
+                terminal.SelectionStart = terminal.Text.Length;
         };
-        prompt.Children.Add(new TextBlock
+        // TextBox handles Enter internally when AcceptsReturn is enabled. Receive handled
+        // routed events as well so the terminal can execute instead of silently adding a line.
+        terminal.AddHandler(UIElement.KeyDownEvent, terminalKeyHandler, true);
+        terminal.GettingFocus += (_, args) =>
         {
-            Text = "$ adb shell",
-            FontFamily = new FontFamily("Cascadia Mono, Consolas"),
-            FontSize = 12,
-            Foreground = PrimaryBrush(),
-            VerticalAlignment = VerticalAlignment.Center,
-        });
-        Grid.SetColumn(input, 1);
-        prompt.Children.Add(input);
-        Grid.SetColumn(run, 2);
-        prompt.Children.Add(run);
+            if (terminal.SelectionStart < promptStart)
+                terminal.SelectionStart = terminal.Text.Length;
+        };
 
         var stack = ToolStack();
-        stack.Children.Add(BodyText("输入的内容会拼接到当前设备的 adb shell 后执行。"));
+        stack.Children.Add(BodyText("像 Windows 命令终端一样直接输入命令并按 Enter；使用上、下方向键浏览历史命令。"));
         stack.Children.Add(new Border
         {
             CornerRadius = new CornerRadius(14),
             BorderBrush = BorderBrush(),
             BorderThickness = new Thickness(1),
-            Background = SurfaceBrush(),
-            Padding = new Thickness(12),
-            Child = new StackPanel
-            {
-                Spacing = 10,
-                Children =
-                {
-                    prompt,
-                    new Border
-                    {
-                        CornerRadius = new CornerRadius(10),
-                        Background = ShellBrush(),
-                        Child = outputScroller,
-                    },
-                },
-            },
+            Background = ShellBrush(),
+            Child = terminal,
         });
+        _ = DispatcherQueue.TryEnqueue(() => terminal.Focus(FocusState.Programmatic));
         return stack;
     }
-
     private static Brush TerminalTokenBrush(TerminalTokenKind kind)
     {
         return kind switch
@@ -2858,13 +3143,20 @@ public sealed class MainWindow : Window
         var path = RoundedTextBox("/");
         path.MinWidth = 0;
         path.Width = 148;
-        var files = new ListView
+        var fileRows = new StackPanel { Spacing = 4 };
+        var files = new ScrollViewer
         {
+            Content = fileRows,
             MinHeight = 320,
             MaxHeight = 460,
-            SelectionMode = ListViewSelectionMode.Single,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            Padding = new Thickness(6, 6, 10, 6),
         };
-        StyleListView(files);
+        StyleScrollViewer(files);
+        AttachWheelScrolling(files);
+        DeviceFileItem? selectedFile = null;
+        InteractiveSurface? selectedFileSurface = null;
         var status = BodyText(string.Empty);
         status.Visibility = Visibility.Collapsed;
         var loading = ContentLoadingOverlay("正在读取目录...");
@@ -2895,8 +3187,9 @@ public sealed class MainWindow : Window
             path.Text = targetPath;
             status.Visibility = Visibility.Collapsed;
             loading.Visibility = Visibility.Visible;
-            files.ItemsSource = null;
-            files.Items.Clear();
+            fileRows.Children.Clear();
+            selectedFile = null;
+            selectedFileSurface = null;
 
             if (!await EnsureDeviceReadyAsync(device))
             {
@@ -2920,7 +3213,7 @@ public sealed class MainWindow : Window
             }
             if (!result.Success)
             {
-                device.IsConnected = false;
+                MarkDeviceOfflineIfUnavailable(device, result);
                 status.Text = FormatCommandResult(result);
                 status.Visibility = Visibility.Visible;
                 loading.Visibility = Visibility.Collapsed;
@@ -2935,6 +3228,14 @@ public sealed class MainWindow : Window
             foreach (var entry in entries)
             {
                 var row = BuildDeviceFileListItem(entry, previewMode);
+                row.Invoked += (_, _) =>
+                {
+                    if (selectedFileSurface is not null)
+                        selectedFileSurface.IsSelected = false;
+                    selectedFile = entry;
+                    selectedFileSurface = row;
+                    row.IsSelected = true;
+                };
                 row.DoubleTapped += async (_, _) =>
                 {
                     if (entry.IsDirectory)
@@ -2942,7 +3243,7 @@ public sealed class MainWindow : Window
                     else
                         await ShowDeviceFilePreviewAsync(device, entry);
                 };
-                files.Items.Add(row);
+                fileRows.Children.Add(row);
             }
 
             if (entries.Count == 0)
@@ -2974,7 +3275,7 @@ public sealed class MainWindow : Window
         };
         delete.Click += async (_, _) =>
         {
-            var selected = SelectedDeviceFile(files);
+            var selected = selectedFile;
             if (selected is null)
             {
                 Notify("请选择文件", "先在文件列表中选择要删除的文件或文件夹。", InfoBarSeverity.Warning);
@@ -2984,8 +3285,7 @@ public sealed class MainWindow : Window
             if (!await EnsureDeviceReadyAsync(device))
                 return;
             var result = await _adb.ShellAsync(device.DeviceId, $"rm -rf {EscapeShellToken(selected.Path)}");
-            if (!result.Success)
-                device.IsConnected = false;
+            MarkDeviceOfflineIfUnavailable(device, result);
             Notify(result.Success ? "删除命令已执行" : "删除失败", FormatCommandResult(result), result.Success ? InfoBarSeverity.Success : InfoBarSeverity.Error);
             if (result.Success)
                 await LoadDirectoryAsync(path.Text);
@@ -3107,7 +3407,7 @@ public sealed class MainWindow : Window
         };
     }
 
-    private static ListViewItem BuildDeviceFileListItem(DeviceFileItem item, bool previewMode)
+    private static InteractiveSurface BuildDeviceFileListItem(DeviceFileItem item, bool previewMode)
     {
         var icon = new FontIcon
         {
@@ -3214,18 +3514,26 @@ public sealed class MainWindow : Window
             };
         }
 
-        return new ListViewItem
+        var surface = new InteractiveSurface(
+            content,
+            new InteractiveSurfacePalette(
+                TransparentBrush(),
+                HoverBrush(),
+                SurfaceAltBrush(),
+                PrimaryLightBrush(),
+                TransparentBrush(),
+                PrimaryBrush(),
+                PrimaryTextBrush(),
+                PrimaryTextBrush()),
+            new CornerRadius(12),
+            new Thickness(0),
+            preserveContentForeground: true)
         {
             Tag = item,
-            Padding = new Thickness(0),
             Margin = new Thickness(0, 0, 0, 4),
-            Content = content,
         };
-    }
-
-    private static DeviceFileItem? SelectedDeviceFile(ListView files)
-    {
-        return files.SelectedItem is ListViewItem { Tag: DeviceFileItem item } ? item : null;
+        surface.SetAutomationName($"{(item.IsDirectory ? "文件夹" : "文件")} {item.Name}");
+        return surface;
     }
 
     private static IReadOnlyList<DeviceFileItem> ParseDeviceFileList(string directory, string stdout)
@@ -3463,13 +3771,88 @@ public sealed class MainWindow : Window
                 ? FormatMemory(extended)
                 : "当前连接无法获取")));
 
-        content.Children.Add(HardwareSection("电池与温度", "\uEBAA", null,
+        content.Children.Add(HardwareSection("电池与温度", "\uEBAA", BuildHardwareTemperaturePanel(snapshot.Temperatures),
             ("电量", FormatPercent(snapshot.Value("battery_level").Value)),
             ("电池温度", FormatBatteryTemperature(snapshot.Value("battery_temp").Value)),
-            ("充电状态", FormatBatteryStatus(snapshot.Value("battery_status").Value, string.Empty)),
-            ("硬件温度", snapshot.Temperatures.Count == 0
-                ? "当前连接无法获取"
-                : string.Join("，", snapshot.Temperatures.Select(temperature => $"{temperature.Name} {temperature.DisplayValue}")))));
+            ("充电状态", FormatBatteryStatus(snapshot.Value("battery_status").Value, string.Empty))));
+    }
+
+    private static UIElement BuildHardwareTemperaturePanel(IReadOnlyList<HardwareTemperature> temperatures)
+    {
+        var groups = HardwareTemperaturePresentation.Group(temperatures);
+        if (groups.Count == 0)
+        {
+            return new Border
+            {
+                CornerRadius = new CornerRadius(8),
+                Background = SurfaceAltBrush(),
+                BorderBrush = BorderLightBrush(),
+                BorderThickness = new Thickness(1),
+                Padding = new Thickness(10, 8, 10, 8),
+                Child = new TextBlock
+                {
+                    Text = "当前连接无法获取温度传感器数据",
+                    FontSize = 12,
+                    Foreground = MutedBrush(),
+                },
+            };
+        }
+
+        var root = new StackPanel { Spacing = 10 };
+        foreach (var group in groups)
+        {
+            var cards = new WrapPanel { HorizontalSpacing = 8, VerticalSpacing = 8 };
+            foreach (var temperature in group.Items)
+            {
+                cards.Children.Add(new Border
+                {
+                    MinWidth = 118,
+                    CornerRadius = new CornerRadius(8),
+                    Background = SurfaceAltBrush(),
+                    BorderBrush = BorderLightBrush(),
+                    BorderThickness = new Thickness(1),
+                    Padding = new Thickness(10, 8, 10, 8),
+                    Child = new StackPanel
+                    {
+                        Spacing = 3,
+                        Children =
+                        {
+                            new TextBlock
+                            {
+                                Text = HardwareTemperaturePresentation.FormatSensorName(temperature.Name),
+                                FontSize = 11,
+                                Foreground = MutedBrush(),
+                                TextTrimming = TextTrimming.CharacterEllipsis,
+                            },
+                            new TextBlock
+                            {
+                                Text = temperature.DisplayValue,
+                                FontSize = 15,
+                                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                                Foreground = PrimaryBrush(),
+                            },
+                        },
+                    },
+                });
+            }
+
+            root.Children.Add(new StackPanel
+            {
+                Spacing = 6,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = group.Title,
+                        FontSize = 11,
+                        FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                        Foreground = SecondaryTextBrush(),
+                    },
+                    cards,
+                },
+            });
+        }
+        return root;
     }
 
     private static FrameworkElement HardwareSection(string title, string iconGlyph, UIElement? visual, params (string Name, string Value)[] values)
@@ -5042,13 +5425,12 @@ public sealed class MainWindow : Window
             try
             {
                 var result = await action();
-                if (!result.Success)
-                    device.IsConnected = false;
+                MarkDeviceOfflineIfUnavailable(device, result);
                 Notify(result.Success ? "操作已执行" : "操作失败", FormatCommandResult(result), result.Success ? InfoBarSeverity.Success : InfoBarSeverity.Error);
             }
             catch (Exception ex)
             {
-                device.IsConnected = false;
+                MarkDeviceOfflineIfUnavailable(device, ex);
                 Notify("操作失败", ex.Message, InfoBarSeverity.Error);
             }
         };
@@ -5070,7 +5452,7 @@ public sealed class MainWindow : Window
             }
             catch (Exception ex)
             {
-                device.IsConnected = false;
+                MarkDeviceOfflineIfUnavailable(device, ex);
                 Notify("操作失败", ex.Message, InfoBarSeverity.Error);
             }
         };
@@ -5132,19 +5514,41 @@ public sealed class MainWindow : Window
         };
     }
 
-    private static InteractiveSurface BuildPackageSurfaceItem(PackageListItem item, PackageSelection selection)
+    private static InteractiveSurface BuildPackageSurfaceItem(
+        PackageListItem item,
+        PackageSelection selection,
+        BitmapImage? iconSource)
     {
-        var icon = new FontIcon
-        {
-            Glyph = "\uE71D",
-            FontFamily = new FontFamily("Segoe Fluent Icons"),
-            FontSize = 20,
-            Width = 28,
-            Height = 28,
-            Foreground = item.HasResolvedDisplayName ? PrimaryBrush() : SecondaryTextBrush(),
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
+        FrameworkElement icon = iconSource is not null
+            ? new Border
+            {
+                Width = 38,
+                Height = 38,
+                CornerRadius = new CornerRadius(11),
+                Background = SurfaceAltBrush(),
+                Padding = new Thickness(3),
+                Child = new Image
+                {
+                    Source = iconSource,
+                    Stretch = Stretch.Uniform,
+                },
+            }
+            : new Border
+            {
+                Width = 38,
+                Height = 38,
+                CornerRadius = new CornerRadius(11),
+                Background = SurfaceAltBrush(),
+                Child = new FontIcon
+                {
+                    Glyph = "\uE71D",
+                    FontFamily = new FontFamily("Segoe Fluent Icons"),
+                    FontSize = 20,
+                    Foreground = SecondaryTextBrush(),
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center,
+                },
+            };
         var labels = new StackPanel
         {
             Spacing = 3,
@@ -5153,17 +5557,17 @@ public sealed class MainWindow : Window
             {
                 new TextBlock
                 {
-                    Text = item.PackageName,
+                    Text = item.DisplayName,
                     FontSize = 13,
                     FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-                    Foreground = PrimaryTextBrush(),
+                    Foreground = item.HasResolvedDisplayName ? PrimaryTextBrush() : MutedBrush(),
                     TextTrimming = TextTrimming.CharacterEllipsis,
                 },
                 new TextBlock
                 {
-                    Text = item.DisplayName,
+                    Text = item.PackageName,
                     FontSize = 11,
-                    Foreground = item.HasResolvedDisplayName ? SecondaryTextBrush() : MutedBrush(),
+                    Foreground = SecondaryTextBrush(),
                     TextTrimming = TextTrimming.CharacterEllipsis,
                 },
             },
@@ -5200,6 +5604,25 @@ public sealed class MainWindow : Window
         return surface;
     }
 
+    private static async Task<(BitmapImage? Image, string? ErrorCode)> DecodePackageIconAsync(byte[]? png)
+    {
+        if (png is null)
+            return (null, null);
+
+        try
+        {
+            var bitmap = new BitmapImage();
+            using var stream = new MemoryStream(png);
+            await bitmap.SetSourceAsync(stream.AsRandomAccessStream());
+            return (bitmap, null);
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or COMException)
+        {
+            // A corrupt APK icon must not discard the other package metadata from the same page.
+            return (null, "PACKAGE_ICON_DECODE_FAILED");
+        }
+    }
+
     private static string? SelectedPackageName(ListView packages)
     {
         return packages.SelectedItem switch
@@ -5214,121 +5637,6 @@ public sealed class MainWindow : Window
     private static string? SelectedPackageName(PackageSelection selection)
     {
         return selection.Selected?.PackageName;
-    }
-
-    private async Task<Dictionary<string, string>> LoadCompanionPackageLabelsAsync(DeviceModel device)
-    {
-        var result = await _companion.ExecuteCommandAsync(
-            device,
-            "android.app.list",
-            "app.list",
-            new Dictionary<string, object?> { ["includeSystem"] = true, ["limit"] = 5000 });
-
-        if (!result.Success)
-            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-
-        return PackageLabelParser.ParseCompanionPackageLabels(result.Stdout);
-    }
-
-    private async Task<Dictionary<string, string>> LoadAdbPackageLabelsAsync(DeviceModel device)
-    {
-        // Passing "packages" as an argument filters dumpsys by that package name on many Android
-        // builds, so no labels are returned. Use the unfiltered command for the full package map.
-        var result = await _adb.ShellAsync(device.DeviceId, "dumpsys package");
-        return result.Success
-            ? PackageLabelParser.ParseAdbPackageLabels(result.Stdout)
-            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-    }
-
-    private static Dictionary<string, string> ParseAdbPackageLabels(string stdout)
-    {
-        var labels = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        string? packageName = null;
-        foreach (var rawLine in stdout.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
-        {
-            var line = rawLine.Trim();
-            if (line.StartsWith("Package [", StringComparison.Ordinal))
-            {
-                var closing = line.IndexOf(']');
-                packageName = closing > "Package [".Length
-                    ? line["Package [".Length..closing]
-                    : null;
-                continue;
-            }
-
-            if (packageName is null || !line.StartsWith("application-label:", StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            var label = line["application-label:".Length..].Trim().Trim('\'', '"');
-            if (!string.IsNullOrWhiteSpace(label))
-                labels[packageName] = label;
-        }
-
-        return labels;
-    }
-
-    private static Dictionary<string, string> ParseCompanionPackageLabels(string stdout)
-    {
-        var labels = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var json = ExtractBroadcastDataJson(stdout);
-        if (string.IsNullOrWhiteSpace(json))
-            return labels;
-
-        try
-        {
-            using var document = JsonDocument.Parse(json);
-            var root = document.RootElement;
-            if (root.TryGetProperty("result", out var result))
-                root = result;
-            if (!root.TryGetProperty("apps", out var apps) || apps.ValueKind != JsonValueKind.Array)
-                return labels;
-
-            foreach (var app in apps.EnumerateArray())
-            {
-                if (!app.TryGetProperty("packageName", out var packageNameElement) ||
-                    !app.TryGetProperty("label", out var labelElement))
-                    continue;
-                var packageName = packageNameElement.GetString();
-                var label = labelElement.GetString();
-                if (!string.IsNullOrWhiteSpace(packageName) && !string.IsNullOrWhiteSpace(label))
-                    labels[packageName] = label;
-            }
-        }
-        catch (JsonException)
-        {
-            return labels;
-        }
-
-        return labels;
-    }
-
-    private static string? ExtractBroadcastDataJson(string stdout)
-    {
-        foreach (var line in stdout.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
-        {
-            var index = line.IndexOf("data=", StringComparison.OrdinalIgnoreCase);
-            if (index < 0)
-                continue;
-
-            var data = line[(index + "data=".Length)..].Trim();
-            if (string.IsNullOrWhiteSpace(data))
-                continue;
-            if (data.StartsWith("\"", StringComparison.Ordinal) && data.EndsWith("\"", StringComparison.Ordinal))
-            {
-                try
-                {
-                    return JsonSerializer.Deserialize<string>(data);
-                }
-                catch (JsonException)
-                {
-                    return data[1..^1].Replace("\\\"", "\"", StringComparison.Ordinal).Replace("\\\\", "\\", StringComparison.Ordinal);
-                }
-            }
-
-            return data;
-        }
-
-        return null;
     }
 
     private Button DevicePackageButton(DeviceModel device, string text, PackageSelection selection, Func<string, Task<AdbCommandResult>> action)
@@ -5347,13 +5655,23 @@ public sealed class MainWindow : Window
             if (!await EnsureDeviceReadyAsync(device))
                 return;
             var result = await action(packageName);
-            if (!result.Success)
-                device.IsConnected = false;
+            MarkDeviceOfflineIfUnavailable(device, result);
             Notify(result.Success ? $"{text}已完成" : $"{text}失败", FormatCommandResult(result), result.Success ? InfoBarSeverity.Success : InfoBarSeverity.Error);
         };
         return button;
     }
 
+    private static void MarkDeviceOfflineIfUnavailable(DeviceModel device, AdbCommandResult result)
+    {
+        if (AdbConnectionEvaluator.IsDeviceUnavailable(result))
+            device.IsConnected = false;
+    }
+
+    private static void MarkDeviceOfflineIfUnavailable(DeviceModel device, Exception exception)
+    {
+        if (AdbConnectionEvaluator.IsDeviceUnavailable(exception))
+            device.IsConnected = false;
+    }
     private async Task<bool> EnsureDeviceReadyAsync(DeviceModel device, bool notify = true)
     {
         if (string.IsNullOrWhiteSpace(device.DeviceId))
@@ -5406,48 +5724,65 @@ public sealed class MainWindow : Window
             return;
         }
 
-        var result = await _adb.ShellAsync(device.DeviceId, "pm list packages");
-        if (!result.Success)
+        try
         {
-            device.IsConnected = false;
-            status.Text = FormatCommandResult(result);
+            var catalog = await _packageCatalog.LoadAsync(
+                device,
+                progress => status.Text = progress.Message);
+            if (!catalog.Success)
+            {
+                var error = catalog.FatalError!;
+                if (error.ErrorCode == "PACKAGE_LIST_DEVICE_UNAVAILABLE")
+                    device.IsConnected = false;
+                status.Text = $"{error.Message} {error.Suggestion}";
+                Notify("读取软件包失败", status.Text, InfoBarSeverity.Error);
+                return;
+            }
+
+            var decodeFailures = 0;
+            foreach (var package in catalog.Packages)
+            {
+                var decodedIcon = await DecodePackageIconAsync(package.IconPng);
+                if (decodedIcon.ErrorCode is not null)
+                    decodeFailures++;
+                var item = new PackageListItem(
+                    package.PackageName,
+                    package.DisplayName,
+                    package.HasResolvedDisplayName);
+                packageRows.Children.Add(BuildPackageSurfaceItem(item, selection, decodedIcon.Image));
+            }
+
+            if (catalog.Packages.Count == 0)
+            {
+                status.Text = "未读取到软件包。";
+                return;
+            }
+
+            var displayedIcons = Math.Max(0, catalog.IconCount - decodeFailures);
+            status.Text =
+                $"已读取 {catalog.Packages.Count} 个软件包；App 名称 {catalog.ResolvedDisplayNameCount}/{catalog.Packages.Count}，" +
+                $"真实图标 {displayedIcons}/{catalog.Packages.Count}。";
+            var warnings = catalog.Issues
+                .Select(issue => issue.Message)
+                .Distinct(StringComparer.Ordinal)
+                .Take(2)
+                .ToList();
+            if (decodeFailures > 0)
+                warnings.Add($"有 {decodeFailures} 个图标解码失败，已使用占位图标。");
+            if (warnings.Count > 0)
+                status.Text += $" {string.Join(' ', warnings)}";
+        }
+        catch (Exception ex)
+        {
+            MarkDeviceOfflineIfUnavailable(device, ex);
+            Trace.TraceError($"[PACKAGE_CATALOG_UNEXPECTED] {ex}");
+            status.Text = "读取软件包失败：桌面端无法处理应用元数据。请刷新重试。";
+            Notify("读取软件包失败", status.Text, InfoBarSeverity.Error);
+        }
+        finally
+        {
             loading.Visibility = Visibility.Collapsed;
-            return;
         }
-
-        var packageNames = result.Stdout
-            .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-            .Select(line => line.Replace("package:", string.Empty, StringComparison.OrdinalIgnoreCase).Trim())
-            .Where(line => !string.IsNullOrWhiteSpace(line))
-            .OrderBy(line => line, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        var labels = await LoadAdbPackageLabelsAsync(device);
-        foreach (var (packageName, label) in await LoadCompanionPackageLabelsAsync(device))
-            labels[packageName] = label;
-        var resolved = 0;
-
-        foreach (var packageName in packageNames)
-        {
-            var hasLabel = labels.TryGetValue(packageName, out var label) && !string.IsNullOrWhiteSpace(label);
-            if (hasLabel)
-                resolved++;
-            var item = new PackageListItem(packageName, hasLabel ? label! : "未获取到 App 名称", hasLabel);
-            packageRows.Children.Add(BuildPackageSurfaceItem(item, selection));
-        }
-
-        if (packageNames.Count == 0)
-        {
-            status.Text = "未读取到软件包。";
-        }
-        else if (labels.Count == 0)
-        {
-            status.Text = $"已读取 {packageNames.Count} 个软件包；设备未返回可用的 App 名称。";
-        }
-        else
-        {
-            status.Text = $"已读取 {packageNames.Count} 个软件包，其中 {resolved} 个包含 App 名称。";
-        }
-        loading.Visibility = Visibility.Collapsed;
     }
 
     private async Task InstallApkAsync(DeviceModel device)
@@ -5463,8 +5798,7 @@ public sealed class MainWindow : Window
             return;
 
         var result = await _adb.InstallAsync(device.DeviceId, file.Path);
-        if (!result.Success)
-            device.IsConnected = false;
+        MarkDeviceOfflineIfUnavailable(device, result);
         Notify(result.Success ? "APK 已安装" : "安装失败", FormatCommandResult(result), result.Success ? InfoBarSeverity.Success : InfoBarSeverity.Error);
     }
 
@@ -5476,7 +5810,7 @@ public sealed class MainWindow : Window
         var pathResult = await _adb.ShellAsync(device.DeviceId, $"pm path {packageName}");
         if (!pathResult.Success)
         {
-            device.IsConnected = false;
+            MarkDeviceOfflineIfUnavailable(device, pathResult);
             return pathResult;
         }
 
@@ -5511,8 +5845,7 @@ public sealed class MainWindow : Window
 
         var remote = $"{remoteDirectory.TrimEnd('/')}/{file.Name}";
         var result = await _adb.PushAsync(device.DeviceId, file.Path, remote);
-        if (!result.Success)
-            device.IsConnected = false;
+        MarkDeviceOfflineIfUnavailable(device, result);
         Notify(result.Success ? "文件已发送" : "发送失败", FormatCommandResult(result), result.Success ? InfoBarSeverity.Success : InfoBarSeverity.Error);
     }
 
@@ -5530,14 +5863,11 @@ public sealed class MainWindow : Window
                 if (!await EnsureDeviceReadyAsync(device, false))
                 {
                     if (IsPreviewFrameRequestCurrent("detail", device.DeviceId, serial))
-                    {
-                        status.Visibility = Visibility.Visible;
-                        status.Text = $"设备离线：{device.DeviceId}";
-                    }
+                        ApplyPreviewLockState(DeviceLockState.Unknown, previewImage, status, lockedPreview);
                     return;
                 }
 
-                var lockState = await _deviceLock.GetStateAsync(device.DeviceId);
+                var lockState = _deviceLockMonitor.GetCurrentState(device.DeviceId);
                 if (lockState != DeviceLockState.Unlocked)
                 {
                     if (IsPreviewFrameRequestCurrent("detail", device.DeviceId, serial))
@@ -5555,7 +5885,7 @@ public sealed class MainWindow : Window
             {
                 if (IsPreviewFrameRequestCurrent("detail", device.DeviceId, serial))
                 {
-                    device.IsConnected = false;
+                    MarkDeviceOfflineIfUnavailable(device, ex);
                     status.Visibility = Visibility.Visible;
                     status.Text = $"截图失败：{ex.Message}";
                 }
@@ -5582,6 +5912,10 @@ public sealed class MainWindow : Window
             .Where(key => key.StartsWith("detail:", StringComparison.Ordinal))
             .ToList()
             .ForEach(key => _previewFrameHashes.Remove(key));
+        _previewImageFrameSizes.Keys
+            .Where(key => key.StartsWith("detail:", StringComparison.Ordinal))
+            .ToList()
+            .ForEach(key => _previewImageFrameSizes.Remove(key));
     }
 
     private void QueueDeviceVideoSettingsUpdate(DeviceModel device, ScrcpyVideoOptions options)
@@ -5672,7 +6006,7 @@ public sealed class MainWindow : Window
             _detailPreviewStatus.Visibility = Visibility.Visible;
         }
 
-        _devicePreviewTimer?.Stop();
+        StopDevicePreview();
         var scrcpy = new ProjectionSession(_adb, _companionQuic);
         _scrcpySession = scrcpy;
         scrcpy.BackendChanged += backend => DispatcherQueue.TryEnqueue(() =>
@@ -5696,7 +6030,6 @@ public sealed class MainWindow : Window
             if (!ReferenceEquals(_scrcpySession, scrcpy))
                 return;
             _detailVideoFrameSize = (size.Width, size.Height);
-            _previewFrameSizes[$"detail:{device.DeviceId}"] = (size.Width, size.Height);
             UpdateDetailVideoSurfaceBounds();
             if (_activeVideoStreamOptions is { } active && _videoMirrorStatus is not null)
                 _videoMirrorStatus.Text = $"{scrcpy.BackendLabel}：{size.Width}×{size.Height} · {active.FrameRate} FPS · {active.BitRate / 1_000_000d:0.#} Mbps";
@@ -5723,7 +6056,6 @@ public sealed class MainWindow : Window
         }
 
         _detailVideoFrameSize = (scrcpy.FrameSize.Width, scrcpy.FrameSize.Height);
-        _previewFrameSizes[$"detail:{device.DeviceId}"] = (scrcpy.FrameSize.Width, scrcpy.FrameSize.Height);
         _activeVideoStreamOptions = options;
         UpdateDetailVideoSurfaceBounds();
 
@@ -5787,12 +6119,16 @@ public sealed class MainWindow : Window
         }
 
         _detailVideoSurface.Opacity = 1;
-        if (_detailPreviewImage is not null)
-            _detailPreviewImage.Visibility = Visibility.Collapsed;
-        if (_detailPreviewStatus is not null)
-            _detailPreviewStatus.Visibility = Visibility.Collapsed;
-        if (_detailLockedPreview is not null)
-            _detailLockedPreview.Root.Visibility = Visibility.Collapsed;
+        if (_detailPreviewImage is not null && _detailPreviewStatus is not null && _detailLockedPreview is not null)
+        {
+            var lockState = _deviceLockMonitor.GetCurrentState(device.DeviceId);
+            ApplyPreviewLockState(
+                lockState,
+                _detailPreviewImage,
+                _detailPreviewStatus,
+                _detailLockedPreview,
+                projectionActive: true);
+        }
 
         var actualSize = scrcpy.FrameSize;
         if (_videoMirrorStatus is not null)
@@ -5938,7 +6274,7 @@ public sealed class MainWindow : Window
         {
             if (IsPreviewFrameRequestCurrent("card", device.DeviceId, serial))
             {
-                device.IsConnected = false;
+                MarkDeviceOfflineIfUnavailable(device, ex);
                 target.Status.Visibility = Visibility.Visible;
                 target.Status.Text = $"截图失败：{ex.Message}";
             }
@@ -5970,8 +6306,7 @@ public sealed class MainWindow : Window
         if (requestSerial is long serial && !IsPreviewFrameRequestCurrent(scope, deviceId, serial))
             return false;
 
-        if (TryReadPngSize(png, out var width, out var height))
-            _previewFrameSizes[key] = (width, height);
+        var hasFrameSize = TryReadPngSize(png, out var width, out var height);
         var hash = Convert.ToHexString(SHA256.HashData(png));
         if (!force && _previewFrameHashes.TryGetValue(key, out var previousHash) && previousHash == hash)
             return false;
@@ -5983,6 +6318,8 @@ public sealed class MainWindow : Window
         if (requestSerial is long serialAfterDecode && !IsPreviewFrameRequestCurrent(scope, deviceId, serialAfterDecode))
             return false;
 
+        if (hasFrameSize)
+            _previewImageFrameSizes[key] = (width, height);
         image.Source = bitmap;
         return true;
     }
@@ -6151,6 +6488,8 @@ public sealed class MainWindow : Window
                 PermissionMode = request.AllowDeviceTools || request.AllowTaskMutation ? "完全访问" : "替我审批",
                 CurrentDeviceId = device?.DeviceId,
                 CurrentDeviceName = device?.DisplayName,
+                KnownDevices = _devices.GetDevices(),
+                AllowInteractiveChoices = false,
             },
             async toolCall =>
             {
@@ -6645,8 +6984,14 @@ public sealed class MainWindow : Window
         }
         else
         {
+            var migratedLegacyErrors = false;
             foreach (var message in _settings.Current.AiMessages)
+            {
+                migratedLegacyErrors |= NormalizeLegacyAiError(message);
                 _messageList.Children.Add(MessageBubble(message));
+            }
+            if (migratedLegacyErrors)
+                SaveAiConversation();
         }
         RebuildAiConversationFromVisibleMessages();
         var messageScroller = new ScrollViewer
@@ -7508,13 +7853,38 @@ public sealed class MainWindow : Window
                     PermissionMode = permission,
                     CurrentDeviceId = _currentDetailDevice?.DeviceId,
                     CurrentDeviceName = _currentDetailDevice?.DisplayName,
+                    KnownDevices = _devices.GetDevices(),
+                    AllowInteractiveChoices = true,
                 },
                 delta =>
                 {
                     QueueAiStreamDelta(streamingMessage, delta);
                     return Task.CompletedTask;
                 },
-                async toolCall => await _aiTools.ExecuteAsync(toolCall, permission, _currentDetailDevice, RequestAiToolApprovalAsync, _aiCancellation.Token),
+                async toolCall =>
+                {
+                    var toolResult = await ExecuteAiToolAsync(toolCall, permission, _aiCancellation.Token);
+                    if (toolResult.Success && string.Equals(toolCall.Name, "ask_user_choice", StringComparison.Ordinal))
+                    {
+                        FlushAiStreamDeltas(streamingMessage);
+                        MaterializeAiStreamMessage(streamingMessage);
+                        if (string.IsNullOrWhiteSpace(streamingMessage.Message.Text) &&
+                            string.IsNullOrWhiteSpace(streamingMessage.Message.ThinkingText))
+                        {
+                            _messageList.Children.Remove(streamingMessage.Root);
+                        }
+                        else
+                        {
+                            streamingMessage.Message.ProcessingSeconds = stopwatch.Elapsed.TotalSeconds;
+                            streamingMessage.DurationText.Text = "已完成该阶段，正在根据选择继续...";
+                            CompleteStreamingThinking(streamingMessage);
+                            _settings.Current.AiMessages.Add(CloneVisibleAiMessage(streamingMessage.Message));
+                            SaveAiConversation();
+                        }
+                        streamingMessage = AddAiStreamingMessage();
+                    }
+                    return toolResult;
+                },
                 _aiCancellation.Token,
                 afterToolContextProvider: async (toolCalls, token) =>
                     AiToolCallsMayChangeScreen(toolCalls)
@@ -7522,16 +7892,17 @@ public sealed class MainWindow : Window
                         : Array.Empty<AiConversationMessage>());
 
             FlushAiStreamDeltas(streamingMessage);
+            MaterializeAiStreamMessage(streamingMessage);
             stopwatch.Stop();
             _aiConversation.AddRange(response.NewMessages);
-            var text = string.IsNullOrWhiteSpace(response.Text)
-                ? streamingMessage.Message.Text
-                : response.Text.Trim();
+            var text = string.IsNullOrWhiteSpace(streamingMessage.Message.Text)
+                ? response.Text.Trim()
+                : streamingMessage.Message.Text;
             if (string.IsNullOrWhiteSpace(text))
                 text = "操作已完成。";
-            var thinking = string.IsNullOrWhiteSpace(response.ThinkingText)
-                ? streamingMessage.Message.ThinkingText
-                : response.ThinkingText.Trim();
+            var thinking = string.IsNullOrWhiteSpace(streamingMessage.Message.ThinkingText)
+                ? response.ThinkingText.Trim()
+                : streamingMessage.Message.ThinkingText;
             streamingMessage.Message.Text = text;
             streamingMessage.Message.ThinkingText = thinking;
             streamingMessage.Message.ProcessingSeconds = stopwatch.Elapsed.TotalSeconds;
@@ -7541,11 +7912,25 @@ public sealed class MainWindow : Window
             _settings.Current.AiMessages.Add(CloneVisibleAiMessage(streamingMessage.Message));
             SaveAiConversation();
             ScrollAiMessagesToBottom();
-            Notify("AI 思考完成", $"处理用时 {FormatDuration(stopwatch.Elapsed.TotalSeconds)}", InfoBarSeverity.Success);
+            foreach (var warning in response.Warnings)
+            {
+                AddAiVisibleMessage(new AiChatMessage
+                {
+                    Kind = AiChatMessageKinds.Warning,
+                    Role = "System",
+                    Text = warning.Message,
+                    IsUser = false,
+                });
+            }
+            if (response.Warnings.Count > 0)
+                Notify("AI 已完成（有兼容提示）", response.Warnings[0].Message, InfoBarSeverity.Warning);
+            else
+                Notify("AI 思考完成", $"处理用时 {FormatDuration(stopwatch.Elapsed.TotalSeconds)}", InfoBarSeverity.Success);
         }
         catch (OperationCanceledException)
         {
             FlushAiStreamDeltas(streamingMessage);
+            MaterializeAiStreamMessage(streamingMessage);
             stopwatch.Stop();
             streamingMessage.Message.ProcessingSeconds = stopwatch.Elapsed.TotalSeconds;
             streamingMessage.Message.Text = string.IsNullOrWhiteSpace(streamingMessage.Message.Text)
@@ -7562,14 +7947,19 @@ public sealed class MainWindow : Window
         {
             FlushAiStreamDeltas(streamingMessage);
             stopwatch.Stop();
-            streamingMessage.Message.ProcessingSeconds = stopwatch.Elapsed.TotalSeconds;
-            streamingMessage.Message.Text = $"AI 请求失败：{ex.Message}";
-            streamingMessage.AnswerText.Text = streamingMessage.Message.Text;
-            streamingMessage.DurationText.Text = $"处理用时 {FormatDuration(stopwatch.Elapsed.TotalSeconds)}";
-            CompleteStreamingThinking(streamingMessage);
-            _settings.Current.AiMessages.Add(CloneVisibleAiMessage(streamingMessage.Message));
-            SaveAiConversation();
-            ScrollAiMessagesToBottom();
+            var failure = AiRequestFailureClassifier.FromException(ex, Guid.NewGuid().ToString("N"));
+            _messageList.Children.Remove(streamingMessage.Root);
+            AddAiVisibleMessage(new AiChatMessage
+            {
+                Kind = AiChatMessageKinds.Error,
+                Role = "AI",
+                Text = failure.Summary,
+                IsUser = false,
+                ProcessingSeconds = stopwatch.Elapsed.TotalSeconds,
+                Error = failure.ToChatError(),
+            });
+            Notify(failure.Title, failure.Summary, InfoBarSeverity.Error);
+            _systemNotifications.Show(failure.Title, $"{failure.Summary} 追踪号：{failure.TraceId}");
         }
         finally
         {
@@ -7579,6 +7969,68 @@ public sealed class MainWindow : Window
         }
     }
 
+    private async Task<AiAgentToolResult> ExecuteAiToolAsync(
+        AiAgentToolCall toolCall,
+        string permission,
+        CancellationToken cancellationToken)
+    {
+        if (string.Equals(toolCall.Name, "ask_user_choice", StringComparison.Ordinal))
+            return await RequestAiChoiceAsync(toolCall, cancellationToken);
+        return await _aiTools.ExecuteAsync(
+            toolCall,
+            permission,
+            _currentDetailDevice,
+            RequestAiToolApprovalAsync,
+            cancellationToken);
+    }
+
+    private async Task<AiAgentToolResult> RequestAiChoiceAsync(
+        AiAgentToolCall toolCall,
+        CancellationToken cancellationToken)
+    {
+        if (!AiChoiceRequestParser.TryParse(toolCall, out var request, out var errorCode, out var errorMessage) || request is null)
+        {
+            return new AiAgentToolResult
+            {
+                ToolCallId = toolCall.Id,
+                Name = toolCall.Name,
+                Success = false,
+                Content = $"{errorCode}: {errorMessage}",
+            };
+        }
+
+        var completion = new TaskCompletionSource<AiAgentToolResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var message = new AiChatMessage
+        {
+            Kind = AiChatMessageKinds.Choice,
+            Role = "AI",
+            IsUser = false,
+            Choice = request,
+            CreatedAt = DateTimeOffset.Now,
+        };
+        await RunOnUiThreadAsync(() =>
+        {
+            var bubble = BuildAiChoiceBubble(message, _ =>
+            {
+                var result = new AiAgentToolResult
+                {
+                    ToolCallId = toolCall.Id,
+                    Name = toolCall.Name,
+                    Success = true,
+                    Content = AiChoiceRequestParser.BuildResultJson(request),
+                };
+                if (!completion.TrySetResult(result))
+                    return;
+                _settings.Current.AiMessages.Add(CloneVisibleAiMessage(message));
+                SaveAiConversation();
+            });
+            _messageList.Children.Add(bubble);
+            ScrollAiMessagesToBottom();
+        });
+
+        using var registration = cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken));
+        return await completion.Task;
+    }
     private async Task<IReadOnlyList<AiConversationMessage>> BuildAiDeviceObservationMessagesAsync(string reason, CancellationToken cancellationToken)
     {
         var device = _currentDetailDevice;
@@ -7704,6 +8156,7 @@ public sealed class MainWindow : Window
         {
             Text = string.Empty,
             TextWrapping = TextWrapping.Wrap,
+            IsTextSelectionEnabled = true,
             FontSize = 13,
             Foreground = PrimaryTextBrush(),
         };
@@ -7717,6 +8170,7 @@ public sealed class MainWindow : Window
         {
             Text = string.Empty,
             TextWrapping = TextWrapping.Wrap,
+            IsTextSelectionEnabled = true,
             FontSize = 12,
             Foreground = SecondaryTextBrush(),
             MaxHeight = 110,
@@ -7828,7 +8282,18 @@ public sealed class MainWindow : Window
         });
         _messageList.Children.Add(panel);
         ScrollAiMessagesToBottom();
-        return new AiStreamingMessageUi(message, textBlock, thinkingShell, thinkingText, thinkingSummary, thinkingBody, thinkingArrow, durationText);
+        return new AiStreamingMessageUi(
+            message,
+            panel,
+            textBlock,
+            thinkingShell,
+            thinkingText,
+            thinkingSummary,
+            thinkingBody,
+            thinkingArrow,
+            durationText,
+            new StringBuilder(),
+            new StringBuilder());
     }
 
     private void ResetAiStreamBuffers()
@@ -7838,8 +8303,8 @@ public sealed class MainWindow : Window
             _pendingAiAnswerDelta.Clear();
             _pendingAiThinkingDelta.Clear();
             _aiStreamFlushQueued = false;
-            _aiStreamHasAnswer = false;
         }
+        _aiStreamScrollQueued = false;
     }
 
     private void QueueAiStreamDelta(AiStreamingMessageUi streamingMessage, AiStreamDelta delta)
@@ -7860,7 +8325,7 @@ public sealed class MainWindow : Window
             _aiStreamFlushQueued = true;
         }
 
-        _ = Task.Delay(40, _aiCancellation?.Token ?? CancellationToken.None)
+        _ = Task.Delay(AiStreamRenderPolicy.FlushDelay, _aiCancellation?.Token ?? CancellationToken.None)
             .ContinueWith(
                 _ =>
                 {
@@ -7886,9 +8351,10 @@ public sealed class MainWindow : Window
 
         if (thinkingDelta.Length > 0)
         {
-            streamingMessage.Message.ThinkingText += thinkingDelta;
-            streamingMessage.ThinkingText.Text = streamingMessage.Message.ThinkingText;
-            streamingMessage.ThinkingSummary.Text = $"思考中 · {BuildThinkingSummary(streamingMessage.Message.ThinkingText)}";
+            streamingMessage.ThinkingBuffer.Append(thinkingDelta);
+            var preview = AiStreamRenderPolicy.BuildThinkingPreview(streamingMessage.ThinkingBuffer);
+            streamingMessage.ThinkingText.Text = preview;
+            streamingMessage.ThinkingSummary.Text = $"思考中 · {BuildThinkingSummary(preview)}";
             streamingMessage.ThinkingShell.Visibility = Visibility.Visible;
             streamingMessage.ThinkingBody.Visibility = Visibility.Visible;
             streamingMessage.ThinkingArrow.Text = "⌃";
@@ -7896,17 +8362,38 @@ public sealed class MainWindow : Window
 
         if (answerDelta.Length > 0)
         {
-            streamingMessage.Message.Text += answerDelta;
-            streamingMessage.AnswerText.Text = streamingMessage.Message.Text;
-            if (!_aiStreamHasAnswer && !string.IsNullOrWhiteSpace(streamingMessage.Message.ThinkingText))
+            streamingMessage.AnswerBuffer.Append(answerDelta);
+            streamingMessage.AnswerText.Text = streamingMessage.AnswerBuffer.ToString();
+            if (!streamingMessage.HasAnswer && streamingMessage.ThinkingBuffer.Length > 0)
             {
-                _aiStreamHasAnswer = true;
+                streamingMessage.HasAnswer = true;
                 CollapseStreamingThinking(streamingMessage);
             }
         }
 
         if (thinkingDelta.Length > 0 || answerDelta.Length > 0)
-            ScrollAiMessagesToBottom();
+            QueueAiStreamingScrollToBottom();
+    }
+
+    private static void MaterializeAiStreamMessage(AiStreamingMessageUi streamingMessage)
+    {
+        streamingMessage.Message.Text = streamingMessage.AnswerBuffer.ToString();
+        streamingMessage.Message.ThinkingText = streamingMessage.ThinkingBuffer.ToString();
+    }
+
+    private void QueueAiStreamingScrollToBottom()
+    {
+        if (_aiStreamScrollQueued)
+            return;
+        _aiStreamScrollQueued = true;
+        if (!DispatcherQueue.TryEnqueue(() =>
+        {
+            _aiStreamScrollQueued = false;
+            _aiMessageScroller?.ChangeView(null, _aiMessageScroller.ScrollableHeight, null, true);
+        }))
+        {
+            _aiStreamScrollQueued = false;
+        }
     }
 
     private static void CollapseStreamingThinking(AiStreamingMessageUi streamingMessage)
@@ -7924,6 +8411,7 @@ public sealed class MainWindow : Window
         }
 
         streamingMessage.ThinkingShell.Visibility = Visibility.Visible;
+        streamingMessage.ThinkingText.Text = streamingMessage.Message.ThinkingText;
         streamingMessage.ThinkingSummary.Text = $"思考完成 · {BuildThinkingSummary(streamingMessage.Message.ThinkingText)}";
         CollapseStreamingThinking(streamingMessage);
     }
@@ -7934,6 +8422,7 @@ public sealed class MainWindow : Window
         {
             Text = thinkingText,
             TextWrapping = TextWrapping.Wrap,
+            IsTextSelectionEnabled = true,
             FontSize = 12,
             Foreground = SecondaryTextBrush(),
             MaxHeight = 120,
@@ -8047,6 +8536,8 @@ public sealed class MainWindow : Window
         _aiConversation.Clear();
         foreach (var message in _settings.Current.AiMessages)
         {
+            if (!string.Equals(message.Kind, AiChatMessageKinds.Message, StringComparison.Ordinal))
+                continue;
             _aiConversation.Add(new AiConversationMessage
             {
                 Role = message.IsUser ? "user" : "assistant",
@@ -8114,6 +8605,7 @@ public sealed class MainWindow : Window
     {
         return new AiChatMessage
         {
+            Kind = message.Kind,
             Role = message.Role,
             Text = message.Text,
             ThinkingText = message.ThinkingText,
@@ -8126,6 +8618,27 @@ public sealed class MainWindow : Window
                 Path = attachment.Path,
                 IsImage = attachment.IsImage,
             }).ToList(),
+            Error = message.Error is null ? null : new AiChatErrorDetails
+            {
+                ErrorCode = message.Error.ErrorCode,
+                Category = message.Error.Category,
+                Title = message.Error.Title,
+                Summary = message.Error.Summary,
+                Detail = message.Error.Detail,
+                Suggestion = message.Error.Suggestion,
+                TraceId = message.Error.TraceId,
+                HttpStatusCode = message.Error.HttpStatusCode,
+                Recoverable = message.Error.Recoverable,
+            },
+            Choice = message.Choice is null ? null : new AiChoiceRequest
+            {
+                ToolCallId = message.Choice.ToolCallId,
+                Question = message.Choice.Question,
+                SelectionMode = message.Choice.SelectionMode,
+                Options = message.Choice.Options.ToList(),
+                SelectedOptions = message.Choice.SelectedOptions.ToList(),
+                IsSubmitted = message.Choice.IsSubmitted,
+            },
         };
     }
 
@@ -8280,10 +8793,8 @@ public sealed class MainWindow : Window
             if (_aiMessageScroller is null)
                 return;
 
-            _messageList.UpdateLayout();
-            _aiMessageScroller.UpdateLayout();
             _aiMessageScroller.ChangeView(null, _aiMessageScroller.ScrollableHeight, null, true);
-            if (pass < 2)
+            if (pass < 1)
                 ScrollAiMessagesToBottomPass(pass + 1);
         });
     }
@@ -8382,6 +8893,13 @@ public sealed class MainWindow : Window
 
     private UIElement MessageBubble(AiChatMessage message)
     {
+        if (string.Equals(message.Kind, AiChatMessageKinds.Error, StringComparison.Ordinal))
+            return BuildAiErrorBubble(message);
+        if (string.Equals(message.Kind, AiChatMessageKinds.Choice, StringComparison.Ordinal))
+            return BuildAiChoiceBubble(message, onSubmit: null);
+        if (string.Equals(message.Kind, AiChatMessageKinds.Warning, StringComparison.Ordinal))
+            return BuildAiWarningBubble(message);
+
         var panel = new StackPanel
         {
             HorizontalAlignment = message.IsUser ? HorizontalAlignment.Right : HorizontalAlignment.Left,
@@ -8416,6 +8934,7 @@ public sealed class MainWindow : Window
             {
                 Text = message.Text,
                 TextWrapping = TextWrapping.Wrap,
+                IsTextSelectionEnabled = true,
                 FontSize = 13,
                 Foreground = message.IsUser ? OnPrimaryBrush() : PrimaryTextBrush(),
             });
@@ -8444,6 +8963,308 @@ public sealed class MainWindow : Window
         return panel;
     }
 
+    private static bool NormalizeLegacyAiError(AiChatMessage message)
+    {
+        if (message.IsUser ||
+            !string.Equals(message.Kind, AiChatMessageKinds.Message, StringComparison.Ordinal) ||
+            !message.Text.StartsWith("AI 请求失败", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var traceId = Guid.NewGuid().ToString("N");
+        var httpIndex = message.Text.IndexOf("HTTP ", StringComparison.OrdinalIgnoreCase);
+        AiChatErrorDetails details;
+        if (httpIndex >= 0)
+        {
+            var statusText = new string(message.Text
+                .Skip(httpIndex + 5)
+                .TakeWhile(char.IsDigit)
+                .ToArray());
+            var bodyIndex = message.Text.IndexOf('{', httpIndex);
+            var body = bodyIndex >= 0 ? message.Text[bodyIndex..] : string.Empty;
+            details = int.TryParse(statusText, out var statusCode)
+                ? AiRequestFailureClassifier.FromHttp(statusCode, "历史请求", body, traceId).ToChatError()
+                : LegacyErrorDetails(message.Text, traceId);
+        }
+        else
+        {
+            details = LegacyErrorDetails(message.Text, traceId);
+        }
+
+        message.Kind = AiChatMessageKinds.Error;
+        message.Error = details;
+        message.Text = details.Summary;
+        return true;
+    }
+
+    private static AiChatErrorDetails LegacyErrorDetails(string detail, string traceId) => new()
+    {
+        ErrorCode = "AI_LEGACY_REQUEST_FAILED",
+        Category = AiRequestFailureCategory.Unknown.ToString(),
+        Title = "历史 AI 请求失败",
+        Summary = "此前的 AI 请求未能完成。",
+        Detail = detail,
+        Suggestion = "请使用当前版本重新发送；展开详情可查看旧版错误信息。",
+        TraceId = traceId,
+        Recoverable = true,
+    };
+    private UIElement BuildAiErrorBubble(AiChatMessage message)
+    {
+        var error = message.Error ?? new AiChatErrorDetails
+        {
+            ErrorCode = "AI_REQUEST_FAILED",
+            Title = "AI 请求失败",
+            Summary = message.Text,
+            Detail = message.Text,
+            Suggestion = "请稍后重试。",
+        };
+        var foreground = s_darkTheme
+            ? new SolidColorBrush(ColorHelper.FromArgb(255, 252, 165, 165))
+            : new SolidColorBrush(ColorHelper.FromArgb(255, 185, 28, 28));
+        var background = s_darkTheme
+            ? new SolidColorBrush(ColorHelper.FromArgb(42, 248, 113, 113))
+            : new SolidColorBrush(ColorHelper.FromArgb(30, 220, 38, 38));
+        var border = s_darkTheme
+            ? new SolidColorBrush(ColorHelper.FromArgb(120, 248, 113, 113))
+            : new SolidColorBrush(ColorHelper.FromArgb(100, 220, 38, 38));
+
+        var fullDetail = $"错误码：{error.ErrorCode}\n追踪号：{error.TraceId}\n{error.Detail}";
+        var detailText = new TextBlock
+        {
+            Text = fullDetail,
+            IsTextSelectionEnabled = true,
+            TextWrapping = TextWrapping.Wrap,
+            FontFamily = new FontFamily("Cascadia Mono, Consolas"),
+            FontSize = 11,
+            Foreground = SecondaryTextBrush(),
+        };
+        var detailScroller = new ScrollViewer
+        {
+            Content = detailText,
+            MaxHeight = 220,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+        };
+        AttachWheelScrolling(detailScroller);
+        var detailShell = new Border
+        {
+            Visibility = Visibility.Collapsed,
+            Margin = new Thickness(0, 6, 0, 0),
+            Padding = new Thickness(10),
+            CornerRadius = new CornerRadius(10),
+            Background = SurfaceBrush(),
+            Child = detailScroller,
+        };
+        var detailsButton = SecondaryButton("详情");
+        detailsButton.Padding = new Thickness(10, 5, 10, 5);
+        ToolTipService.SetToolTip(detailsButton, fullDetail);
+        var expanded = false;
+        detailsButton.Click += (_, _) =>
+        {
+            expanded = !expanded;
+            detailShell.Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
+            detailsButton.Content = expanded ? "收起" : "详情";
+        };
+
+        var title = new TextBlock
+        {
+            Text = error.Title,
+            FontSize = 14,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = foreground,
+        };
+        var header = new Grid
+        {
+            ColumnDefinitions =
+            {
+                new ColumnDefinition(),
+                new ColumnDefinition { Width = GridLength.Auto },
+            },
+            Children = { title, detailsButton },
+        };
+        Grid.SetColumn(detailsButton, 1);
+        var body = new StackPanel
+        {
+            Spacing = 7,
+            Children =
+            {
+                header,
+                new TextBlock
+                {
+                    Text = error.Summary,
+                    IsTextSelectionEnabled = true,
+                    TextWrapping = TextWrapping.Wrap,
+                    FontSize = 13,
+                    Foreground = PrimaryTextBrush(),
+                },
+                new TextBlock
+                {
+                    Text = error.Suggestion,
+                    IsTextSelectionEnabled = true,
+                    TextWrapping = TextWrapping.Wrap,
+                    FontSize = 12,
+                    Foreground = SecondaryTextBrush(),
+                },
+                detailShell,
+            },
+        };
+        return BuildAiSpecialBubble("AI · 请求错误", body, background, border, foreground, message.CreatedAt);
+    }
+
+    private UIElement BuildAiWarningBubble(AiChatMessage message)
+    {
+        var foreground = s_darkTheme
+            ? new SolidColorBrush(ColorHelper.FromArgb(255, 253, 230, 138))
+            : new SolidColorBrush(ColorHelper.FromArgb(255, 161, 98, 7));
+        var background = s_darkTheme
+            ? new SolidColorBrush(ColorHelper.FromArgb(35, 250, 204, 21))
+            : new SolidColorBrush(ColorHelper.FromArgb(30, 202, 138, 4));
+        var border = s_darkTheme
+            ? new SolidColorBrush(ColorHelper.FromArgb(105, 250, 204, 21))
+            : new SolidColorBrush(ColorHelper.FromArgb(90, 202, 138, 4));
+        var content = new TextBlock
+        {
+            Text = message.Text,
+            IsTextSelectionEnabled = true,
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 12,
+            Foreground = PrimaryTextBrush(),
+        };
+        return BuildAiSpecialBubble("系统 · 兼容提示", content, background, border, foreground, message.CreatedAt);
+    }
+
+    private UIElement BuildAiChoiceBubble(AiChatMessage message, Action<IReadOnlyList<string>>? onSubmit)
+    {
+        var request = message.Choice ?? new AiChoiceRequest
+        {
+            Question = "该选择请求已损坏。",
+            Options = ["关闭"],
+            IsSubmitted = true,
+        };
+        var selected = new HashSet<string>(request.SelectedOptions, StringComparer.Ordinal);
+        var optionButtons = new List<(string Option, Button Button)>();
+        var optionsPanel = new StackPanel { Spacing = 7 };
+        var status = new TextBlock
+        {
+            FontSize = 11,
+            Foreground = SecondaryTextBrush(),
+            TextWrapping = TextWrapping.Wrap,
+        };
+        var submit = PrimaryButton("确认并继续");
+        submit.HorizontalAlignment = HorizontalAlignment.Left;
+
+        void RefreshChoiceState()
+        {
+            foreach (var (option, button) in optionButtons)
+            {
+                ApplySegmentState(button, selected.Contains(option));
+                button.IsEnabled = onSubmit is not null && !request.IsSubmitted;
+            }
+            submit.IsEnabled = onSubmit is not null && !request.IsSubmitted && selected.Count > 0;
+            submit.Visibility = onSubmit is not null && !request.IsSubmitted ? Visibility.Visible : Visibility.Collapsed;
+            status.Text = request.IsSubmitted
+                ? $"已选择：{string.Join("、", request.SelectedOptions)}"
+                : onSubmit is null
+                    ? "本次选择未完成。"
+                    : request.SelectionMode == AiChoiceSelectionMode.Single ? "请选择一项。" : "可选择多项，然后确认。";
+        }
+
+        foreach (var option in request.Options)
+        {
+            var button = SecondaryButton(option);
+            button.HorizontalAlignment = HorizontalAlignment.Stretch;
+            button.HorizontalContentAlignment = HorizontalAlignment.Left;
+            button.Content = new TextBlock { Text = option, TextWrapping = TextWrapping.Wrap };
+            button.Click += (_, _) =>
+            {
+                if (request.SelectionMode == AiChoiceSelectionMode.Single)
+                {
+                    selected.Clear();
+                    selected.Add(option);
+                }
+                else if (!selected.Add(option))
+                {
+                    selected.Remove(option);
+                }
+                RefreshChoiceState();
+            };
+            optionButtons.Add((option, button));
+            optionsPanel.Children.Add(button);
+        }
+        submit.Click += (_, _) =>
+        {
+            if (selected.Count == 0)
+                return;
+            request.SelectedOptions = request.Options.Where(selected.Contains).ToList();
+            request.IsSubmitted = true;
+            RefreshChoiceState();
+            onSubmit?.Invoke(request.SelectedOptions);
+        };
+        RefreshChoiceState();
+
+        var body = new StackPanel
+        {
+            Spacing = 9,
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = request.Question,
+                    IsTextSelectionEnabled = true,
+                    TextWrapping = TextWrapping.Wrap,
+                    FontSize = 13,
+                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                    Foreground = PrimaryTextBrush(),
+                },
+                optionsPanel,
+                status,
+                submit,
+            },
+        };
+        return BuildAiSpecialBubble("AI · 需要选择", body, SurfaceAltBrush(), BorderLightBrush(), PrimaryBrush(), message.CreatedAt);
+    }
+
+    private UIElement BuildAiSpecialBubble(
+        string label,
+        UIElement content,
+        Brush background,
+        Brush border,
+        Brush accent,
+        DateTimeOffset createdAt)
+    {
+        var panel = new StackPanel
+        {
+            HorizontalAlignment = HorizontalAlignment.Left,
+            MaxWidth = AiBubbleMaxWidth(),
+            Spacing = 4,
+            Margin = new Thickness(0, 0, 0, 16),
+        };
+        panel.Children.Add(new TextBlock
+        {
+            Text = label,
+            FontSize = 10,
+            FontWeight = Microsoft.UI.Text.FontWeights.Bold,
+            Foreground = accent,
+        });
+        panel.Children.Add(new Border
+        {
+            CornerRadius = new CornerRadius(14),
+            Padding = new Thickness(14, 11, 14, 11),
+            Background = background,
+            BorderBrush = border,
+            BorderThickness = new Thickness(1),
+            Child = content,
+        });
+        panel.Children.Add(new TextBlock
+        {
+            Text = FormatMessageTime(createdAt),
+            FontSize = 10,
+            Foreground = MutedBrush(),
+            Margin = new Thickness(4, -8, 4, 0),
+        });
+        return panel;
+    }
     private async Task ShowAddDeviceDialogAsync()
     {
         var wirelessPanel = new StackPanel { Spacing = 12 };
@@ -9410,13 +10231,6 @@ public sealed class MainWindow : Window
         {
             case Border border:
                 border.UseLayoutRounding = true;
-                if (HasRoundedCorners(border.CornerRadius) &&
-                    HasVisibleBrush(border.Background) &&
-                    HasZeroThickness(border.BorderThickness))
-                {
-                    border.BorderThickness = new Thickness(1);
-                    border.BorderBrush = RoundedEdgeBrush();
-                }
                 if (border.Child is not null)
                     PolishRoundedEdges(border.Child);
                 break;
@@ -9444,16 +10258,6 @@ public sealed class MainWindow : Window
         }
     }
 
-    private static bool HasRoundedCorners(CornerRadius radius)
-    {
-        return radius.TopLeft > 0 || radius.TopRight > 0 || radius.BottomRight > 0 || radius.BottomLeft > 0;
-    }
-
-    private static bool HasZeroThickness(Thickness thickness)
-    {
-        return thickness.Left <= 0 && thickness.Top <= 0 && thickness.Right <= 0 && thickness.Bottom <= 0;
-    }
-
     private static bool HasVisibleBrush(Brush? brush)
     {
         return brush switch
@@ -9463,7 +10267,6 @@ public sealed class MainWindow : Window
             _ => true,
         };
     }
-
     private ScrollViewer PageScroller(UIElement content)
     {
         var viewer = new ScrollViewer
@@ -9488,10 +10291,17 @@ public sealed class MainWindow : Window
         PointerEventHandler wheelHandler = (_, e) =>
         {
             var delta = e.GetCurrentPoint(viewer).Properties.MouseWheelDelta;
-            if (delta == 0)
+            var offsetBefore = viewer.VerticalOffset;
+            var handled = delta != 0 && TryScrollPageByWheelDelta(viewer, delta);
+            MouseWheelDiagnostics.Write(
+                "xaml-scrollviewer",
+                delta,
+                DescribeWheelTarget(viewer),
+                offsetBefore,
+                viewer.VerticalOffset,
+                handled);
+            if (!handled)
                 return;
-
-            ScrollPageByWheelDelta(viewer, delta);
             e.Handled = true;
         };
         viewer.AddHandler(UIElement.PointerWheelChangedEvent, wheelHandler, true);
@@ -9499,15 +10309,21 @@ public sealed class MainWindow : Window
 
     private void OnRootPointerWheelChanged(object sender, PointerRoutedEventArgs e)
     {
-        if (e.Handled || _activePageScroller is null || _activePageScroller.Visibility != Visibility.Visible)
+        var point = e.GetCurrentPoint(_root);
+        var delta = point.Properties.MouseWheelDelta;
+        MouseWheelDiagnostics.Write(
+            "xaml-root",
+            delta,
+            e.OriginalSource?.GetType().Name ?? "none",
+            null,
+            null,
+            e.Handled);
+        if (e.Handled || delta == 0)
             return;
 
-        var delta = e.GetCurrentPoint(_root).Properties.MouseWheelDelta;
-        if (delta == 0)
-            return;
-
-        ScrollPageByWheelDelta(_activePageScroller, delta);
-        e.Handled = true;
+        var target = FindWheelScrollTarget(e.OriginalSource as DependencyObject, delta)
+            ?? FindWheelScrollTarget(point.Position, delta);
+        e.Handled = target is not null && TryScrollPageByWheelDelta(target, delta);
     }
 
     private void InstallNativeWheelHook()
@@ -9517,8 +10333,134 @@ public sealed class MainWindow : Window
             return;
 
         _wndProcDelegate = NativeWindowProc;
+        _lowLevelWheelInput.Wheel += OnLowLevelMouseWheel;
+        _lowLevelWheelInput.Start();
         EnsureWindowMinimumHeight();
         RefreshNativeWheelHooks();
+    }
+
+    private void OnLowLevelMouseWheel(object? sender, LowLevelMouseWheelEventArgs e)
+    {
+        var screenPoint = new NativePoint { X = e.ScreenX, Y = e.ScreenY };
+        if (DispatcherQueue.HasThreadAccess)
+        {
+            ScheduleLowLevelWheelFallback(screenPoint, e.Delta);
+            return;
+        }
+
+        if (!DispatcherQueue.TryEnqueue(() => ScheduleLowLevelWheelFallback(screenPoint, e.Delta)))
+        {
+            MouseWheelDiagnostics.Write(
+                "low-level-queue-rejected",
+                e.Delta,
+                "none",
+                null,
+                null,
+                false,
+                "MOUSE_WHEEL_DISPATCH_REJECTED");
+        }
+    }
+
+    private void ScheduleLowLevelWheelFallback(NativePoint screenPoint, int delta)
+    {
+        if (delta == 0 || _wheelFallbackCancellation.IsCancellationRequested)
+            return;
+
+        if (_pendingLowLevelWheelFallback is null)
+        {
+            var target = FindNativeWheelTarget(screenPoint, delta);
+            _pendingLowLevelWheelFallback = new DeferredWheelFallback(
+                screenPoint,
+                delta,
+                target,
+                target?.VerticalOffset);
+        }
+        else
+        {
+            var pending = _pendingLowLevelWheelFallback;
+            _pendingLowLevelWheelFallback = pending with
+            {
+                ScreenPoint = screenPoint,
+                Delta = pending.Delta + delta,
+            };
+        }
+
+        MouseWheelDiagnostics.Write(
+            "low-level-captured",
+            delta,
+            DescribeWheelTarget(_pendingLowLevelWheelFallback.InitialTarget),
+            _pendingLowLevelWheelFallback.OffsetBeforeDefaultHandling,
+            null,
+            true);
+        if (_lowLevelWheelFallbackScheduled)
+            return;
+
+        _lowLevelWheelFallbackScheduled = true;
+        _ = ApplyLowLevelWheelFallbackAfterDelayAsync(_wheelFallbackCancellation.Token);
+    }
+
+    private async Task ApplyLowLevelWheelFallbackAfterDelayAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(MouseWheelScrollPolicy.LowLevelFallbackDelay, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+
+        if (!DispatcherQueue.TryEnqueue(ApplyPendingLowLevelWheelFallback))
+        {
+            _lowLevelWheelFallbackScheduled = false;
+            MouseWheelDiagnostics.Write(
+                "low-level-fallback-queue-rejected",
+                0,
+                "none",
+                null,
+                null,
+                false,
+                "MOUSE_WHEEL_DISPATCH_REJECTED");
+        }
+    }
+
+    private void ApplyPendingLowLevelWheelFallback()
+    {
+        var fallback = _pendingLowLevelWheelFallback;
+        _pendingLowLevelWheelFallback = null;
+        _lowLevelWheelFallbackScheduled = false;
+        if (fallback is null || fallback.Delta == 0)
+            return;
+
+        var offsetAfterDefaultHandling = fallback.InitialTarget?.VerticalOffset;
+        if (!MouseWheelScrollPolicy.ShouldScheduleDeferredFallback(
+                isOutermostNativeDispatch: true,
+                fallback.OffsetBeforeDefaultHandling,
+                offsetAfterDefaultHandling))
+        {
+            MouseWheelDiagnostics.Write(
+                "low-level-default-handled",
+                fallback.Delta,
+                DescribeWheelTarget(fallback.InitialTarget),
+                fallback.OffsetBeforeDefaultHandling,
+                offsetAfterDefaultHandling,
+                true);
+            return;
+        }
+
+        var handled = TryRouteNativeWheel(
+            fallback.ScreenPoint,
+            fallback.Delta,
+            out var target,
+            out var offsetBefore,
+            out var requestedOffset);
+        MouseWheelDiagnostics.Write(
+            "low-level-deferred-fallback",
+            fallback.Delta,
+            DescribeWheelTarget(target),
+            offsetBefore,
+            requestedOffset,
+            handled);
     }
 
     private void RefreshNativeWheelHooks()
@@ -9536,23 +10478,53 @@ public sealed class MainWindow : Window
 
     private void RestoreNativeWheelHook()
     {
+        var installedProc = _wndProcDelegate is null
+            ? IntPtr.Zero
+            : Marshal.GetFunctionPointerForDelegate(_wndProcDelegate);
         foreach (var (hwnd, previousProc) in _hookedWndProcs.ToList())
-            SetWindowLongPtr(hwnd, GwlWndProc, previousProc);
+        {
+            if (installedProc != IntPtr.Zero && GetWindowLongPtr(hwnd, GwlWndProc) == installedProc)
+                SetWindowLongPtr(hwnd, GwlWndProc, previousProc);
+        }
         _hookedWndProcs.Clear();
         _wndProcDelegate = null;
     }
 
     private void HookWindowForMouseWheel(IntPtr hwnd)
     {
-        if (hwnd == IntPtr.Zero || _hookedWndProcs.ContainsKey(hwnd) || _wndProcDelegate is null)
+        if (hwnd == IntPtr.Zero || _wndProcDelegate is null)
             return;
 
         // WinUI 3 and remote-control clients can deliver wheel input to late-created child HWNDs.
-        // Refreshing these hooks keeps page scrolling independent from which visual child has focus.
+        // Read the live WndProc because WinUI can replace it after an earlier hook was installed.
         var newProc = Marshal.GetFunctionPointerForDelegate(_wndProcDelegate);
+        var currentProc = GetWindowLongPtr(hwnd, GwlWndProc);
+        if (!MouseWheelScrollPolicy.ShouldInstallNativeHook(hwnd, currentProc, newProc))
+            return;
+
         var previousProc = SetWindowLongPtr(hwnd, GwlWndProc, newProc);
         if (previousProc != IntPtr.Zero)
+        {
             _hookedWndProcs[hwnd] = previousProc;
+            MouseWheelDiagnostics.Write(
+                "native-hook-installed",
+                0,
+                hwnd == _windowHandle ? "window" : "child-window",
+                null,
+                null,
+                true);
+            return;
+        }
+
+        MouseWheelDiagnostics.Write(
+            "native-hook-install-failed",
+            0,
+            hwnd == _windowHandle ? "window" : "child-window",
+            null,
+            null,
+            false,
+            "MOUSE_WHEEL_NATIVE_HOOK_FAILED",
+            $"Win32Error: {Marshal.GetLastWin32Error()}");
     }
 
     private IntPtr NativeWindowProc(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam)
@@ -9566,9 +10538,122 @@ public sealed class MainWindow : Window
             return result;
         }
 
-        return _hookedWndProcs.TryGetValue(hwnd, out var previousProc)
+        // XAML pointer routing does not receive wheel input from every native child HWND.
+        // Always observe native messages; the deferred offset checks below prevent duplicate scrolling.
+        var isWheelMessage = message is (WmMouseWheel or WmPointerWheel);
+        DeferredWheelFallback? fallback = null;
+        if (isWheelMessage)
+        {
+            MouseWheelDiagnostics.Write(
+                "native-message-received",
+                MouseWheelScrollPolicy.DecodeDelta(wParam),
+                hwnd == _windowHandle ? "window" : "child-window",
+                null,
+                null,
+                true);
+            _nativeWheelDispatchDepth++;
+        }
+
+        try
+        {
+            if (isWheelMessage && _nativeWheelDispatchDepth == 1)
+                fallback = CaptureDeferredWheelFallback(wParam, lParam);
+
+            // Preserve WinUI and child HWND handling before applying the app-level fallback.
+            return ForwardWindowMessage(hwnd, message, wParam, lParam);
+        }
+        finally
+        {
+            if (isWheelMessage)
+            {
+                _nativeWheelDispatchDepth--;
+                if (fallback is not null)
+                    ScheduleDeferredWheelFallback(fallback);
+            }
+        }
+    }
+
+    private IntPtr ForwardWindowMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam)
+        => _hookedWndProcs.TryGetValue(hwnd, out var previousProc)
             ? CallWindowProc(previousProc, hwnd, message, wParam, lParam)
             : DefWindowProc(hwnd, message, wParam, lParam);
+
+    private DeferredWheelFallback? CaptureDeferredWheelFallback(IntPtr wParam, IntPtr lParam)
+    {
+        var delta = MouseWheelScrollPolicy.DecodeDelta(wParam);
+        if (delta == 0)
+            return null;
+
+        var screenPoint = GetCursorPos(out var cursorPoint)
+            ? cursorPoint
+            : DecodeNativePoint(lParam);
+        var target = DispatcherQueue.HasThreadAccess
+            ? FindNativeWheelTarget(screenPoint, delta)
+            : null;
+        return new DeferredWheelFallback(screenPoint, delta, target, target?.VerticalOffset);
+    }
+
+    private void ScheduleDeferredWheelFallback(DeferredWheelFallback fallback)
+    {
+        var offsetAfterDefaultHandling = fallback.InitialTarget?.VerticalOffset;
+        if (!MouseWheelScrollPolicy.ShouldScheduleDeferredFallback(
+                isOutermostNativeDispatch: true,
+                fallback.OffsetBeforeDefaultHandling,
+                offsetAfterDefaultHandling))
+        {
+            MouseWheelDiagnostics.Write(
+                "default-handled",
+                fallback.Delta,
+                DescribeWheelTarget(fallback.InitialTarget),
+                fallback.OffsetBeforeDefaultHandling,
+                offsetAfterDefaultHandling,
+                true);
+            return;
+        }
+
+        if (!DispatcherQueue.TryEnqueue(() => ApplyDeferredWheelFallback(fallback)))
+        {
+            MouseWheelDiagnostics.Write(
+                "fallback-queue-rejected",
+                fallback.Delta,
+                DescribeWheelTarget(fallback.InitialTarget),
+                fallback.OffsetBeforeDefaultHandling,
+                offsetAfterDefaultHandling,
+                false);
+        }
+    }
+
+    private void ApplyDeferredWheelFallback(DeferredWheelFallback fallback)
+    {
+        var offsetBeforeFallback = fallback.InitialTarget?.VerticalOffset;
+        if (!MouseWheelScrollPolicy.ShouldScheduleDeferredFallback(
+                isOutermostNativeDispatch: true,
+                fallback.OffsetBeforeDefaultHandling,
+                offsetBeforeFallback))
+        {
+            MouseWheelDiagnostics.Write(
+                "default-handled-async",
+                fallback.Delta,
+                DescribeWheelTarget(fallback.InitialTarget),
+                fallback.OffsetBeforeDefaultHandling,
+                offsetBeforeFallback,
+                true);
+            return;
+        }
+
+        var handled = TryRouteNativeWheel(
+            fallback.ScreenPoint,
+            fallback.Delta,
+            out var target,
+            out var offsetBefore,
+            out var requestedOffset);
+        MouseWheelDiagnostics.Write(
+            "deferred-fallback",
+            fallback.Delta,
+            DescribeWheelTarget(target),
+            offsetBefore,
+            requestedOffset,
+            handled);
     }
 
     private void EnsureWindowMinimumHeight()
@@ -9622,12 +10707,108 @@ public sealed class MainWindow : Window
         return (int)Math.Ceiling(MinimumWindowHeightForDeviceTabs * dpi / 96d);
     }
 
-    private static void ScrollPageByWheelDelta(ScrollViewer viewer, int delta)
+    private static bool TryScrollPageByWheelDelta(ScrollViewer viewer, int delta)
+        => TryScrollPageByWheelDelta(viewer, delta, out _);
+
+    private static bool TryScrollPageByWheelDelta(ScrollViewer viewer, int delta, out double target)
     {
-        var scrollDistance = delta / 120d * 64d;
-        var target = Math.Clamp(viewer.VerticalOffset - scrollDistance, 0, viewer.ScrollableHeight);
-        viewer.ChangeView(null, target, null, false);
+        if (!MouseWheelScrollPolicy.TryCalculateTarget(
+                viewer.VerticalOffset,
+                viewer.ScrollableHeight,
+                delta,
+                out target))
+            return false;
+        return viewer.ChangeView(null, target, null, true);
     }
+
+    private bool TryRouteNativeWheel(
+        NativePoint screenPoint,
+        int delta,
+        out ScrollViewer? target,
+        out double? offsetBefore,
+        out double? requestedOffset)
+    {
+        target = FindNativeWheelTarget(screenPoint, delta);
+        offsetBefore = target?.VerticalOffset;
+        requestedOffset = null;
+        if (target is null)
+            return false;
+
+        var handled = TryScrollPageByWheelDelta(target, delta, out var calculatedOffset);
+        requestedOffset = calculatedOffset;
+        return handled;
+    }
+
+    private ScrollViewer? FindNativeWheelTarget(NativePoint screenPoint, int delta)
+    {
+        var clientPoint = screenPoint;
+        if (!ScreenToClient(_windowHandle, ref clientPoint))
+            return null;
+        var dpi = Math.Max(96u, GetDpiForWindow(_windowHandle));
+        return FindWheelScrollTarget(
+            new Point(clientPoint.X * 96d / dpi, clientPoint.Y * 96d / dpi),
+            delta);
+    }
+
+    private ScrollViewer? FindWheelScrollTarget(Point point, int delta)
+    {
+        var topmost = VisualTreeHelper.FindElementsInHostCoordinates(point, _root).FirstOrDefault();
+        return FindWheelScrollTarget(topmost, delta);
+    }
+
+    private ScrollViewer? FindWheelScrollTarget(DependencyObject? source, int delta)
+    {
+        var visited = new HashSet<ScrollViewer>();
+        var current = source;
+        while (current is not null)
+        {
+            if (current is ScrollViewer viewer &&
+                viewer.Visibility == Visibility.Visible &&
+                visited.Add(viewer) &&
+                MouseWheelScrollPolicy.TryCalculateTarget(
+                    viewer.VerticalOffset,
+                    viewer.ScrollableHeight,
+                    delta,
+                    out _))
+            {
+                return viewer;
+            }
+            current = VisualTreeHelper.GetParent(current);
+        }
+
+        return _activePageScroller is not null &&
+            _activePageScroller.Visibility == Visibility.Visible &&
+            visited.Add(_activePageScroller) &&
+            MouseWheelScrollPolicy.TryCalculateTarget(
+                _activePageScroller.VerticalOffset,
+                _activePageScroller.ScrollableHeight,
+                delta,
+                out _)
+            ? _activePageScroller
+            : null;
+    }
+
+    private static string DescribeWheelTarget(ScrollViewer? viewer)
+    {
+        if (viewer is null)
+            return "none";
+        if (!string.IsNullOrWhiteSpace(viewer.Name))
+            return viewer.Name;
+        return viewer.Content?.GetType().Name ?? nameof(ScrollViewer);
+    }
+
+    private static NativePoint DecodeNativePoint(IntPtr lParam)
+        => new()
+        {
+            X = unchecked((short)((long)lParam & 0xffff)),
+            Y = unchecked((short)(((long)lParam >> 16) & 0xffff)),
+        };
+
+    private sealed record DeferredWheelFallback(
+        NativePoint ScreenPoint,
+        int Delta,
+        ScrollViewer? InitialTarget,
+        double? OffsetBeforeDefaultHandling);
 
     private const int GwlWndProc = -4;
     private const uint WmGetMinMaxInfo = 0x0024;
@@ -9671,6 +10852,9 @@ public sealed class MainWindow : Window
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
     private static extern IntPtr SetWindowLongPtr(IntPtr hwnd, int index, IntPtr newLong);
 
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
+    private static extern IntPtr GetWindowLongPtr(IntPtr hwnd, int index);
+
     [DllImport("user32.dll", SetLastError = true)]
     private static extern IntPtr CallWindowProc(IntPtr previousProc, IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
 
@@ -9682,6 +10866,12 @@ public sealed class MainWindow : Window
 
     [DllImport("user32.dll")]
     private static extern uint GetDpiForWindow(IntPtr hwnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool GetCursorPos(out NativePoint point);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool ScreenToClient(IntPtr hwnd, ref NativePoint point);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool GetWindowRect(IntPtr hwnd, out NativeRect rect);
@@ -9762,8 +10952,11 @@ public sealed class MainWindow : Window
     {
         return new Border
         {
+            UseLayoutRounding = true,
             CornerRadius = new CornerRadius(10),
             Background = PrimaryLightBrush(),
+            BorderBrush = TransparentBrush(),
+            BorderThickness = new Thickness(1),
             Padding = new Thickness(12),
             Child = new TextBlock
             {
