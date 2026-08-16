@@ -138,6 +138,20 @@ Frontend
 }
 ```
 
+## 无障碍触控参数
+
+`android.accessibility.control` 的触控操作支持以下 `args`：
+
+```json
+{"operation":"accessibility.touch.tap","args":{"x":400,"y":640,"coordinateWidth":800,"coordinateHeight":1280}}
+```
+
+```json
+{"operation":"accessibility.touch.swipe","args":{"startX":400,"startY":1000,"endX":400,"endY":300,"durationMs":250,"coordinateWidth":800,"coordinateHeight":1280}}
+```
+
+`coordinateWidth` 与 `coordinateHeight` 必须同时提供且大于零。提供时，坐标表示投屏编码帧空间，Android handler 会映射到当前物理屏幕；两个字段都省略时保留 v1 旧行为，坐标直接表示当前物理屏幕像素。字段不完整、尺寸无效或坐标越界时返回 `COMPANION_INVALID_ARGUMENT`。
+
 ## 设计边界
 
 1. Core 只负责把 IPC invoke 转换成 QUIC command request，不直接调用 Android API。
@@ -164,3 +178,43 @@ impl CompanionCommandTransport for QuicCompanionCommandTransport {
     }
 }
 ```
+
+
+## 应用元数据分页
+
+`android.app.list/app.list` 支持以下可选参数：
+
+```json
+{
+  "includeSystem": true,
+  "includeIcons": true,
+  "iconSizePx": 48,
+  "offset": 0,
+  "limit": 64,
+  "packageNames": ["com.android.settings", "com.example.app"]
+}
+```
+
+- `packageNames` 存在时使用显式查询模式，最多 64 项；省略时保留旧版枚举模式。
+- `includeIcons=true` 时单页上限为 64，图标在 Android 端渲染为 PNG。
+- `iconSizePx` 允许 32 至 96，桌面端默认 48。
+- 响应保留 `apps/count/total/offset/limit`，并新增 `queryMode` 与 `unresolvedPackages`。
+- 每个 app 可新增 `iconPngBase64`；渲染失败时返回 `iconErrorCode=APP_ICON_RENDER_FAILED`。
+- 所有新增字段均为可选字段，旧桌面与旧伴侣端保持兼容。
+## 设备锁屏状态
+
+`android.device.power/device.state` 无需参数，返回 Android Framework 的当前状态：
+
+```json
+{
+  "state": "locked",
+  "isInteractive": true,
+  "isKeyguardLocked": true,
+  "isDeviceLocked": true
+}
+```
+
+- `state` 仅允许 `locked` 或 `unlocked`。
+- 屏幕不处于 interactive、Keyguard 已锁定或当前用户设备已锁定时，`state=locked`。
+- 该操作不申请新权限，也不会唤醒或解锁设备。
+- Companion `0.13.0` 起支持；旧版本不支持时桌面端必须有界回退 ADB，不得把失败当作已解锁。

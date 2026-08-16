@@ -6,11 +6,11 @@ object AndroidCapabilityCatalog {
     fun defaultCapabilities(): List<CompanionCapability> = listOf(
         CompanionCapability(
             id = "android.device.power",
-            title = "屏幕唤醒",
+            title = "设备电源与锁屏状态",
             androidPermissions = listOf(Manifest.permission.WAKE_LOCK),
             specialGrants = emptyList(),
             sensitivity = CapabilitySensitivity.LOW,
-            operations = listOf("device.wake"),
+            operations = listOf("device.wake", "device.state"),
             requiresUserConsent = false,
         ),
         CompanionCapability(

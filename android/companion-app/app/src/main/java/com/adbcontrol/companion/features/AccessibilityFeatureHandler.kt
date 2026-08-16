@@ -54,19 +54,24 @@ class AccessibilityFeatureHandler(private val context: Context) : FeatureCommand
             return invalidArgument(command, "accessibility.touch.tap 需要整数参数 x 和 y。")
         }
         val bounds = screenBounds()
-        if (!isPointInsideScreen(x, y, bounds)) {
-            return invalidArgument(command, "点击坐标 ($x, $y) 超出当前屏幕范围 ${bounds.width}x${bounds.height}。")
+        val coordinateBounds = coordinateBounds(command, bounds)
+            ?: return invalidArgument(command, "coordinateWidth 和 coordinateHeight 必须同时提供且大于 0。")
+        val point = mapPoint(x, y, coordinateBounds, bounds)
+        if (point == null) {
+            return invalidArgument(command, "点击坐标 ($x, $y) 超出来源坐标空间 ${coordinateBounds.width}x${coordinateBounds.height}。")
         }
 
-        val dispatched = CompanionAccessibilityService.dispatchTap(x, y)
+        val dispatched = CompanionAccessibilityService.dispatchTap(point.x, point.y)
         return if (dispatched) {
             CompanionCommandResult.success(
                 requestId = command.requestId,
                 result = mapOf(
                     "dispatched" to true,
                     "action" to "触摸点击",
-                    "x" to x,
-                    "y" to y,
+                    "x" to point.x,
+                    "y" to point.y,
+                    "coordinateWidth" to coordinateBounds.width,
+                    "coordinateHeight" to coordinateBounds.height,
                     "screenWidth" to bounds.width,
                     "screenHeight" to bounds.height,
                 ),
@@ -87,22 +92,28 @@ class AccessibilityFeatureHandler(private val context: Context) : FeatureCommand
             return invalidArgument(command, "accessibility.touch.swipe 需要整数参数 startX、startY、endX 和 endY。")
         }
         val bounds = screenBounds()
-        if (!isPointInsideScreen(startX, startY, bounds) || !isPointInsideScreen(endX, endY, bounds)) {
-            return invalidArgument(command, "滑动坐标超出当前屏幕范围 ${bounds.width}x${bounds.height}。")
+        val coordinateBounds = coordinateBounds(command, bounds)
+            ?: return invalidArgument(command, "coordinateWidth 和 coordinateHeight 必须同时提供且大于 0。")
+        val start = mapPoint(startX, startY, coordinateBounds, bounds)
+        val end = mapPoint(endX, endY, coordinateBounds, bounds)
+        if (start == null || end == null) {
+            return invalidArgument(command, "滑动坐标超出来源坐标空间 ${coordinateBounds.width}x${coordinateBounds.height}。")
         }
 
-        val dispatched = CompanionAccessibilityService.dispatchSwipe(startX, startY, endX, endY, durationMs)
+        val dispatched = CompanionAccessibilityService.dispatchSwipe(start.x, start.y, end.x, end.y, durationMs)
         return if (dispatched) {
             CompanionCommandResult.success(
                 requestId = command.requestId,
                 result = mapOf(
                     "dispatched" to true,
                     "action" to "触摸滑动",
-                    "startX" to startX,
-                    "startY" to startY,
-                    "endX" to endX,
-                    "endY" to endY,
+                    "startX" to start.x,
+                    "startY" to start.y,
+                    "endX" to end.x,
+                    "endY" to end.y,
                     "durationMs" to durationMs.coerceIn(1, 3000),
+                    "coordinateWidth" to coordinateBounds.width,
+                    "coordinateHeight" to coordinateBounds.height,
                     "screenWidth" to bounds.width,
                     "screenHeight" to bounds.height,
                 ),
@@ -191,6 +202,33 @@ class AccessibilityFeatureHandler(private val context: Context) : FeatureCommand
         return x >= 0 && y >= 0 && x < bounds.width && y < bounds.height
     }
 
+    private fun coordinateBounds(command: CompanionCommandContext, screenBounds: ScreenBounds): ScreenBounds? {
+        val hasWidth = command.args.containsKey("coordinateWidth")
+        val hasHeight = command.args.containsKey("coordinateHeight")
+        // Omitting both fields preserves v1 callers that already send physical screen coordinates.
+        if (!hasWidth && !hasHeight) return screenBounds
+        if (hasWidth != hasHeight) return null
+
+        val width = intArg(command, "coordinateWidth") ?: return null
+        val height = intArg(command, "coordinateHeight") ?: return null
+        return if (width > 0 && height > 0) ScreenBounds(width, height) else null
+    }
+
+    private fun mapPoint(x: Int, y: Int, source: ScreenBounds, target: ScreenBounds): ScreenPoint? {
+        if (!isPointInsideScreen(x, y, source)) return null
+        return ScreenPoint(
+            scaleAxis(x, source.width, target.width),
+            scaleAxis(y, source.height, target.height),
+        )
+    }
+
+    private fun scaleAxis(value: Int, sourceExtent: Int, targetExtent: Int): Int {
+        if (sourceExtent == 1 || targetExtent == 1) return 0
+        return ((value.toLong() * (targetExtent - 1)) / (sourceExtent - 1))
+            .toInt()
+            .coerceIn(0, targetExtent - 1)
+    }
+
     private fun openAccessibilitySettings() {
         context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -198,4 +236,5 @@ class AccessibilityFeatureHandler(private val context: Context) : FeatureCommand
     }
 
     private data class ScreenBounds(val width: Int, val height: Int)
+    private data class ScreenPoint(val x: Int, val y: Int)
 }

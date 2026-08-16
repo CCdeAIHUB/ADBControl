@@ -25,7 +25,7 @@ public sealed class CompanionProjectionSession : IAsyncDisposable
     private int _decodedFrames;
 
     private sealed record VideoPacket(byte[] Data, long TimestampUs, int Flags, long ArrivalTimestamp);
-    private sealed record TouchStart(int X, int Y, long Timestamp);
+    private sealed record TouchStart(ProjectionTouchPosition Position, long Timestamp);
 
     public CompanionProjectionSession(CompanionQuicServer server)
     {
@@ -130,9 +130,9 @@ public sealed class CompanionProjectionSession : IAsyncDisposable
 
     public Task SendTouchAsync(
         int action,
-        int x,
-        int y,
+        ProjectionTouchPosition position,
         uint pointerId,
+        bool isTapGesture,
         CancellationToken cancellationToken = default)
     {
         var device = _device;
@@ -140,39 +140,72 @@ public sealed class CompanionProjectionSession : IAsyncDisposable
             return Task.CompletedTask;
         if (action == 0)
         {
-            _touches[pointerId] = new TouchStart(x, y, Stopwatch.GetTimestamp());
+            _touches[pointerId] = new TouchStart(position, Stopwatch.GetTimestamp());
             return Task.CompletedTask;
         }
         if (action == 2)
             return Task.CompletedTask;
         if (action != 1 || !_touches.TryRemove(pointerId, out var start))
             return Task.CompletedTask;
+        if (start.Position.Space != position.Space)
+        {
+            // A rotation changed the video coordinate space during this gesture; replaying it would target the wrong pixels.
+            WriteDiagnostic(
+                "app.control.touch_dropped",
+                $"reason=coordinate_space_changed; start={start.Position.Space.Width}x{start.Position.Space.Height}; end={position.Space.Width}x{position.Space.Height}");
+            return Task.CompletedTask;
+        }
 
         var elapsedMs = (int)Math.Clamp(
             Stopwatch.GetElapsedTime(start.Timestamp).TotalMilliseconds,
             1,
             3000);
-        var distance = Math.Sqrt(Math.Pow(x - start.X, 2) + Math.Pow(y - start.Y, 2));
-        if (distance < 12)
+        if (isTapGesture)
         {
+            WriteDiagnostic(
+                "app.control.tap",
+                $"x={position.X}; y={position.Y}; frame={position.Space.Width}x{position.Space.Height}");
             return device.SendCommandNoWaitAsync(
                 "android.accessibility.control",
                 "accessibility.touch.tap",
-                new Dictionary<string, object?> { ["x"] = x, ["y"] = y },
+                new Dictionary<string, object?>
+                {
+                    ["x"] = position.X,
+                    ["y"] = position.Y,
+                    ["coordinateWidth"] = position.Space.Width,
+                    ["coordinateHeight"] = position.Space.Height,
+                },
                 cancellationToken);
         }
+
+        WriteDiagnostic(
+            "app.control.swipe",
+            $"start={start.Position.X},{start.Position.Y}; end={position.X},{position.Y}; frame={position.Space.Width}x{position.Space.Height}; duration_ms={elapsedMs}");
         return device.SendCommandNoWaitAsync(
             "android.accessibility.control",
             "accessibility.touch.swipe",
             new Dictionary<string, object?>
             {
-                ["startX"] = start.X,
-                ["startY"] = start.Y,
-                ["endX"] = x,
-                ["endY"] = y,
+                ["startX"] = start.Position.X,
+                ["startY"] = start.Position.Y,
+                ["endX"] = position.X,
+                ["endY"] = position.Y,
                 ["durationMs"] = elapsedMs,
+                ["coordinateWidth"] = position.Space.Width,
+                ["coordinateHeight"] = position.Space.Height,
             },
             cancellationToken);
+    }
+
+    public Task CancelTouchAsync(uint pointerId)
+    {
+        if (_touches.TryRemove(pointerId, out var start))
+        {
+            WriteDiagnostic(
+                "app.control.touch_dropped",
+                $"reason=pointer_capture_lost; frame={start.Position.Space.Width}x{start.Position.Space.Height}");
+        }
+        return Task.CompletedTask;
     }
 
     public Task SendKeycodeAsync(int action, int keycode, CancellationToken cancellationToken = default)

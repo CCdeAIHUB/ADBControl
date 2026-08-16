@@ -1,21 +1,32 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using ADBControl.Desktop.Models;
 
 namespace ADBControl.Desktop.Services;
 
-public sealed class DeviceService
+public sealed class DeviceService : IAiDeviceInventory
 {
+    private const string NoWirelessCandidateMessage = "该设备没有可用的无线 ADB 地址；请先通过配对或 mDNS 发现设备。";
     private readonly SettingsService _settings;
-    private readonly AdbService _adb;
+    private readonly IAdbConnectionGateway _adb;
+    private readonly IDeviceConnectionLogger _connectionLogger;
     private readonly SemaphoreSlim _connectionGate = new(1, 1);
+    private readonly ConditionalWeakTable<DeviceModel, SemaphoreSlim> _deviceConnectionGates = new();
     private readonly HashSet<DeviceModel> _autoConnectSuppressedDevices = new();
 
     public ObservableCollection<DeviceModel> Devices { get; } = new();
 
-    public DeviceService(SettingsService settings, AdbService adb)
+    public IReadOnlyList<DeviceModel> GetDevices() => Devices.ToArray();
+
+    public DeviceService(
+        SettingsService settings,
+        IAdbConnectionGateway adb,
+        IDeviceConnectionLogger? connectionLogger = null)
     {
         _settings = settings;
         _adb = adb;
+        _connectionLogger = connectionLogger ?? NullDeviceConnectionLogger.Instance;
 
         foreach (var saved in settings.Current.Devices)
         {
@@ -76,49 +87,38 @@ public sealed class DeviceService
         if (service is not null)
             ApplyDiscoveredEndpoint(existing, service);
 
-        await RefreshConnectivityCoreAsync();
-        if (!existing.IsConnected)
-            return new AdbCommandResult(1, result.Stdout, "无线 ADB 端点短暂连接后已离线。");
-
         Persist();
         return result;
     }
 
     public async Task<AdbCommandResult> ConnectSavedWirelessDeviceAsync(DeviceModel device)
     {
-        await _connectionGate.WaitAsync();
-        try
+        if (!IsWirelessDevice(device))
+            return new AdbCommandResult(1, string.Empty, "该设备不是可连接的无线 ADB 设备。");
+
+        _autoConnectSuppressedDevices.Remove(device);
+        var discovery = await _adb.DiscoverMdnsServicesAsync();
+        var result = await ConnectWirelessDeviceAsync(
+            device,
+            discovery.Services,
+            Devices.Count(saved => IsWirelessDevice(saved)) == 1,
+            explicitConnection: true);
+        if (!IsConnectionSuccessful(result))
         {
-            if (!IsWirelessDevice(device))
-                return new AdbCommandResult(1, string.Empty, "该设备不是可连接的无线 ADB 设备。");
-
-            _autoConnectSuppressedDevices.Remove(device);
-            var discovery = await _adb.DiscoverMdnsServicesAsync();
-            var result = await ConnectWirelessDeviceCoreAsync(
-                device,
-                discovery.Services,
-                Devices.Count(saved => IsWirelessDevice(saved)) == 1);
-            if (!IsConnectionSuccessful(result))
-            {
-                device.IsConnected = false;
-                return result;
-            }
-
-            await RefreshConnectivityCoreAsync();
-            if (!device.IsConnected)
-                return new AdbCommandResult(1, result.Stdout, "ADB 已接受连接命令，但设备未出现在在线设备列表中。");
-            Persist();
+            device.IsConnected = false;
             return result;
         }
-        finally
-        {
-            _connectionGate.Release();
-        }
+
+        if (!device.IsConnected)
+            return new AdbCommandResult(1, result.Stdout, "ADB 已接受连接命令，但设备未出现在在线设备列表中。");
+        Persist();
+        return result;
     }
 
     public async Task<AdbCommandResult> ConnectSavedWirelessDeviceAtEndpointAsync(DeviceModel device, string ip, int port)
     {
-        await _connectionGate.WaitAsync();
+        var deviceGate = DeviceConnectionGate(device);
+        await deviceGate.WaitAsync();
         try
         {
             if (!IsWirelessDevice(device))
@@ -146,21 +146,19 @@ public sealed class DeviceService
             device.IpAddress = ip.Trim();
             device.Port = port;
             device.IsConnected = true;
-            await RefreshConnectivityCoreAsync();
-            if (!device.IsConnected)
-                return new AdbCommandResult(1, result.Stdout, "无线 ADB 端点短暂连接后已离线。");
             Persist();
             return result;
         }
         finally
         {
-            _connectionGate.Release();
+            deviceGate.Release();
         }
     }
 
     public async Task<AdbCommandResult> DisconnectDeviceAsync(DeviceModel device)
     {
-        await _connectionGate.WaitAsync();
+        var deviceGate = DeviceConnectionGate(device);
+        await deviceGate.WaitAsync();
         try
         {
             var result = await _adb.DisconnectAsync(device.DeviceId);
@@ -171,7 +169,7 @@ public sealed class DeviceService
         }
         finally
         {
-            _connectionGate.Release();
+            deviceGate.Release();
         }
     }
 
@@ -213,10 +211,23 @@ public sealed class DeviceService
 
     public async Task<AdbCommandResult> RefreshConnectivityAsync()
     {
+        var traceId = Guid.NewGuid().ToString("N");
+        var stopwatch = Stopwatch.StartNew();
         await _connectionGate.WaitAsync();
+        var queueWaitMilliseconds = stopwatch.ElapsedMilliseconds;
         try
         {
-            return await RefreshConnectivityCoreAsync();
+            var result = await RefreshConnectivityCoreAsync();
+            stopwatch.Stop();
+            await _connectionLogger.WriteAsync(new DeviceConnectionLogEntry(
+                traceId,
+                "all-devices",
+                "refresh-all",
+                stopwatch.ElapsedMilliseconds,
+                queueWaitMilliseconds,
+                result.Success ? "completed" : "failed",
+                result.Success ? null : "DEVICE_CONNECTION_REFRESH_FAILED"));
+            return result;
         }
         finally
         {
@@ -226,9 +237,88 @@ public sealed class DeviceService
 
     public async Task<bool> EnsureDeviceOnlineAsync(DeviceModel device)
     {
-        await RefreshConnectivityAsync();
-        var current = Devices.FirstOrDefault(saved => ReferenceEquals(saved, device) || saved.DeviceId.Equals(device.DeviceId, StringComparison.OrdinalIgnoreCase));
-        return current?.IsConnected == true;
+        if (string.IsNullOrWhiteSpace(device.DeviceId))
+            return false;
+        if (DeviceConnectivityPolicy.CanUseCachedOnlineState(device.IsConnected))
+            return true;
+
+        var traceId = Guid.NewGuid().ToString("N");
+        var stopwatch = Stopwatch.StartNew();
+        var probe = await ProbeDeviceOnlineAsync(device);
+        if (probe.Online)
+        {
+            Persist();
+            stopwatch.Stop();
+            await _connectionLogger.WriteAsync(new DeviceConnectionLogEntry(
+                traceId,
+                device.DeviceId,
+                "foreground-target-probe",
+                stopwatch.ElapsedMilliseconds,
+                0,
+                "online"));
+            return true;
+        }
+
+        if (!probe.Result.Success || !IsWirelessDevice(device) || _autoConnectSuppressedDevices.Contains(device))
+        {
+            stopwatch.Stop();
+            await _connectionLogger.WriteAsync(new DeviceConnectionLogEntry(
+                traceId,
+                device.DeviceId,
+                "foreground-target-probe",
+                stopwatch.ElapsedMilliseconds,
+                0,
+                "offline",
+                probe.Result.Success ? "DEVICE_CONNECTION_ENDPOINT_UNAVAILABLE" : "DEVICE_CONNECTION_PROBE_FAILED"));
+            return false;
+        }
+
+        var connect = await ConnectWirelessDeviceAsync(
+            device,
+            probe.Services,
+            Devices.Count(saved => IsWirelessDevice(saved)) == 1,
+            explicitConnection: false);
+        var online = IsConnectionSuccessful(connect) && device.IsConnected;
+        if (online)
+            Persist();
+        stopwatch.Stop();
+        await _connectionLogger.WriteAsync(new DeviceConnectionLogEntry(
+            traceId,
+            device.DeviceId,
+            "foreground-target-connect",
+            stopwatch.ElapsedMilliseconds,
+            0,
+            online ? "online" : "offline",
+            online ? null : "DEVICE_CONNECTION_CONNECT_FAILED"));
+        return online;
+    }
+
+    private async Task<(bool Online, AdbCommandResult Result, IReadOnlyList<AdbMdnsService> Services)> ProbeDeviceOnlineAsync(DeviceModel device)
+    {
+        var devicesResult = await _adb.DevicesAsync();
+        if (!devicesResult.Success)
+            return (false, devicesResult, Array.Empty<AdbMdnsService>());
+
+        var onlineDevices = ParseOnlineDevices(devicesResult.Stdout)
+            .ToDictionary(online => online.DeviceId, StringComparer.OrdinalIgnoreCase);
+        var online = FindOnlineDevice(device, onlineDevices, Array.Empty<AdbMdnsService>());
+        if (online is not null)
+        {
+            ApplyOnlineDevice(device, online, Array.Empty<AdbMdnsService>());
+            return (true, devicesResult, Array.Empty<AdbMdnsService>());
+        }
+
+        var discovery = await _adb.DiscoverMdnsServicesAsync();
+        var services = discovery.Result.Success ? discovery.Services : Array.Empty<AdbMdnsService>();
+        online = FindOnlineDevice(device, onlineDevices, services);
+        if (online is not null)
+        {
+            ApplyOnlineDevice(device, online, services);
+            return (true, devicesResult, services);
+        }
+
+        device.IsConnected = false;
+        return (false, devicesResult, services);
     }
 
     private async Task<AdbCommandResult> RefreshConnectivityCoreAsync()
@@ -253,10 +343,11 @@ public sealed class DeviceService
             if (_autoConnectSuppressedDevices.Contains(device))
                 continue;
 
-            var connect = await ConnectWirelessDeviceCoreAsync(
+            var connect = await ConnectWirelessDeviceAsync(
                 device,
                 services,
-                Devices.Count(saved => IsWirelessDevice(saved)) == 1);
+                Devices.Count(saved => IsWirelessDevice(saved)) == 1,
+                explicitConnection: false);
             changed |= IsConnectionSuccessful(connect);
         }
 
@@ -294,17 +385,61 @@ public sealed class DeviceService
         return result;
     }
 
+    private async Task<AdbCommandResult> ConnectWirelessDeviceAsync(
+        DeviceModel device,
+        IReadOnlyList<AdbMdnsService> services,
+        bool allowUnboundMigration,
+        bool explicitConnection)
+    {
+        var gate = DeviceConnectionGate(device);
+        var stopwatch = Stopwatch.StartNew();
+        await gate.WaitAsync();
+        var queueWaitMilliseconds = stopwatch.ElapsedMilliseconds;
+        var traceId = Guid.NewGuid().ToString("N");
+        try
+        {
+            var result = await ConnectWirelessDeviceCoreAsync(
+                device,
+                services,
+                allowUnboundMigration,
+                explicitConnection);
+            stopwatch.Stop();
+            var connected = IsConnectionSuccessful(result);
+            var expectedAutomaticSkip = !explicitConnection &&
+                result.Stderr.Equals(NoWirelessCandidateMessage, StringComparison.Ordinal);
+            if (!expectedAutomaticSkip)
+            {
+                await _connectionLogger.WriteAsync(new DeviceConnectionLogEntry(
+                    traceId,
+                    device.DeviceId,
+                    explicitConnection ? "explicit-connect" : "automatic-connect",
+                    stopwatch.ElapsedMilliseconds,
+                    queueWaitMilliseconds,
+                    connected ? "connected" : "failed",
+                    connected ? null : "DEVICE_CONNECTION_CONNECT_FAILED"));
+            }
+            return result;
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
     private async Task<AdbCommandResult> ConnectWirelessDeviceCoreAsync(
         DeviceModel device,
         IReadOnlyList<AdbMdnsService> services,
-        bool allowUnboundMigration)
+        bool allowUnboundMigration,
+        bool explicitConnection)
     {
-        var candidates = BuildWirelessCandidates(device, services, allowUnboundMigration);
-        if (candidates.Count == 0 && !string.IsNullOrWhiteSpace(device.IpAddress) && device.Port > 0)
-            candidates.Add(new WirelessEndpoint(device.IpAddress, device.Port, null));
+        var candidates = BuildWirelessCandidates(
+            device,
+            services,
+            allowUnboundMigration,
+            explicitConnection);
 
         if (candidates.Count == 0)
-            return new AdbCommandResult(1, string.Empty, "该设备没有可用的无线 ADB 地址；请先通过配对或 mDNS 发现设备。");
+            return new AdbCommandResult(1, string.Empty, NoWirelessCandidateMessage);
 
         var failures = new List<string>();
         foreach (var candidate in candidates)
@@ -365,7 +500,8 @@ public sealed class DeviceService
     private List<WirelessEndpoint> BuildWirelessCandidates(
         DeviceModel device,
         IReadOnlyList<AdbMdnsService> services,
-        bool allowUnboundMigration)
+        bool allowUnboundMigration,
+        bool explicitConnection)
     {
         var distinctServiceIds = services
             .Where(service => service.IsConnectService)
@@ -386,8 +522,14 @@ public sealed class DeviceService
             .Select(service => new WirelessEndpoint(service.Host, service.Port, service))
             .ToList();
 
-        if (!string.IsNullOrWhiteSpace(device.IpAddress) && device.Port > 0)
+        if (!string.IsNullOrWhiteSpace(device.IpAddress) &&
+            device.Port > 0 &&
+            DeviceConnectivityPolicy.ShouldUseSavedEndpointFallback(
+                !string.IsNullOrWhiteSpace(device.MdnsServiceId),
+                explicitConnection))
+        {
             candidates.Add(new WirelessEndpoint(device.IpAddress, device.Port, null));
+        }
 
         return candidates
             .GroupBy(candidate => $"{candidate.Host}:{candidate.Port}", StringComparer.OrdinalIgnoreCase)
@@ -436,6 +578,9 @@ public sealed class DeviceService
     {
         return string.Equals(device.ConnectionKind, "wireless", StringComparison.OrdinalIgnoreCase);
     }
+
+    private SemaphoreSlim DeviceConnectionGate(DeviceModel device) =>
+        _deviceConnectionGates.GetValue(device, static _ => new SemaphoreSlim(1, 1));
 
     private static bool IsConnectionSuccessful(AdbCommandResult result)
     {

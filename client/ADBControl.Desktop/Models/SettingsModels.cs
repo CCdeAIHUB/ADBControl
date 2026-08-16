@@ -39,13 +39,53 @@ public sealed class AiAttachment
 
 public sealed class AiChatMessage
 {
+    public string Kind { get; set; } = AiChatMessageKinds.Message;
     public string Role { get; set; } = string.Empty;
     public string Text { get; set; } = string.Empty;
     public string ThinkingText { get; set; } = string.Empty;
     public double? ProcessingSeconds { get; set; }
     public bool IsUser { get; set; }
     public List<AiAttachment> Attachments { get; set; } = new();
+    public AiChatErrorDetails? Error { get; set; }
+    public AiChoiceRequest? Choice { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.Now;
+}
+
+public static class AiChatMessageKinds
+{
+    public const string Message = "message";
+    public const string Error = "error";
+    public const string Choice = "choice";
+    public const string Warning = "warning";
+}
+
+public sealed class AiChatErrorDetails
+{
+    public string ErrorCode { get; set; } = string.Empty;
+    public string Category { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+    public string Summary { get; set; } = string.Empty;
+    public string Detail { get; set; } = string.Empty;
+    public string Suggestion { get; set; } = string.Empty;
+    public string TraceId { get; set; } = string.Empty;
+    public int? HttpStatusCode { get; set; }
+    public bool Recoverable { get; set; }
+}
+
+public enum AiChoiceSelectionMode
+{
+    Single,
+    Multiple,
+}
+
+public sealed class AiChoiceRequest
+{
+    public string ToolCallId { get; set; } = string.Empty;
+    public string Question { get; set; } = string.Empty;
+    public AiChoiceSelectionMode SelectionMode { get; set; }
+    public List<string> Options { get; set; } = new();
+    public List<string> SelectedOptions { get; set; } = new();
+    public bool IsSubmitted { get; set; }
 }
 
 public sealed class AiModelSettings
@@ -89,6 +129,8 @@ public sealed class AiAgentRequest
     public string PermissionMode { get; init; } = "请求批准";
     public string? CurrentDeviceId { get; init; }
     public string? CurrentDeviceName { get; init; }
+    public IReadOnlyList<DeviceModel> KnownDevices { get; init; } = Array.Empty<DeviceModel>();
+    public bool AllowInteractiveChoices { get; init; }
 }
 
 public sealed class AiAgentResponse
@@ -96,6 +138,13 @@ public sealed class AiAgentResponse
     public string Text { get; set; } = string.Empty;
     public string ThinkingText { get; set; } = string.Empty;
     public List<AiConversationMessage> NewMessages { get; set; } = new();
+    public List<AiAgentWarning> Warnings { get; set; } = new();
+}
+
+public sealed class AiAgentWarning
+{
+    public string Code { get; set; } = string.Empty;
+    public string Message { get; set; } = string.Empty;
 }
 
 public sealed class AiStreamDelta

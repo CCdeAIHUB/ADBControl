@@ -83,9 +83,22 @@ public sealed class ProjectionSession : IAsyncDisposable
             throw new InvalidOperationException("投屏会话尚未建立。");
     }
 
-    public Task SendTouchAsync(int action, int x, int y, uint pointerId, CancellationToken cancellationToken = default)
-        => _adbSession?.SendTouchAsync(action, x, y, pointerId, cancellationToken)
-            ?? _appSession?.SendTouchAsync(action, x, y, pointerId, cancellationToken)
+    public Task SendTouchAsync(
+        int action,
+        ProjectionTouchPosition position,
+        uint pointerId,
+        bool isTapGesture = false,
+        CancellationToken cancellationToken = default)
+        => _adbSession?.SendTouchAsync(action, position, pointerId, cancellationToken)
+            ?? _appSession?.SendTouchAsync(action, position, pointerId, isTapGesture, cancellationToken)
+            ?? Task.CompletedTask;
+
+    public Task CancelTouchAsync(
+        ProjectionTouchPosition position,
+        uint pointerId,
+        CancellationToken cancellationToken = default)
+        => _adbSession?.SendTouchAsync(1, position, pointerId, cancellationToken)
+            ?? _appSession?.CancelTouchAsync(pointerId)
             ?? Task.CompletedTask;
 
     public Task SendKeycodeAsync(int action, int keycode, CancellationToken cancellationToken = default)
