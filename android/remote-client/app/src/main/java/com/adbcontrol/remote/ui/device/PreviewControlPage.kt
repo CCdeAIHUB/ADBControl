@@ -2,6 +2,7 @@ package com.adbcontrol.remote.ui.device
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.app.Activity
 import android.graphics.BitmapFactory
 import android.os.Handler
 import android.os.Looper
@@ -12,9 +13,12 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import com.adbcontrol.remote.core.AppGraph
 import com.adbcontrol.remote.data.adb.LockStateParser
 import com.adbcontrol.remote.data.adb.WmSizeParser
@@ -27,6 +31,9 @@ import com.adbcontrol.remote.ui.common.withAlpha
 import org.json.JSONObject
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
+import com.adbcontrol.remote.transport.H264SurfaceDecoder
+import com.adbcontrol.remote.transport.ScreenEndpointPolicy
+import com.adbcontrol.remote.transport.ScreenStreamClient
 
 /**
  * 预览控制页（对应桌面端“预览”Tab + 预览触控 + 锁屏覆盖层 + 安全键盘）：
@@ -52,34 +59,99 @@ class PreviewControlPage(
         adjustViewBounds = true
         setBackgroundColor(0xFF10131A.toInt())
     }
+    private val surfaceView = SurfaceView(context).apply { visibility = View.GONE }
     private val stateText = text("点击“刷新”或开启自动预览", 12f, pal.muted)
     private val lockOverlay = buildLockOverlay().apply { visibility = View.GONE }
     private var lastPngHash: Int = 0
     private var screenSize: WmSizeParser.ScreenSize? = null
     private var latestImageSize: Pair<Int, Int>? = null
     private var autoTimer: Runnable? = null
+    private var stream: ScreenStreamClient? = null
+    private var decoder: H264SurfaceDecoder? = null
+    private var codecConfig: ByteArray? = null
+    private var streamSize: Pair<Int, Int>? = null
+    private var rootView: LinearLayout? = null
+    private var topBarView: View? = null
+    private var previewHolderView: FrameLayout? = null
+    private var previewAreaView: FrameLayout? = null
+    private var controlsView: View? = null
+    private var fullScreen = false
+    private val exitFullScreenButton = secondaryButton("退出全屏") { toggleFullScreen() }.apply {
+        visibility = View.GONE
+    }
+    private val fullScreenControls = row {
+        visibility = View.GONE
+        background = shape(withAlpha(pal.terminalBackground, 0xDD), 12, pal.border)
+        setPadding(dp(6), dp(6), dp(6), dp(6))
+        listOf(
+            "返回" to "input keyevent KEYCODE_BACK",
+            "主页" to "input keyevent KEYCODE_HOME",
+            "多任务" to "input keyevent KEYCODE_APP_SWITCH",
+        ).forEach { (label, command) ->
+            addView(secondaryButton(label) { sendShell(command) }, LinearLayout.LayoutParams(dp(76), dp(40)).apply { rightMargin = dp(4) })
+        }
+    }
 
     override fun build(): View {
         val root = column {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(pal.background)
         }
-        root.addView(topBar("预览控制 · ${device.displayName}", onBack = { host.popPage() }), LinearLayout.LayoutParams(
+        rootView = root
+        val header = topBar("实时控制 · ${device.displayName}", onBack = { host.popPage() })
+        topBarView = header
+        root.addView(header, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, dp(56),
         ))
 
-        val previewArea = FrameLayout(context).apply { setBackgroundColor(0xFF10131A.toInt()) }
-        previewArea.addView(imageView, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dp(300),
+        // 预览区：带边框圆角卡片，截图/锁屏覆盖层同一容器，触控手势装在容器上。
+        val previewArea = FrameLayout(context).apply {
+            background = shape(pal.surface, 12, pal.border)
+            clipToOutline = true
+            outlineProvider = object : android.view.ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: android.graphics.Outline) {
+                    outline.setRoundRect(0, 0, view.width, view.height, dp(12).toFloat())
+                }
+            }
+        }
+        previewAreaView = previewArea
+        val previewPadding = FrameLayout(context).apply { setPadding(dp(8), dp(8), dp(8), dp(8)) }
+        previewPadding.addView(surfaceView, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
+        ))
+        previewPadding.addView(imageView, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
+        ))
+        previewArea.addView(previewPadding, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
         ))
         previewArea.addView(lockOverlay, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dp(300),
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
         ))
+        previewArea.addView(exitFullScreenButton, FrameLayout.LayoutParams(dp(104), dp(40), Gravity.TOP or Gravity.END).apply {
+            topMargin = dp(12)
+            rightMargin = dp(12)
+        })
+        previewArea.addView(fullScreenControls, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL,
+        ).apply { bottomMargin = dp(14) })
         installTouchHandling(previewArea)
-        root.addView(previewArea, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dp(300),
+        val previewHolder = FrameLayout(context).apply { setBackgroundColor(pal.background) }
+        previewHolderView = previewHolder
+        previewHolder.setPadding(dp(14), dp(10), dp(14), 0)
+        previewHolder.addView(previewArea, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(280),
         ))
-        root.addView(scroll(controlBody()))
+        root.addView(previewHolder, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+        ))
+        controlsView = scroll(controlBody())
+        root.addView(controlsView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        surfaceView.holder.addCallback(object : SurfaceHolder.Callback {
+            override fun surfaceCreated(holder: SurfaceHolder) = Unit
+            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = Unit
+            override fun surfaceDestroyed(holder: SurfaceHolder) { stopLive("显示区域已释放") }
+        })
         refreshScreenSize()
         startAutoIfNeeded()
         return root
@@ -88,6 +160,10 @@ class PreviewControlPage(
     private fun controlBody(): View {
         val body = column(12)
         body.addView(stateText)
+        body.addView(row {
+            addView(primaryButton("开始实时投屏") { startLive() }, LinearLayout.LayoutParams(0, dp(40), 1f))
+            addView(secondaryButton("全屏") { toggleFullScreen() }, LinearLayout.LayoutParams(0, dp(40), 1f).apply { leftMargin = dp(8) })
+        })
         var autoToggleRef: android.widget.Button? = null
         val autoButton = secondaryButton("开启自动") {
             if (autoTimer == null) startAuto() else stopAuto()
@@ -95,56 +171,150 @@ class PreviewControlPage(
         }
         autoToggleRef = autoButton
         body.addView(row {
-            addView(primaryButton("刷新截图") { refresh() }, LinearLayout.LayoutParams(0, dp(46), 1f))
-            addView(autoButton, LinearLayout.LayoutParams(0, dp(46), 1f).apply { leftMargin = dp(8) })
+            addView(primaryButton("刷新截图") { refresh() }, LinearLayout.LayoutParams(0, dp(40), 1f))
+            addView(autoButton, LinearLayout.LayoutParams(0, dp(40), 1f).apply { leftMargin = dp(8) })
         })
         body.addView(row {
             val intervalInput = input("间隔毫秒 500-60000").apply {
                 setText(settings.previewIntervalMs.toString())
                 inputType = android.text.InputType.TYPE_CLASS_NUMBER
             }
-            addView(intervalInput, LinearLayout.LayoutParams(0, dp(48), 1f))
+            addView(intervalInput, LinearLayout.LayoutParams(0, dp(40), 1f))
             addView(secondaryButton("保存间隔") {
                 intervalInput.text.toString().toIntOrNull()?.let { settings.previewIntervalMs = it }
                 host.notify("预览间隔已保存：${settings.previewIntervalMs}ms")
-            }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { leftMargin = dp(8) })
+            }, LinearLayout.LayoutParams(0, dp(40), 1f).apply { leftMargin = dp(8) })
         })
-        body.addView(sectionTitle("快捷键", "与桌面端预览页快捷键一致"))
+        body.addView(sectionTitle("快捷键", "单击发送，与桌面端预览页快捷键一致"))
         body.addView(quickBar())
-        body.addView(text("触控说明：单击=点击，长按≥500ms=长按，拖动=滑动；坐标按截图分辨率等比映射到设备屏幕。", 11f, pal.muted))
-        body.addView(text("说明：实时投屏需要 Core 提供视频下行流，当前远程协议按需截图预览；不伪装实时画面。", 11f, pal.muted))
+        body.addView(text("触控：单击=点击，长按≥500ms=长按，拖动=滑动；坐标按截图分辨率等比映射。", 11f, pal.muted))
+        body.addView(text("实时模式与 Web 版共用 scrcpy H.264；连接不可用时仍可使用下方截图兼容模式。", 11f, pal.muted))
         return body
     }
 
+    private fun startLive() {
+        val profile = graph.activeProfile
+        val session = graph.activeSession
+        if (profile == null || session == null) {
+            stateText.text = "登录会话已失效，请重新登录"
+            return
+        }
+        val endpoint = ScreenEndpointPolicy.derive(profile.endpoint, profile.webEndpoint)
+        if (endpoint == null) {
+            stateText.text = "公网投屏必须配置 HTTPS/WSS 投屏服务地址；局域网地址可自动使用 18087 端口"
+            return
+        }
+        if (!surfaceView.holder.surface.isValid) {
+            stateText.text = "投屏显示区域尚未就绪，请稍后重试"
+            return
+        }
+        stopAuto()
+        stream?.close()
+        stream = ScreenStreamClient(endpoint, session.token, device.id, object : ScreenStreamClient.Listener {
+            override fun onMeta(width: Int, height: Int) {
+                mainHandler.post {
+                    streamSize = width to height
+                    latestImageSize = streamSize
+                    stateText.text = "实时投屏连接成功 · ${width}x$height"
+                }
+            }
+            override fun onConfig(data: ByteArray) {
+                mainHandler.post {
+                    codecConfig = data
+                    val size = streamSize ?: return@post
+                    runCatching {
+                        decoder?.close()
+                        decoder = H264SurfaceDecoder(surfaceView.holder.surface).also { it.configure(size.first, size.second, data) }
+                        surfaceView.visibility = View.VISIBLE
+                        imageView.visibility = View.GONE
+                    }.onFailure {
+                        stateText.text = "视频解码初始化失败：${it.message}"
+                        com.adbcontrol.remote.data.log.AppDiagnostics.failure("screen.decoder.configure", "media.codec", 0, "SCREEN_DECODER_CONFIG_FAILED", "type=${it.javaClass.simpleName}")
+                    }
+                }
+            }
+            override fun onFrame(data: ByteArray, presentationTimeUs: Long, keyFrame: Boolean) {
+                runCatching { decoder?.queue(data, presentationTimeUs, keyFrame) }.onFailure {
+                    mainHandler.post { stateText.text = "视频帧解码失败：${it.message}" }
+                    com.adbcontrol.remote.data.log.AppDiagnostics.failure("screen.decoder.frame", "media.codec", 0, "SCREEN_DECODER_FRAME_FAILED", "type=${it.javaClass.simpleName}")
+                }
+            }
+            override fun onState(message: String, errorCode: String) {
+                mainHandler.post {
+                    stateText.text = if (errorCode.isBlank()) message else "$message（$errorCode）"
+                }
+            }
+        }).also { it.start(30) }
+        stateText.text = "正在建立实时 H.264 投屏…"
+    }
+
+    private fun stopLive(message: String = "实时投屏已停止") {
+        stream?.close()
+        stream = null
+        decoder?.close()
+        decoder = null
+        codecConfig = null
+        surfaceView.visibility = View.GONE
+        imageView.visibility = View.VISIBLE
+        if (message.isNotBlank()) stateText.text = message
+    }
+
+    private fun toggleFullScreen() {
+        fullScreen = !fullScreen
+        topBarView?.visibility = if (fullScreen) View.GONE else View.VISIBLE
+        controlsView?.visibility = if (fullScreen) View.GONE else View.VISIBLE
+        exitFullScreenButton.visibility = if (fullScreen) View.VISIBLE else View.GONE
+        fullScreenControls.visibility = if (fullScreen) View.VISIBLE else View.GONE
+        previewHolderView?.layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            if (fullScreen) 0 else ViewGroup.LayoutParams.WRAP_CONTENT,
+            if (fullScreen) 1f else 0f,
+        )
+        previewAreaView?.layoutParams = FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            if (fullScreen) ViewGroup.LayoutParams.MATCH_PARENT else dp(280),
+        )
+        previewHolderView?.setPadding(if (fullScreen) 0 else dp(14), if (fullScreen) 0 else dp(10), if (fullScreen) 0 else dp(14), 0)
+        (context as? Activity)?.window?.decorView?.systemUiVisibility = if (fullScreen) {
+            View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+        } else View.SYSTEM_UI_FLAG_VISIBLE
+    }
+
+    /** 快捷键横向滑动条：固定 72dp 宽度胶囊按钮，永不换行挤压。 */
     private fun quickBar(): View {
         val actions = listOf(
-            "◀ 返回" to "input keyevent KEYCODE_BACK",
-            "⌂ 主页" to "input keyevent KEYCODE_HOME",
-            "▤ 多任务" to "input keyevent KEYCODE_APP_SWITCH",
-            "🔊 +" to "input keyevent KEYCODE_VOLUME_UP",
-            "🔉 -" to "input keyevent KEYCODE_VOLUME_DOWN",
-            "⏻ 电源" to "input keyevent KEYCODE_POWER",
-            "💡 唤醒" to "input keyevent KEYCODE_WAKEUP",
-            "⌨ 键盘" to "",
+            "返回" to "input keyevent KEYCODE_BACK",
+            "主页" to "input keyevent KEYCODE_HOME",
+            "多任务" to "input keyevent KEYCODE_APP_SWITCH",
+            "音量+" to "input keyevent KEYCODE_VOLUME_UP",
+            "音量-" to "input keyevent KEYCODE_VOLUME_DOWN",
+            "电源" to "input keyevent KEYCODE_POWER",
+            "唤醒" to "input keyevent KEYCODE_WAKEUP",
+            "键盘" to "",
         )
-        val grid = column(8)
-        actions.chunked(4).forEach { group ->
-            grid.addView(row {
-                group.forEachIndexed { index, (label, command) ->
-                    addView(
-                        secondaryButton(label) {
-                            if (command.isBlank()) {
-                                SafeKeyboardSheet(context, host, graph, device) { refresh() }.show()
-                            } else {
-                                sendShell(command)
-                            }
-                        },
-                        LinearLayout.LayoutParams(0, dp(44), 1f).apply { if (index > 0) leftMargin = dp(8) },
-                    )
-                }
-            })
+        val chips = row {
+            setPadding(0, 0, 0, 0)
+            actions.forEach { (label, command) ->
+                addView(
+                    secondaryButton(label) {
+                        if (command.isBlank()) {
+                            SafeKeyboardSheet(context, host, graph, device) { refresh() }.show()
+                        } else {
+                            sendShell(command)
+                        }
+                    },
+                    // 88dp：容纳“音量+”等双字符标签（按钮左右内边距 12dp×2）。
+                    LinearLayout.LayoutParams(dp(88), dp(40)).apply { rightMargin = dp(8) },
+                )
+            }
         }
-        return grid
+        return HorizontalScrollView(context).apply {
+            isHorizontalScrollBarEnabled = false
+            clipToPadding = false
+            addView(chips, ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            ))
+        }
     }
 
     // ---------- 截图轮询 ----------
@@ -224,16 +394,17 @@ class PreviewControlPage(
 
     private fun buildLockOverlay(): View = column {
         gravity = Gravity.CENTER
-        setBackgroundColor(withAlpha(0xFF000000.toInt(), 0xCC))
-        addView(text("🔒", 36f))
-        addView(text("设备当前处于锁屏状态", 15f, 0xFFFFFFFF.toInt(), true))
-        addView(text("解锁后才能获取屏幕内容", 12f, 0xFFB8BEC8.toInt()))
+        // 锁屏遮罩压在截图上：两种主题都用终端深色底，保证遮盖力一致。
+        setBackgroundColor(withAlpha(pal.terminalBackground, 0xE6))
+        addView(com.adbcontrol.remote.ui.common.FlatIconView(context, com.adbcontrol.remote.ui.common.AppIcon.LOCK, pal.brand), LinearLayout.LayoutParams(dp(48), dp(48)))
+        addView(text("设备当前处于锁屏状态", 15f, pal.text, true))
+        addView(text("解锁后才能获取屏幕内容", 12f, pal.secondary))
         val unlockButton = primaryButton("上滑解锁") { performUnlock() }
-        addView(unlockButton, ViewGroup.LayoutParams(dp(180), dp(46)))
+        addView(unlockButton, ViewGroup.LayoutParams(dp(180), dp(42)))
         val keyboardButton = secondaryButton("安全键盘输入 PIN") {
             SafeKeyboardSheet(context, host, graph, device) { refresh() }.show()
         }
-        addView(keyboardButton, ViewGroup.LayoutParams(dp(180), dp(44)))
+        addView(keyboardButton, ViewGroup.LayoutParams(dp(180), dp(40)))
     }
 
     /** 与桌面端解锁序列一致：唤醒 → 上滑（0.82h→0.28h, 420ms）。PIN 输入交由安全键盘逐键发送。 */
@@ -286,18 +457,39 @@ class PreviewControlPage(
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     downX = event.x; downY = event.y; downAt = System.currentTimeMillis()
+                    dispatchLiveTouch(MotionEvent.ACTION_DOWN, event.x, event.y)
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    dispatchLiveTouch(MotionEvent.ACTION_MOVE, event.x, event.y)
                     true
                 }
                 MotionEvent.ACTION_UP -> {
                     val upX = event.x
                     val upY = event.y
                     val elapsed = System.currentTimeMillis() - downAt
-                    dispatchGesture(downX, downY, upX, upY, elapsed)
+                    if (stream != null) dispatchLiveTouch(MotionEvent.ACTION_UP, upX, upY)
+                    else dispatchGesture(downX, downY, upX, upY, elapsed)
                     true
                 }
                 else -> true
             }
         }
+    }
+
+    private fun dispatchLiveTouch(action: Int, x: Float, y: Float) {
+        val client = stream ?: return
+        val size = streamSize ?: return
+        val width = imageView.width.coerceAtLeast(1)
+        val height = imageView.height.coerceAtLeast(1)
+        val videoAspect = size.first.toFloat() / size.second
+        val viewAspect = width.toFloat() / height
+        val scale = if (viewAspect > videoAspect) height.toFloat() / size.second else width.toFloat() / size.first
+        val offsetX = (width - size.first * scale) / 2f
+        val offsetY = (height - size.second * scale) / 2f
+        val mappedX = ((x - offsetX) / scale).toInt().coerceIn(0, size.first - 1)
+        val mappedY = ((y - offsetY) / scale).toInt().coerceIn(0, size.second - 1)
+        client.touch(action, mappedX, mappedY, size.first, size.second)
     }
 
     /** 手势判定与桌面端一致：位移小且 <500ms 为点击；原地点按 ≥500ms 为长按；否则滑动。 */
@@ -386,5 +578,7 @@ class PreviewControlPage(
 
     override fun onDetach() {
         stopAuto()
+        stopLive("")
+        if (fullScreen) toggleFullScreen()
     }
 }

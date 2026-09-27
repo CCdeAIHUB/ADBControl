@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <!-- QUIC uses an explicitly pinned DER certificate in the native transport. -->
-    <base-config cleartextTrafficPermitted="false" />
+    <!-- QUIC stays certificate-pinned. ScreenEndpointPolicy permits cleartext WebSocket only
+         for loopback/RFC1918 LAN hosts; public hosts require WSS. Android XML cannot express
+         CIDR ranges, so the narrower enforcement lives at the only HTTP call site. -->
+    <base-config cleartextTrafficPermitted="true" />
 </network-security-config>

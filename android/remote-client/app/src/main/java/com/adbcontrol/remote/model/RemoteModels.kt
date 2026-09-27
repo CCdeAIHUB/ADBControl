@@ -7,6 +7,7 @@ data class CoreProfile(
     val serverName: String = "",
     val certificateDerBase64: String = "",
     val fingerprintSha256: String = "",
+    val webEndpoint: String = "",
 )
 
 data class Session(

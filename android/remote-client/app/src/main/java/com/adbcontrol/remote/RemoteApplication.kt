@@ -16,7 +16,20 @@ class RemoteApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         AppDiagnostics.initialize(this)
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+            AppDiagnostics.failure(
+                "process.crash", "android.runtime", 0, error.javaClass.simpleName,
+                "thread=${thread.name}",
+            )
+            previous?.uncaughtException(thread, error)
+        }
         profileStore = ProfileStore(this)
         graph = AppGraph(this)
+    }
+
+    override fun onLowMemory() {
+        AppDiagnostics.record("warn", "process.lowMemory", "android.runtime", true, 0, "")
+        super.onLowMemory()
     }
 }

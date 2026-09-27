@@ -14,6 +14,7 @@ class ProfileStore(context: Context) {
         val endpoint = preferences.getString("endpoint", null)?.takeIf(String::isNotBlank) ?: return null
         return CoreProfile(
             endpoint = endpoint,
+            webEndpoint = preferences.getString("web_endpoint", null).orEmpty(),
             serverName = preferences.getString("server_name", null).orEmpty(),
             certificateDerBase64 = preferences.getString("certificate", null).orEmpty(),
             fingerprintSha256 = preferences.getString("fingerprint", null).orEmpty(),
@@ -23,6 +24,7 @@ class ProfileStore(context: Context) {
     fun save(profile: CoreProfile) {
         preferences.edit()
             .putString("endpoint", profile.endpoint)
+            .putString("web_endpoint", profile.webEndpoint)
             .putString("server_name", profile.serverName)
             .putString("certificate", profile.certificateDerBase64)
             .putString("fingerprint", profile.fingerprintSha256)

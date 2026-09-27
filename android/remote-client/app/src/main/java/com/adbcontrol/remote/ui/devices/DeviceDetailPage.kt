@@ -81,8 +81,11 @@ class DeviceDetailPage(
                 group.forEachIndexed { index, (item, action) ->
                     val (emoji, title, subtitle) = item
                     addView(
+                        // 高度 WRAP_CONTENT：固定 92dp 会压住宫格文字（见 HomePage 同款修复）。
                         featureTile(title, subtitle, emoji, action),
-                        LinearLayout.LayoutParams(0, dp(92), 1f).apply { if (index > 0) leftMargin = dp(10) },
+                        LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                            if (index > 0) leftMargin = dp(10)
+                        },
                     )
                 }
             })
@@ -90,25 +93,25 @@ class DeviceDetailPage(
         return grid
     }
 
-    /** 与桌面端“常用控制”一致的单命令快捷键。 */
+    /** 与桌面端“常用控制”一致的单命令快捷键：一行两个，避免窄屏文字被裁切。 */
     private fun quickControls(): View {
         val actions = listOf(
-            listOf("◀ 返回", "input keyevent KEYCODE_BACK"),
-            listOf("⌂ 主页", "input keyevent KEYCODE_HOME"),
-            listOf("▤ 多任务", "input keyevent KEYCODE_APP_SWITCH"),
-            listOf("🔊 音量+", "input keyevent KEYCODE_VOLUME_UP"),
-            listOf("🔉 音量-", "input keyevent KEYCODE_VOLUME_DOWN"),
-            listOf("⏻ 电源", "input keyevent KEYCODE_POWER"),
-            listOf("💡 点亮", "input keyevent KEYCODE_WAKEUP"),
-            listOf("🌙 锁屏", "input keyevent KEYCODE_SLEEP"),
+            listOf("返回", "input keyevent KEYCODE_BACK"),
+            listOf("主页", "input keyevent KEYCODE_HOME"),
+            listOf("多任务", "input keyevent KEYCODE_APP_SWITCH"),
+            listOf("音量+", "input keyevent KEYCODE_VOLUME_UP"),
+            listOf("音量-", "input keyevent KEYCODE_VOLUME_DOWN"),
+            listOf("电源", "input keyevent KEYCODE_POWER"),
+            listOf("点亮", "input keyevent KEYCODE_WAKEUP"),
+            listOf("锁屏", "input keyevent KEYCODE_SLEEP"),
         )
-        val grid = column(10)
-        actions.chunked(4).forEach { group ->
+        val grid = column(8)
+        actions.chunked(2).forEach { group ->
             grid.addView(row {
                 group.forEachIndexed { index, (label, command) ->
                     addView(
                         secondaryButton(label) { sendKey(command) },
-                        LinearLayout.LayoutParams(0, dp(44), 1f).apply { if (index > 0) leftMargin = dp(8) },
+                        LinearLayout.LayoutParams(0, dp(40), 1f).apply { if (index > 0) leftMargin = dp(8) },
                     )
                 }
             })

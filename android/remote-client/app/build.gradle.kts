@@ -4,6 +4,10 @@ plugins {
     id("com.android.application")
 }
 
+dependencies {
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+}
+
 android {
     namespace = "com.adbcontrol.remote"
     compileSdk = 36
@@ -13,8 +17,8 @@ android {
         applicationId = "com.adbcontrol.remote"
         minSdk = 29
         targetSdk = 36
-        versionCode = 6
-        versionName = "0.2.4"
+        versionCode = 9
+        versionName = "0.3.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }

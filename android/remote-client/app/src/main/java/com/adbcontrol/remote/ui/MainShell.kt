@@ -7,22 +7,30 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.adbcontrol.remote.ui.common.FlatIconView
+import com.adbcontrol.remote.ui.common.iconFor
 import com.adbcontrol.remote.core.AppGraph
 import com.adbcontrol.remote.model.Session
-import com.adbcontrol.remote.model.UserRole
 import com.adbcontrol.remote.ui.automation.TasksPage
-import com.adbcontrol.remote.ui.common.*
+import com.adbcontrol.remote.ui.common.PageHost
+import com.adbcontrol.remote.ui.common.column
+import com.adbcontrol.remote.ui.common.dp
+import com.adbcontrol.remote.ui.common.pal
+import com.adbcontrol.remote.ui.common.ripple
+import com.adbcontrol.remote.ui.common.row
+import com.adbcontrol.remote.ui.common.text
 import com.adbcontrol.remote.ui.devices.DevicesPage
 import com.adbcontrol.remote.ui.home.HomePage
 import com.adbcontrol.remote.ui.profile.ProfilePage
 
 /**
  * 主壳：底部 4 Tab（首页 / 设备 / 任务 / 我的），符合中国大陆 App 的一级导航习惯。
- * 二级页（设备详情、各工具页、AI 等）由 MainActivity 的页面栈承载，不进入 Tab。
+ * 样式对齐 Web 版：surface 底 + 顶部 1dp 分隔线，选中项品牌绿。
+ * 系统栏避让由 MainActivity 根容器统一处理。
  */
 class MainShell(
     private val context: Context,
-    private val host: com.adbcontrol.remote.ui.common.PageHost,
+    private val host: PageHost,
     val graph: AppGraph,
     private val session: Session,
 ) {
@@ -45,31 +53,41 @@ class MainShell(
         root.addView(content, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f,
         ))
-        root.addView(bottomBar(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, context.dp(62)))
+        root.addView(bottomBar(), LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, context.dp(58),
+        ))
         switchTab(Tab.HOME)
         return root
     }
 
-    private fun bottomBar(): View = context.row {
-        gravity = Gravity.CENTER
-        setPadding(context.dp(8), context.dp(6), context.dp(8), context.dp(8))
-        setBackgroundColor(context.pal.surface)
-        listOf(Tab.HOME, Tab.DEVICES, Tab.TASKS, Tab.PROFILE).forEach { tab ->
-            val button = context.column(2) {
-                gravity = Gravity.CENTER
-                addView(context.text(tab.emoji, 19f, context.pal.muted).apply {
+    private fun bottomBar(): View {
+        val bar = context.row {
+            gravity = Gravity.CENTER
+            setBackgroundColor(context.pal.surface)
+            listOf(Tab.HOME, Tab.DEVICES, Tab.TASKS, Tab.PROFILE).forEach { tab ->
+                val button = context.column(2) {
                     gravity = Gravity.CENTER
-                    tag = "emoji"
-                })
-                addView(context.text(tab.title, 10f, context.pal.muted, true).apply {
-                    gravity = Gravity.CENTER
-                    tag = "label"
-                })
-            }.apply {
-                setOnClickListener { switchTab(tab) }
+                    addView(FlatIconView(context, iconFor(tab.title), context.pal.muted).apply { tag = "navIcon" }, LinearLayout.LayoutParams(context.dp(24), context.dp(24)))
+                    addView(context.text(tab.title, 11f, context.pal.muted, true).apply {
+                        gravity = Gravity.CENTER
+                        tag = "label"
+                    })
+                }.apply {
+                    setOnClickListener { switchTab(tab) }
+                    foreground = ripple()
+                }
+                navButtons[tab] = button
+                addView(button, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
             }
-            navButtons[tab] = button
-            addView(button, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+        }
+        return FrameLayout(context).apply {
+            setBackgroundColor(context.pal.surface)
+            addView(bar, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
+            ))
+            addView(View(this@MainShell.context).apply { setBackgroundColor(context.pal.border) }, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, context.dp(1), Gravity.TOP,
+            ))
         }
     }
 
@@ -77,9 +95,14 @@ class MainShell(
         currentTab = next
         navButtons.forEach { (tab, view) ->
             val active = tab == next
-            val emoji = view.findViewWithTag<TextView>("emoji")
+            val oldIcon = view.findViewWithTag<View>("navIcon")
             val label = view.findViewWithTag<TextView>("label")
-            emoji.setTextColor(if (active) context.pal.brand else context.pal.muted)
+            val holder = oldIcon?.parent as? ViewGroup
+            val index = holder?.indexOfChild(oldIcon) ?: -1
+            if (holder != null && index >= 0) {
+                holder.removeViewAt(index)
+                holder.addView(FlatIconView(context, iconFor(tab.title), if (active) context.pal.brand else context.pal.muted).apply { tag = "navIcon" }, index, LinearLayout.LayoutParams(context.dp(24), context.dp(24)))
+            }
             label.setTextColor(if (active) context.pal.brand else context.pal.muted)
         }
         content.removeAllViews()

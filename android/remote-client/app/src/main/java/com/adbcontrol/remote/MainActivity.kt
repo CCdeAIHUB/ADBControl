@@ -5,6 +5,7 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -57,13 +58,15 @@ class MainActivity : Activity(), PageHost {
         }
         rootContainer = FrameLayout(this)
         setContentView(rootContainer)
+        installSystemBarInsets()
         controller.start()
     }
 
     private fun applySystemBarColors() {
         val palette = com.adbcontrol.remote.core.ThemeManager.palette(this)
-        window.statusBarColor = palette.surface
-        window.navigationBarColor = palette.surface
+        window.statusBarColor = palette.background
+        window.navigationBarColor = palette.background
+        window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(palette.background))
         val flags = window.decorView.systemUiVisibility
         window.decorView.systemUiVisibility = if (palette.isDark) {
             flags and View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv()
@@ -72,9 +75,46 @@ class MainActivity : Activity(), PageHost {
         }
     }
 
+    /**
+     * 全面屏重叠修复：targetSdk 35+ 强制 edge-to-edge，内容会顶到状态栏/手势条下面。
+     * 在根容器统一避让系统栏与刘海（状态栏/手势条区域显示主题背景色），
+     * 子页面不再各自处理，保证所有页面一次性修复。
+     */
+    private fun installSystemBarInsets() {
+        rootContainer.setOnApplyWindowInsetsListener { view, insets ->
+            val rect = systemBarInsets(insets)
+            view.setPadding(rect.left, rect.top, rect.right, rect.bottom)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                android.view.WindowInsets.CONSUMED
+            } else {
+                @Suppress("DEPRECATION")
+                insets.consumeSystemWindowInsets()
+            }
+        }
+    }
+
+    private fun systemBarInsets(insets: android.view.WindowInsets): android.graphics.Rect {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val bars = insets.getInsets(
+                android.view.WindowInsets.Type.systemBars() or android.view.WindowInsets.Type.displayCutout(),
+            )
+            android.graphics.Rect(bars.left, bars.top, bars.right, bars.bottom)
+        } else {
+            @Suppress("DEPRECATION")
+            android.graphics.Rect(
+                insets.systemWindowInsetLeft,
+                insets.systemWindowInsetTop,
+                insets.systemWindowInsetRight,
+                insets.systemWindowInsetBottom,
+            )
+        }
+    }
+
     private fun render(state: AppState) {
         when (state) {
             is AppState.Ready -> {
+                graph.activeProfile = state.profile
+                graph.activeSession = state.session
                 currentSession = state
                 pageStack.clear()
                 rootContainer.removeAllViews()
@@ -83,6 +123,7 @@ class MainActivity : Activity(), PageHost {
                 ))
             }
             else -> {
+                graph.activeSession = null
                 currentSession = null
                 pageStack.clear()
                 rootContainer.removeAllViews()

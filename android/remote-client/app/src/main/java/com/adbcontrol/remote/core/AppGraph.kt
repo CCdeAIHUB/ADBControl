@@ -16,6 +16,8 @@ import com.adbcontrol.remote.data.log.AppDiagnostics
 import com.adbcontrol.remote.data.settings.SettingsStore
 import com.adbcontrol.remote.model.AiPermissionMode
 import com.adbcontrol.remote.model.AutomationTaskDefinition
+import com.adbcontrol.remote.model.CoreProfile
+import com.adbcontrol.remote.model.Session
 import com.adbcontrol.remote.transport.QuicRemoteTransport
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -40,6 +42,9 @@ class AppGraph(context: Context) {
     private val automationGateway = commands.automationGateway()
     val engine = AutomationEngine(automationStore, executor, automationGateway, ConditionEvaluator(automationGateway))
     val scheduler = AutomationScheduler(automationStore, engine)
+    @Volatile var activeProfile: CoreProfile? = null
+    @Volatile var activeSession: Session? = null
+    private val diagnosticReporter = com.adbcontrol.remote.data.log.RemoteDiagnosticReporter(repository)
 
     /** 主界面使用的交互式 AI 运行时（Host 由 MainActivity 注入）。 */
     val interactiveAiRuntime = AiAgentRuntime(
@@ -52,6 +57,7 @@ class AppGraph(context: Context) {
         scheduler.aiExecutor = AutomationEngine.AiExecutor { prompt, modelId, allowDeviceTools, allowTaskMutation ->
             executeAutomationAi(prompt, modelId, allowDeviceTools, allowTaskMutation)
         }
+        diagnosticReporter.start()
     }
 
     /**
@@ -110,6 +116,7 @@ class AppGraph(context: Context) {
         aiModelStore.get(settings.preferredAiModelId) ?: aiModelStore.list().firstOrNull()
 
     fun shutdown() {
+        diagnosticReporter.stop()
         scheduler.stop()
         transport.close()
         executor.shutdownNow()

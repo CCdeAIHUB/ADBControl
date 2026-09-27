@@ -10,10 +10,17 @@ enum class ThemeMode(val title: String) {
     DARK("深色模式"),
 }
 
-/** 一套完整的界面色板。所有页面只允许从这里取色，禁止硬编码颜色值。 */
+/**
+ * 一套完整的界面色板。所有页面只允许从这里取色，禁止硬编码颜色值。
+ * 配色与 WEBADBControl Web 版（Vue + Tailwind，见 web/src/style.css）对齐：
+ * - 品牌绿 brand-600 #16A34A（主按钮/选中态），深色下高亮用 brand-400 #4ADE80；
+ * - 背景 浅 #F4F7F5 / 深 #0B100E；卡片 surface 白 / #121815，细描边 slate-200 / white/9。
+ */
 data class ThemePalette(
     val brand: Int,
+    val brandAccent: Int,
     val brandSoft: Int,
+    val buttonFill: Int,
     val background: Int,
     val surface: Int,
     val surfaceMuted: Int,
@@ -33,46 +40,52 @@ data class ThemePalette(
 )
 
 object ThemePalettes {
-    // 品牌蓝沿用原客户端 #1677FF（支付宝式主色），深色色板按 Material 深色层级压暗。
+    // 主按钮两种主题都用 brand-600（白字对比度足够），选中文字/图标浅色用 600、深色用 400。
+    private const val BUTTON_GREEN = 0xFF16A34A.toInt()
+
     val LIGHT = ThemePalette(
-        brand = 0xFF1677FF.toInt(),
-        brandSoft = 0xFFEAF3FF.toInt(),
-        background = 0xFFF5F7FA.toInt(),
+        brand = 0xFF16A34A.toInt(),
+        brandAccent = 0xFF15803D.toInt(),
+        brandSoft = 0xFFDCFCE7.toInt(),
+        buttonFill = BUTTON_GREEN,
+        background = 0xFFF4F7F5.toInt(),
         surface = 0xFFFFFFFF.toInt(),
-        surfaceMuted = 0xFFF8F9FA.toInt(),
-        text = 0xFF1F2329.toInt(),
-        secondary = 0xFF646A73.toInt(),
-        muted = 0xFF8F959E.toInt(),
-        border = 0xFFE6E8EB.toInt(),
-        success = 0xFF00A870.toInt(),
-        successSoft = 0xFFE8FFEF.toInt(),
-        warning = 0xFFFF8800.toInt(),
-        warningSoft = 0xFFFFF3E0.toInt(),
-        danger = 0xFFE34D59.toInt(),
-        dangerSoft = 0xFFFFECEC.toInt(),
-        terminalBackground = 0xFF111827.toInt(),
-        terminalText = 0xFFD1FAE5.toInt(),
+        surfaceMuted = 0xFFEFF3F0.toInt(),
+        text = 0xFF18221E.toInt(),
+        secondary = 0xFF475569.toInt(),
+        muted = 0xFF64748B.toInt(),
+        border = 0xFFE2E8F0.toInt(),
+        success = 0xFF16A34A.toInt(),
+        successSoft = 0xFFF0FDF4.toInt(),
+        warning = 0xFFD97706.toInt(),
+        warningSoft = 0xFFFFFBEB.toInt(),
+        danger = 0xFFDC2626.toInt(),
+        dangerSoft = 0xFFFEF2F2.toInt(),
+        terminalBackground = 0xFF0B1210.toInt(),
+        terminalText = 0xFF86EFAC.toInt(),
         isDark = false,
     )
 
     val DARK = ThemePalette(
-        brand = 0xFF4D9BFF.toInt(),
-        brandSoft = 0xFF1B2A41.toInt(),
-        background = 0xFF101318.toInt(),
-        surface = 0xFF191D24.toInt(),
-        surfaceMuted = 0xFF21262F.toInt(),
-        text = 0xFFE8EAED.toInt(),
-        secondary = 0xFFA8AEB8.toInt(),
-        muted = 0xFF7A8089.toInt(),
-        border = 0xFF2C323C.toInt(),
-        success = 0xFF3DDC97.toInt(),
-        successSoft = 0xFF14301F.toInt(),
-        warning = 0xFFFFB74D.toInt(),
-        warningSoft = 0xFF33270F.toInt(),
-        danger = 0xFFFF7080.toInt(),
-        dangerSoft = 0xFF3A1A1E.toInt(),
-        terminalBackground = 0xFF0B0F16.toInt(),
-        terminalText = 0xFF9FE8C0.toInt(),
+        brand = 0xFF4ADE80.toInt(),
+        brandAccent = 0xFF4ADE80.toInt(),
+        brandSoft = 0xFF12241A.toInt(),
+        buttonFill = BUTTON_GREEN,
+        background = 0xFF0B100E.toInt(),
+        surface = 0xFF121815.toInt(),
+        surfaceMuted = 0xFF1B231F.toInt(),
+        text = 0xFFE7EEE9.toInt(),
+        secondary = 0xFFCBD5E1.toInt(),
+        muted = 0xFF8A9790.toInt(),
+        border = 0xFF272E2A.toInt(),
+        success = 0xFF4ADE80.toInt(),
+        successSoft = 0xFF12241A.toInt(),
+        warning = 0xFFFBBF24.toInt(),
+        warningSoft = 0xFF2A2113.toInt(),
+        danger = 0xFFFCA5A5.toInt(),
+        dangerSoft = 0xFF2A1416.toInt(),
+        terminalBackground = 0xFF0B1210.toInt(),
+        terminalText = 0xFF86EFAC.toInt(),
         isDark = true,
     )
 }

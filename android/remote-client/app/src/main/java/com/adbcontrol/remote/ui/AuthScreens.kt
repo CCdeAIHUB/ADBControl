@@ -19,7 +19,8 @@ import com.adbcontrol.remote.ui.common.*
 class AuthScreens(private val context: Context) {
 
     fun setup(onSubmit: (CoreProfile) -> Unit): View {
-        val endpoint = context.input("服务器地址，例如 192.168.1.10:45921", fillColor = context.pal.surface)
+        val endpoint = context.input("服务器地址，例如 192.168.1.10:45921")
+        val webEndpoint = context.input("投屏服务地址（可选，例如 http://192.168.1.10:18087）")
         val errorText = context.text("", 12f, context.pal.danger)
         val note = context.text(CONNECT_NOTE, 11f, context.pal.muted)
         val submit = context.primaryButton("下一步") {
@@ -35,19 +36,19 @@ class AuthScreens(private val context: Context) {
             errorText.text = ""
             // 允许直接输入 host:port；自动补 quic:// 协议头（原生层只接受 quic:// 地址）。
             val endpointValue = if (raw.startsWith("quic://")) raw else "quic://$raw"
-            onSubmit(CoreProfile(endpoint = endpointValue))
+            onSubmit(CoreProfile(endpoint = endpointValue, webEndpoint = webEndpoint.text.toString().trim()))
         }
         return centered(
             "连接远程 Core",
             "输入 Core 所在主机的远程控制地址；账号由 Core 管理员创建。",
-            endpoint, errorText, note,
+            endpoint, webEndpoint, errorText, note,
             action = submit,
         )
     }
 
     fun login(profile: CoreProfile, onLogin: (String, String) -> Unit, onReset: () -> Unit): View {
-        val username = context.input("远程账号用户名", fillColor = context.pal.surface)
-        val password = context.input("密码", password = true, fillColor = context.pal.surface)
+        val username = context.input("远程账号用户名")
+        val password = context.input("密码", password = true)
         return centered(
             "欢迎回来",
             "${profile.endpoint}\n内置 admin 仅允许在 Core 本机登录，请使用管理员创建的远程账号。",
@@ -58,9 +59,9 @@ class AuthScreens(private val context: Context) {
     }
 
     fun changePassword(onSubmit: (String, String) -> Unit): View {
-        val current = context.input("当前密码", password = true, fillColor = context.pal.surface)
-        val replacement = context.input("新密码（至少 8 个字符）", password = true, fillColor = context.pal.surface)
-        val repeat = context.input("再次输入新密码", password = true, fillColor = context.pal.surface)
+        val current = context.input("当前密码", password = true)
+        val replacement = context.input("新密码（至少 8 个字符）", password = true)
+        val repeat = context.input("再次输入新密码", password = true)
         val error = context.text("", 12f, context.pal.danger)
         return centered("首次登录请修改密码", "为避免默认凭据暴露，修改完成前不能使用远程控制。",
             current, replacement, repeat, error,

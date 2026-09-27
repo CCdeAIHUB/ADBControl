@@ -5,7 +5,6 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.text.InputType
-import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -14,14 +13,15 @@ import com.adbcontrol.remote.core.ThemeManager
 import com.adbcontrol.remote.core.ThemePalette
 
 /**
- * 主题化组件库：全部页面从这里取色与构建控件，禁止在页面里硬编码颜色，
- * 保证深浅色两套主题一致（对齐 SKILL 桌面端组件重绘约束的移动端等价要求）。
+ * 主题化组件库：全部页面从这里取色与构建控件，禁止在页面里硬编码颜色。
+ * 组件规格与 WEBADBControl Web 版（style.css 的 .card/.btn/.field 等类）对齐：
+ * 卡片=12dp 圆角白底细边框；按钮/输入框=8dp 圆角；主色=品牌绿。
  */
 val Context.pal: ThemePalette get() = ThemeManager.palette(this)
 
 fun Context.dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
-fun Context.shape(color: Int, radius: Int = 12, strokeColor: Int? = null): GradientDrawable =
+fun Context.shape(color: Int, radius: Int = 8, strokeColor: Int? = null): GradientDrawable =
     GradientDrawable().apply {
         setColor(color)
         cornerRadius = dp(radius).toFloat()
@@ -49,42 +49,52 @@ fun Context.text(value: String, size: Float = 14f, color: Int? = null, bold: Boo
         setTextColor(color ?: pal.text)
         includeFontPadding = false
         if (bold) setTypeface(typeface, Typeface.BOLD)
-        setLineSpacing(0f, 1.12f)
+        setLineSpacing(0f, 1.15f)
     }
 
-fun Context.card(content: View, padding: Int = 16, radius: Int = 16): FrameLayout = FrameLayout(this).apply {
+fun Context.card(content: View, padding: Int = 14, radius: Int = 12): FrameLayout = FrameLayout(this).apply {
     background = shape(pal.surface, radius, pal.border)
+    elevation = dp(1).toFloat()
     setPadding(dp(padding), dp(padding), dp(padding), dp(padding))
     addView(content, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 }
 
 fun Context.primaryButton(label: String, onClick: () -> Unit): Button = Button(this).apply {
     text = label
-    textSize = 15f
+    textSize = 14f
     setTextColor(Color.WHITE)
     isAllCaps = false
-    background = shape(pal.brand, 12)
-    minHeight = dp(48)
-    setOnClickListener { onClick() }
-}
-
-fun Context.dangerButton(label: String, onClick: () -> Unit): Button = Button(this).apply {
-    text = label
-    textSize = 15f
-    setTextColor(Color.WHITE)
-    isAllCaps = false
-    background = shape(pal.danger, 12)
-    minHeight = dp(48)
+    stateListAnimator = null
+    background = shape(pal.buttonFill, 8)
+    minHeight = dp(40)
+    isSingleLine = true
+    ellipsize = android.text.TextUtils.TruncateAt.END
     setOnClickListener { onClick() }
 }
 
 fun Context.secondaryButton(label: String, onClick: () -> Unit): Button = Button(this).apply {
     text = label
     textSize = 14f
-    setTextColor(pal.brand)
+    setTextColor(pal.secondary)
     isAllCaps = false
-    background = shape(pal.surface, 12, pal.border)
-    minHeight = dp(44)
+    stateListAnimator = null
+    background = shape(pal.surface, 8, pal.border)
+    minHeight = dp(40)
+    isSingleLine = true
+    ellipsize = android.text.TextUtils.TruncateAt.END
+    setOnClickListener { onClick() }
+}
+
+fun Context.dangerButton(label: String, onClick: () -> Unit): Button = Button(this).apply {
+    text = label
+    textSize = 14f
+    setTextColor(pal.danger)
+    isAllCaps = false
+    stateListAnimator = null
+    background = shape(pal.dangerSoft, 8)
+    minHeight = dp(40)
+    isSingleLine = true
+    ellipsize = android.text.TextUtils.TruncateAt.END
     setOnClickListener { onClick() }
 }
 
@@ -94,11 +104,11 @@ fun Context.input(hintText: String, password: Boolean = false, multiline: Boolea
         textSize = 15f
         setTextColor(pal.text)
         setHintTextColor(pal.muted)
-        setPadding(dp(14), dp(4), dp(14), dp(4))
-        minHeight = dp(if (multiline) 100 else 48)
+        setPadding(dp(12), dp(2), dp(12), dp(2))
+        minHeight = dp(if (multiline) 96 else 40)
         gravity = if (multiline) Gravity.TOP else Gravity.CENTER_VERTICAL
-        // 默认在卡片内使用 surfaceMuted；铺在页面背景上时传入 surface 保证与背景有对比。
-        background = shape(fillColor ?: pal.surfaceMuted, 12, pal.border)
+        // Web 版 .field 恒为白底；深色下用 surfaceMuted（≈ white/5 叠在卡片色上）。
+        background = shape(fillColor ?: if (pal.isDark) pal.surfaceMuted else pal.surface, 8, pal.border)
         inputType = when {
             password -> InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
             multiline -> InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
@@ -109,7 +119,7 @@ fun Context.input(hintText: String, password: Boolean = false, multiline: Boolea
 fun Context.scroll(content: View): ScrollView = ScrollView(this).apply {
     isFillViewport = true
     clipToPadding = false
-    setPadding(dp(16), dp(8), dp(16), dp(24))
+    setPadding(dp(16), dp(10), dp(16), dp(24))
     addView(content, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 }
 
@@ -121,23 +131,41 @@ fun View.margin(left: Int = 0, top: Int = 0, right: Int = 0, bottom: Int = 0): V
 
 // ---------- 业务组件 ----------
 
-/** 二级页顶部栏：返回 + 标题 + 右侧动作。 */
-fun Context.topBar(title: String, onBack: () -> Unit, action: TextView.() -> Unit = {}): View = row {
-    setPadding(dp(8), 0, dp(16), 0)
-    minimumHeight = dp(56)
-    setBackgroundColor(pal.surface)
-    addView(text("‹", 32f, pal.text).apply {
-        gravity = Gravity.CENTER
-        setOnClickListener { onBack() }
-    }, LinearLayout.LayoutParams(dp(44), ViewGroup.LayoutParams.MATCH_PARENT))
-    addView(text(title, 17f, pal.text, true), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-    addView(text("", 14f, pal.brand, true).apply(action), LinearLayout.LayoutParams(
-        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT,
-    ))
-}
+/**
+ * 二级页顶部栏：surface 底 + 底部 1dp 分隔线（Web 版 PageHeader 的 border-b 语义）。
+ * 返回 FrameLayout 固定高度由调用方给定（惯例 56dp）。
+ */
+fun Context.topBar(title: String, onBack: () -> Unit, action: TextView.() -> Unit = {}): View =
+    FrameLayout(this).apply {
+        setBackgroundColor(pal.surface)
+        elevation = dp(1).toFloat()
+        val bar = row {
+            setPadding(dp(6), 0, dp(14), 0)
+            addView(FlatIconView(this@topBar, AppIcon.BACK, pal.text).apply {
+                setOnClickListener { onBack() }
+                foreground = ripple()
+                setPadding(dp(11), dp(16), dp(11), dp(16))
+            }, LinearLayout.LayoutParams(dp(46), dp(56)))
+            addView(text(title, 16f, pal.text, true).apply {
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            }, LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f,
+            ))
+            addView(text("", 14f, pal.brand, true).apply(action), LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(56),
+            ))
+        }
+        addView(bar, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
+        ))
+        addView(View(this@topBar).apply { setBackgroundColor(pal.border) }, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(1), Gravity.BOTTOM,
+        ))
+    }
 
-/** 区块标题（宫格/列表上方的小标题）。 */
-fun Context.sectionTitle(title: String, hint: String = ""): View = column(3) {
+/** 区块标题（ eyebrow 风格小标 + 可选说明）。 */
+fun Context.sectionTitle(title: String, hint: String = ""): View = column(2) {
     addView(text(title, 16f, pal.text, true))
     if (hint.isNotBlank()) addView(text(hint, 11f, pal.muted))
 }
@@ -152,13 +180,16 @@ fun Context.statusDot(textValue: String, color: Int): View = row {
     ).apply { leftMargin = dp(6) })
 }
 
-/** 功能宫格块。 */
+/** 功能宫格块：emoji 放在品牌浅色圆角块中，卡片 12dp 圆角细边框。 */
 fun Context.featureTile(title: String, subtitle: String, emoji: String, onClick: () -> Unit): View =
     card(column(6) {
-        addView(text(emoji, 22f))
+        addView(FrameLayout(this@featureTile).apply {
+            addView(FlatIconView(this@featureTile, iconFor("$title $emoji")), FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER))
+            background = shape(pal.brandSoft, 8)
+        }, LinearLayout.LayoutParams(dp(34), dp(34)))
         addView(text(title, 14f, pal.text, true))
         addView(text(subtitle, 10f, pal.muted))
-    }, 14, 14).apply {
+    }, 12).apply {
         setOnClickListener { onClick() }
         foreground = ripple()
     }
@@ -166,14 +197,14 @@ fun Context.featureTile(title: String, subtitle: String, emoji: String, onClick:
 /** 指标卡（大数字 + 标签）。 */
 fun Context.metricTile(value: String, label: String, color: Int): View = card(column(4) {
     gravity = Gravity.CENTER
-    addView(text(value, 20f, color, true).apply { gravity = Gravity.CENTER })
+    addView(text(value, 19f, color, true).apply { gravity = Gravity.CENTER })
     addView(text(label, 11f, pal.muted).apply { gravity = Gravity.CENTER })
-}, 14)
+}, 12)
 
 /** 徽标。 */
 fun Context.badge(label: String, color: Int, soft: Boolean = true): TextView = text(label, 10f, color, true).apply {
     gravity = Gravity.CENTER
-    background = shape(if (soft) withAlpha(color, 0x1E) else color, 10)
+    background = shape(if (soft) withAlpha(color, 0x1E) else color, 6)
     setPadding(dp(8), dp(3), dp(8), dp(3))
 }
 
@@ -192,13 +223,13 @@ fun Context.listRow(
     emoji: String = "",
 ): View = card(row {
     if (emoji.isNotBlank()) {
-        addView(text(emoji, 20f), LinearLayout.LayoutParams(dp(36), ViewGroup.LayoutParams.WRAP_CONTENT))
+        addView(FlatIconView(this@listRow, iconFor("$title $emoji")), LinearLayout.LayoutParams(dp(24), dp(24)))
     }
     addView(column(3) {
         addView(text(title, 15f, pal.text, true))
         if (subtitle.isNotBlank()) addView(text(subtitle, 11f, pal.muted))
     }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = if (emoji.isBlank()) 0 else dp(8) })
-    if (trailing != null) addView(trailing) else addView(text("›", 22f, pal.muted))
+    if (trailing != null) addView(trailing) else addView(FlatIconView(this@listRow, AppIcon.FORWARD, pal.muted), LinearLayout.LayoutParams(dp(20), dp(20)))
 }, 12).apply {
     if (onClick != null) {
         setOnClickListener { onClick() }
@@ -210,8 +241,8 @@ fun Context.listRow(
 fun Context.emptyView(title: String, detail: String, emoji: String = "📭"): View = column(8) {
     gravity = Gravity.CENTER
     setPadding(dp(32), dp(48), dp(32), dp(48))
-    addView(text(emoji, 40f).apply { gravity = Gravity.CENTER })
-    addView(text(title, 16f, pal.text, true).apply { gravity = Gravity.CENTER })
+    addView(FlatIconView(this@emptyView, iconFor("$title $emoji")), LinearLayout.LayoutParams(dp(48), dp(48)))
+    addView(text(title, 15f, pal.text, true).apply { gravity = Gravity.CENTER })
     addView(text(detail, 12f, pal.muted).apply { gravity = Gravity.CENTER })
 }
 
@@ -252,7 +283,7 @@ fun Context.divider(): View = View(this).apply {
 fun View.ripple(): android.graphics.drawable.Drawable {
     val outward = android.util.TypedValue()
     context.theme.resolveAttribute(android.R.attr.selectableItemBackground, outward, true)
-    return context.getDrawable(outward.resourceId) ?: context.shape(context.pal.brandSoft, 12)
+    return context.getDrawable(outward.resourceId) ?: context.shape(context.pal.brandSoft, 8)
 }
 
 fun withAlpha(color: Int, alpha: Int): Int = (alpha shl 24) or (color and 0x00FFFFFF)

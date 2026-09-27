@@ -12,6 +12,7 @@ import com.adbcontrol.remote.transport.RemoteTransport
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
+import com.adbcontrol.remote.data.log.AppDiagnostics
 
 /**
  * 远程协议封装：方法、参数与响应校验全部集中在这里，UI 与业务层不得直接拼协议 JSON。
@@ -178,7 +179,25 @@ class RemoteRepository(private val transport: RemoteTransport) {
 
     fun call(method: String, params: JSONObject = JSONObject()): RemoteResult<Any> = callRaw(method, params)
 
+    fun reportDiagnostics(sessionId: String, events: List<AppDiagnostics.Event>): RemoteResult<Int> {
+        val payload = JSONArray()
+        events.take(50).forEach { event ->
+            payload.put(JSONObject()
+                .put("level", event.level)
+                .put("phase", event.phase)
+                .put("module", event.module)
+                .put("ok", event.ok)
+                .put("elapsedMs", event.elapsedMs)
+                .put("errorCode", event.errorCode)
+                .put("detail", event.detail))
+        }
+        return callRaw("diagnostics.report", JSONObject().put("sessionId", sessionId).put("events", payload)).map { result ->
+            (result as? JSONObject)?.optInt("accepted", 0) ?: 0
+        }
+    }
+
     private fun callRaw(method: String, params: JSONObject, authenticated: Boolean = true): RemoteResult<Any> {
+        val started = System.currentTimeMillis()
         val id = UUID.randomUUID().toString()
         val request = JSONObject().put("id", id).put("method", method).put("params", params)
         if (authenticated) {
@@ -187,10 +206,20 @@ class RemoteRepository(private val transport: RemoteTransport) {
             )
             request.put("sessionToken", token)
         }
-        return when (val response = transport.request(request.toString())) {
+        val result = when (val response = transport.request(request.toString())) {
             is RemoteResult.Failure -> response
             is RemoteResult.Success -> parseResponse(id, response.value)
         }
+        if (method != "diagnostics.report") {
+            AppDiagnostics.record(
+                if (result is RemoteResult.Failure) "error" else "info",
+                "remote.request", "remote.repository", result is RemoteResult.Success,
+                System.currentTimeMillis() - started,
+                (result as? RemoteResult.Failure)?.error?.errorCode.orEmpty(),
+                "method=$method",
+            )
+        }
+        return result
     }
 
     private fun parseResponse(requestId: String, text: String): RemoteResult<Any> = try {

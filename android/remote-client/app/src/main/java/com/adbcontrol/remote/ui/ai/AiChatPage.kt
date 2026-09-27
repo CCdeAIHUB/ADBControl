@@ -60,6 +60,7 @@ class AiChatPage(
                 background = shape(pal.surface, 10, pal.border)
                 setPadding(dp(10), dp(8), dp(10), dp(8))
                 maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
                 setOnClickListener { pickModel() }
             }
             addView(modelButton, LinearLayout.LayoutParams(0, dp(36), 1f))
@@ -68,6 +69,7 @@ class AiChatPage(
                 background = shape(pal.surface, 10, pal.border)
                 setPadding(dp(10), dp(8), dp(10), dp(8))
                 maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
                 setOnClickListener { pickMode() }
             }
             addView(modeButton, LinearLayout.LayoutParams(0, dp(36), 1f).apply { leftMargin = dp(8) })
@@ -86,8 +88,8 @@ class AiChatPage(
         root.addView(messagesScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
         root.addView(row {
-            addView(secondaryButton("🖼") { host.pickImageFile { bytes -> attachedImage = bytes; host.notify("附件已添加（${bytes.size} 字节）") } },
-                LinearLayout.LayoutParams(dp(52), dp(48)))
+            addView(secondaryButton("图片") { host.pickImageFile { bytes -> attachedImage = bytes; host.notify("附件已添加（${bytes.size} 字节）") } },
+                LinearLayout.LayoutParams(dp(64), dp(48)))
             inputBox = input("描述你想完成的操作…", multiline = true).apply { minHeight = dp(48) }
             addView(inputBox, LinearLayout.LayoutParams(0, dp(52), 1f).apply {
                 leftMargin = dp(8)
@@ -196,15 +198,17 @@ class AiChatPage(
     }
 
     private fun addBubble(content: String, fromUser: Boolean, error: Boolean = false): TextView {
-        val bubble = text(content.ifBlank { "…" }, 14f, if (fromUser) Color.WHITE else if (error) pal.danger else pal.text).apply {
-            background = shape(
-                when {
-                    fromUser -> pal.brand
-                    error -> withAlpha(pal.danger, 0x22)
-                    else -> pal.surface
-                },
-                12,
-            )
+        // 对齐 Web 版语义：用户消息=btn-primary（品牌绿实底白字），AI 消息=card（surface+细边框）。
+        val bubble = text(content.ifBlank { "…" }, 14f, when {
+            fromUser -> Color.WHITE
+            error -> pal.danger
+            else -> pal.text
+        }).apply {
+            background = when {
+                fromUser -> shape(pal.buttonFill, 12)
+                error -> shape(pal.dangerSoft, 12)
+                else -> shape(pal.surface, 12, pal.border)
+            }
             setPadding(dp(12), dp(9), dp(12), dp(9))
         }
         val wrapper = row {
@@ -218,7 +222,7 @@ class AiChatPage(
 
     private fun addToolCard(toolName: String, status: String) {
         messagesContainer.addView(row {
-            addView(text("🛠", 13f))
+            addView(com.adbcontrol.remote.ui.common.FlatIconView(context, com.adbcontrol.remote.ui.common.AppIcon.TASK, pal.muted), LinearLayout.LayoutParams(dp(18), dp(18)))
             addView(text("$toolName · $status", 11f, pal.muted), LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
             ).apply { leftMargin = dp(4) })

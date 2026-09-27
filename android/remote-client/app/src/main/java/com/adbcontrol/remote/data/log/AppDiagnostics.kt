@@ -3,6 +3,15 @@ package com.adbcontrol.remote.data.log
 import android.content.Context
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.atomic.AtomicLong
+
+object DiagnosticUploadPolicy {
+    const val MAX_BATCH = 50
+    const val MAX_DETAIL = 200
+    private val token = Regex("[A-Za-z0-9_.:+\\-/=@]+")
+    fun safeToken(value: String): Boolean = value.isNotBlank() && value.length <= MAX_DETAIL && token.matches(value)
+    fun clampDetail(value: String): String = value.take(MAX_DETAIL)
+}
 
 /**
  * 统一日志（对齐桌面端统一诊断规范的最小子集）：
@@ -16,6 +25,7 @@ object AppDiagnostics {
     private const val MAX_TEXT = 200
 
     class Event(
+        val sequence: Long,
         val atEpochMs: Long,
         val level: String, // info / warn / error
         val phase: String, // connect.ready / request.end / automation.run …
@@ -35,6 +45,8 @@ object AppDiagnostics {
     }
 
     private val memory = ArrayDeque<Event>()
+    private val sequence = AtomicLong()
+    private val pending = ArrayDeque<Event>()
     private var sessionFile: File? = null
     private var sessionId: String = ""
 
@@ -63,16 +75,26 @@ object AppDiagnostics {
         val sanitized = detail.split(Regex("\\s+")).joinToString(" ") { token ->
             if (token.length <= MAX_TEXT && token.matches(Regex("[A-Za-z0-9_.:+\\-/=@]+"))) token else "unknown"
         }
-        val event = Event(System.currentTimeMillis(), level, phase, module, ok, elapsedMs, errorCode, sanitized.take(MAX_TEXT))
+        val event = Event(sequence.incrementAndGet(), System.currentTimeMillis(), level, phase, module, ok, elapsedMs, errorCode, sanitized.take(MAX_TEXT))
         synchronized(memory) {
             memory.addLast(event)
             while (memory.size > MAX_MEMORY_EVENTS) memory.removeFirst()
+            pending.addLast(event)
+            while (pending.size > MAX_FILE_EVENTS) pending.removeFirst()
         }
         appendToFile(event)
     }
 
     fun failure(phase: String, module: String, elapsedMs: Long, errorCode: String, detail: String = "") =
         record("error", phase, module, false, elapsedMs, errorCode, detail)
+
+    fun pendingBatch(limit: Int = DiagnosticUploadPolicy.MAX_BATCH): List<Event> = synchronized(memory) {
+        pending.take(limit.coerceIn(1, DiagnosticUploadPolicy.MAX_BATCH))
+    }
+
+    fun acknowledgeThrough(sequence: Long) = synchronized(memory) {
+        while (pending.firstOrNull()?.sequence?.let { it <= sequence } == true) pending.removeFirst()
+    }
 
     private fun appendToFile(event: Event) {
         val file = sessionFile ?: return

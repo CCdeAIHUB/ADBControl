@@ -89,7 +89,7 @@ class DevicesPage(
             badge.background = shape(withAlpha(color, 0x1E), 10)
         }
         return card(row {
-            addView(text("📱", 24f), LinearLayout.LayoutParams(dp(44), ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(com.adbcontrol.remote.ui.common.FlatIconView(context, com.adbcontrol.remote.ui.common.AppIcon.DEVICE), LinearLayout.LayoutParams(dp(32), dp(32)))
             addView(column(4) {
                 addView(row {
                     addView(title, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))

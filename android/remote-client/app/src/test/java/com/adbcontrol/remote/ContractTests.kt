@@ -31,6 +31,8 @@ import com.adbcontrol.remote.security.OperationRisk
 import com.adbcontrol.remote.security.RemotePathPolicy
 import com.adbcontrol.remote.security.RiskPolicy
 import com.adbcontrol.remote.transport.jniCertificateBytes
+import com.adbcontrol.remote.transport.ScreenEndpointPolicy
+import com.adbcontrol.remote.data.log.DiagnosticUploadPolicy
 import java.time.ZoneId
 
 object ContractTests {
@@ -57,6 +59,8 @@ object ContractTests {
         aiPolicyRules()
         fingerprintPolicyRules()
         tofuConnectUsesNonNullEmptyCertificateArray()
+        mobileScreenEndpointPolicyRules()
+        diagnosticUploadBatchRules()
     }
 
     // ---------- 导航与安全 ----------
@@ -420,5 +424,20 @@ object ContractTests {
         check(jniCertificateBytes(null).isEmpty())
         val pinned = byteArrayOf(1, 2, 3)
         check(jniCertificateBytes(pinned).contentEquals(pinned))
+    }
+
+    private fun mobileScreenEndpointPolicyRules() {
+        // 局域网允许明确的 ws 兼容链路；公网地址必须使用 wss，不能静默降级明文。
+        check(ScreenEndpointPolicy.derive("quic://192.168.3.1:45921", "") == "ws://192.168.3.1:18087")
+        check(ScreenEndpointPolicy.derive("quic://10.0.0.8:45921", "https://10.0.0.8:9443") == "wss://10.0.0.8:9443")
+        check(ScreenEndpointPolicy.derive("quic://remote.example.com:45921", "") == null)
+        check(ScreenEndpointPolicy.derive("quic://remote.example.com:45921", "https://remote.example.com") == "wss://remote.example.com")
+    }
+
+    private fun diagnosticUploadBatchRules() {
+        check(DiagnosticUploadPolicy.MAX_BATCH in 10..100)
+        check(DiagnosticUploadPolicy.safeToken("request.end"))
+        check(!DiagnosticUploadPolicy.safeToken("password=secret value"))
+        check(DiagnosticUploadPolicy.clampDetail("x".repeat(500)).length == DiagnosticUploadPolicy.MAX_DETAIL)
     }
 }

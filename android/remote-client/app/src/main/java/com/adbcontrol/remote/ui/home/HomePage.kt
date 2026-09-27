@@ -82,8 +82,12 @@ class HomePage(
                     val (emoji, title, subtitle) = item
                     val action = if (title == "AI 助手") ({ host.openAiChat(null) }) else ({ openFirstDeviceOrNotify() })
                     addView(
+                        // 高度用 WRAP_CONTENT：宫格内容（图标+两行文字）约 105dp，
+                        // 固定 92dp 会把文字压到一起（此前“界面重叠”的主要来源）。
                         featureTile(title, subtitle, emoji, action),
-                        LinearLayout.LayoutParams(0, dp(92), 1f).apply { if (index > 0) leftMargin = dp(10) },
+                        LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                            if (index > 0) leftMargin = dp(10)
+                        },
                     )
                 }
             })
