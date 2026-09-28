@@ -43,12 +43,22 @@ class HardwareMonitorPage(
     private val temperatureSamples = mutableListOf<Double?>()
     private val refreshSamples = mutableListOf<Double?>()
     private val fpsSamples = mutableListOf<Double?>()
+    private val cpuFrequencySamples = mutableListOf<Double?>()
+    private val extendedMemorySamples = mutableListOf<Double?>()
+    private val gpuUsageSamples = mutableListOf<Double?>()
+    private val gpuFrequencySamples = mutableListOf<Double?>()
+    private val gpuMemorySamples = mutableListOf<Double?>()
 
     private lateinit var cpuChart: SparklineView
     private lateinit var memoryChart: SparklineView
     private lateinit var temperatureChart: SparklineView
     private lateinit var refreshChart: SparklineView
     private lateinit var fpsChart: SparklineView
+    private lateinit var cpuFrequencyChart: SparklineView
+    private lateinit var extendedMemoryChart: SparklineView
+    private lateinit var gpuUsageChart: SparklineView
+    private lateinit var gpuFrequencyChart: SparklineView
+    private lateinit var gpuMemoryChart: SparklineView
     private lateinit var statusLabel: android.widget.TextView
     private lateinit var recordButton: android.widget.Button
     private lateinit var metricButton: android.widget.Button
@@ -66,6 +76,11 @@ class HardwareMonitorPage(
         val temperatureCelsius: Double?,
         val refreshRate: Double?,
         val appFps: Double?,
+        val cpuFrequencyGhz: Double?,
+        val extendedMemoryPercent: Double?,
+        val gpuUsagePercent: Double?,
+        val gpuFrequencyMhz: Double?,
+        val gpuMemoryMb: Double?,
     )
 
     override fun build(): View {
@@ -89,7 +104,12 @@ class HardwareMonitorPage(
         metricButton = secondaryButton("调整监控项目") { chooseMetric() }
         content.addView(metricButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)))
         cpuChart = chart(content, HardwareMonitorMetric.CPU)
+        cpuFrequencyChart = chart(content, HardwareMonitorMetric.CPU_FREQUENCY)
         memoryChart = chart(content, HardwareMonitorMetric.MEMORY)
+        extendedMemoryChart = chart(content, HardwareMonitorMetric.EXTENDED_MEMORY)
+        gpuUsageChart = chart(content, HardwareMonitorMetric.GPU_USAGE)
+        gpuFrequencyChart = chart(content, HardwareMonitorMetric.GPU_FREQUENCY)
+        gpuMemoryChart = chart(content, HardwareMonitorMetric.GPU_MEMORY)
         temperatureChart = chart(content, HardwareMonitorMetric.TEMPERATURE)
         refreshChart = chart(content, HardwareMonitorMetric.REFRESH_RATE)
         fpsChart = chart(content, HardwareMonitorMetric.APP_FPS)
@@ -167,11 +187,20 @@ class HardwareMonitorPage(
                 val temperature = data.temperaturesCelsius.maxOfOrNull { it.second }
                     ?: data.batteryTempTenths?.let { it / 10.0 }
                 val refresh = data.refreshRate
+                val cpuFrequency = data.cpuFreqs.values.takeIf { it.isNotEmpty() }?.average()?.div(1_000_000.0)
+                val extendedTotal = data.memTotalKb + data.swapTotalKb
+                val extendedUsed = if (extendedTotal > 0) {
+                    ((extendedTotal - data.memAvailableKb - data.swapFreeKb).toDouble() / extendedTotal * 100.0).coerceIn(0.0, 100.0)
+                } else null
+                val gpuFrequency = data.gpuCurFreqHz?.div(1_000_000.0)
+                val gpuMemory = data.gpuMemoryBytes?.div(1_048_576.0)
                 cpuSamples.add(cpu); memorySamples.add(memory)
                 temperatureSamples.add(temperature); refreshSamples.add(refresh)
                 fpsSamples.add(fps)
+                cpuFrequencySamples.add(cpuFrequency); extendedMemorySamples.add(extendedUsed)
+                gpuUsageSamples.add(data.gpuUsagePercent); gpuFrequencySamples.add(gpuFrequency); gpuMemorySamples.add(gpuMemory)
                 if (recording) {
-                    recorded.add(Sample(System.currentTimeMillis(), cpu, memory, temperature, refresh, fps))
+                    recorded.add(Sample(System.currentTimeMillis(), cpu, memory, temperature, refresh, fps, cpuFrequency, extendedUsed, data.gpuUsagePercent, gpuFrequency, gpuMemory))
                 }
                 mainHandler.post { render() }
             }
@@ -180,7 +209,12 @@ class HardwareMonitorPage(
 
     private fun render() {
         cpuChart.setSamples(cpuSamples)
+        cpuFrequencyChart.setSamples(cpuFrequencySamples)
         memoryChart.setSamples(memorySamples)
+        extendedMemoryChart.setSamples(extendedMemorySamples)
+        gpuUsageChart.setSamples(gpuUsageSamples)
+        gpuFrequencyChart.setSamples(gpuFrequencySamples)
+        gpuMemoryChart.setSamples(gpuMemorySamples)
         temperatureChart.setSamples(temperatureSamples)
         refreshChart.setSamples(refreshSamples)
         fpsChart.setSamples(fpsSamples)
@@ -218,7 +252,12 @@ class HardwareMonitorPage(
             recorded.forEach { sample ->
                 val values = mapOf(
                     HardwareMonitorMetric.CPU to sample.cpuPercent,
+                    HardwareMonitorMetric.CPU_FREQUENCY to sample.cpuFrequencyGhz,
                     HardwareMonitorMetric.MEMORY to sample.memoryPercent,
+                    HardwareMonitorMetric.EXTENDED_MEMORY to sample.extendedMemoryPercent,
+                    HardwareMonitorMetric.GPU_USAGE to sample.gpuUsagePercent,
+                    HardwareMonitorMetric.GPU_FREQUENCY to sample.gpuFrequencyMhz,
+                    HardwareMonitorMetric.GPU_MEMORY to sample.gpuMemoryMb,
                     HardwareMonitorMetric.TEMPERATURE to sample.temperatureCelsius,
                     HardwareMonitorMetric.REFRESH_RATE to sample.refreshRate,
                     HardwareMonitorMetric.APP_FPS to sample.appFps,
