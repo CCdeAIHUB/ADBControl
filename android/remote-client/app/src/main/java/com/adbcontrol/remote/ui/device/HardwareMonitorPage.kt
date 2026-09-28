@@ -10,6 +10,8 @@ import com.adbcontrol.remote.core.AppGraph
 import com.adbcontrol.remote.data.adb.AppFrameParser
 import com.adbcontrol.remote.data.adb.HardwareSnapshot
 import com.adbcontrol.remote.data.adb.HardwareSnapshotData
+import com.adbcontrol.remote.data.adb.HardwareMonitorConfig
+import com.adbcontrol.remote.data.adb.HardwareMonitorMetric
 import com.adbcontrol.remote.data.io.DownloadsWriter
 import com.adbcontrol.remote.model.RemoteDevice
 import com.adbcontrol.remote.model.RemoteResult
@@ -48,6 +50,10 @@ class HardwareMonitorPage(
     private lateinit var refreshChart: SparklineView
     private lateinit var fpsChart: SparklineView
     private lateinit var statusLabel: android.widget.TextView
+    private lateinit var recordButton: android.widget.Button
+    private lateinit var metricButton: android.widget.Button
+    private val metricViews = mutableMapOf<HardwareMonitorMetric, View>()
+    private val monitorConfig = HardwareMonitorConfig()
 
     private val lastAppFrameTimestamp = LongArray(1)
     private val recorded = mutableListOf<Sample>()
@@ -74,26 +80,56 @@ class HardwareMonitorPage(
         statusLabel = text("采样中… 已记录 0 条样本", 12f, pal.muted)
         content.addView(statusLabel)
         content.addView(row {
-            addView(secondaryButton(if (recording) "结束记录" else "开始记录") { toggleRecording() },
+            recordButton = primaryButton("开始记录") { toggleRecording() }
+            addView(recordButton,
                 LinearLayout.LayoutParams(0, dp(44), 1f))
             addView(secondaryButton("导出 CSV") { exportCsv() },
                 LinearLayout.LayoutParams(0, dp(44), 1f).apply { leftMargin = dp(8) })
         })
-        cpuChart = chart(content, "CPU 估算占用（%）")
-        memoryChart = chart(content, "内存占用（%）")
-        temperatureChart = chart(content, "最高温度（°C，归一化到 0-100）")
-        refreshChart = chart(content, "屏幕刷新率（Hz，归一化 0-165）")
-        fpsChart = chart(content, "前台应用帧率（fps）")
-        root.addView(scroll(content))
+        metricButton = secondaryButton("调整监控项目") { chooseMetric() }
+        content.addView(metricButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)))
+        cpuChart = chart(content, HardwareMonitorMetric.CPU)
+        memoryChart = chart(content, HardwareMonitorMetric.MEMORY)
+        temperatureChart = chart(content, HardwareMonitorMetric.TEMPERATURE)
+        refreshChart = chart(content, HardwareMonitorMetric.REFRESH_RATE)
+        fpsChart = chart(content, HardwareMonitorMetric.APP_FPS)
+        applyMetricVisibility()
+        root.addView(scroll(content), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         startSampling()
         return root
     }
 
-    private fun chart(parent: LinearLayout, label: String): SparklineView {
-        parent.addView(text(label, 12f, pal.secondary))
+    private fun chart(parent: LinearLayout, metric: HardwareMonitorMetric): SparklineView {
         val chart = SparklineView(context)
-        parent.addView(chart, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(84)))
+        val holder = card(column(6) {
+            addView(text("${metric.title}（${metric.unit}）", 13f, pal.secondary, true))
+            addView(chart, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(84)))
+        }, 12)
+        metricViews[metric] = holder
+        parent.addView(holder)
         return chart
+    }
+
+    private fun chooseMetric() {
+        val options = HardwareMonitorMetric.entries.map { metric ->
+            "${if (metric in monitorConfig.selected()) "✓ " else ""}${metric.title}"
+        }
+        host.showChoiceDialog("调整监控项目", options) { selected ->
+            val index = options.indexOf(selected)
+            if (index < 0) return@showChoiceDialog
+            val metric = HardwareMonitorMetric.entries[index]
+            val enabled = metric !in monitorConfig.selected()
+            if (!monitorConfig.set(metric, enabled)) {
+                host.notify("至少保留一个监控项目")
+            }
+            applyMetricVisibility()
+        }
+    }
+
+    private fun applyMetricVisibility() {
+        val selected = monitorConfig.selected()
+        metricViews.forEach { (metric, view) -> view.visibility = if (metric in selected) View.VISIBLE else View.GONE }
+        if (::metricButton.isInitialized) metricButton.text = "调整监控项目 · ${selected.size} 项"
     }
 
     private fun startSampling() {
@@ -158,10 +194,14 @@ class HardwareMonitorPage(
     private fun toggleRecording() {
         if (recording) {
             recording = false
+            recordButton.text = "开始记录"
+            metricButton.isEnabled = true
             host.notify("记录结束，共 ${recorded.size} 条样本，可导出 CSV")
         } else {
             recorded.clear()
             recording = true
+            recordButton.text = "停止记录"
+            metricButton.isEnabled = false
             host.notify("开始记录（1 秒/样本）")
         }
         render()
@@ -173,18 +213,17 @@ class HardwareMonitorPage(
             return
         }
         val csv = buildString {
-            appendLine("time,cpu_percent,memory_percent,temperature_c,refresh_hz,app_fps")
+            val selected = monitorConfig.selected()
+            appendLine((listOf("time") + HardwareMonitorMetric.entries.filter { it in selected }.map { it.id }).joinToString(","))
             recorded.forEach { sample ->
-                appendLine(
-                    listOf(
-                        sample.atEpochMs,
-                        sample.cpuPercent?.let { fmt("%.2f", it) } ?: "",
-                        sample.memoryPercent?.let { fmt("%.2f", it) } ?: "",
-                        sample.temperatureCelsius?.let { fmt("%.2f", it) } ?: "",
-                        sample.refreshRate?.let { fmt("%.2f", it) } ?: "",
-                        sample.appFps?.let { fmt("%.2f", it) } ?: "",
-                    ).joinToString(","),
+                val values = mapOf(
+                    HardwareMonitorMetric.CPU to sample.cpuPercent,
+                    HardwareMonitorMetric.MEMORY to sample.memoryPercent,
+                    HardwareMonitorMetric.TEMPERATURE to sample.temperatureCelsius,
+                    HardwareMonitorMetric.REFRESH_RATE to sample.refreshRate,
+                    HardwareMonitorMetric.APP_FPS to sample.appFps,
                 )
+                appendLine((listOf(sample.atEpochMs.toString()) + HardwareMonitorMetric.entries.filter { it in selected }.map { values[it]?.let { value -> fmt("%.2f", value) }.orEmpty() }).joinToString(","))
             }
         }
         val saved = DownloadsWriter.save(context, "hardware-monitor-${System.currentTimeMillis()}.csv", csv.toByteArray())

@@ -10,7 +10,7 @@
 | 设备列表与型号采集 | 设备 Tab / 首页概览；清单=已分配设备，信息经 ADB 采集 | 会话 devices + `adb.exec get-state/getprop/dumpsys battery` | 已接通 |
 | ADB/伴侣双连接徽标 | 设备卡与详情头 | `get-state` + `device.list` | 已接通 |
 | 快捷按键（电源/音量/返回/主页/多任务/唤醒/锁屏） | 详情页快捷控制区 + 预览页快捷条 | `adb.exec shell input keyevent` | 已接通 |
-| 截图预览（间隔轮询、帧去重） | 预览控制页（500–60000ms） | `device.invoke accessibility.screenshot` | 已接通（依赖伴侣会话） |
+| 截图预览（间隔轮询、帧去重） | 预览控制页（500–60000ms） | Web 服务远程鉴权截图路由（ADB screencap） | 已接通（不依赖伴侣） |
 | 预览触控（点击/长按/滑动、坐标映射） | 预览控制页手势 | `adb.exec shell input tap/swipe`，INJECT_EVENTS 失败回退 `accessibility.touch.*` | 已接通 |
 | 锁屏状态监测（两段式 + OneUI 降级） | 详情页状态 + 解锁/键盘门槛 | `adb.exec shell dumpsys window policy/power/trust` → `dumpsys window` | 已接通 |
 | 锁屏覆盖层 + 上滑解锁 | 预览控制页锁屏层 | `KEYCODE_WAKEUP` + `input touchscreen swipe 0.82h→0.2h`，被拒回退伴侣 | 已接通 |
@@ -25,7 +25,7 @@
 | 重启六动作（系统/Bootloader/Fastbootd/Recovery/EDL/关机） | 重启页（危险确认） | `adb.exec reboot…` / `shell reboot -p` | 已接通 |
 | 伴侣安装/QUIC 配置下发 | 状态检测 + 呼出伴侣界面；安装与配置需桌面端 | `pm path` / `dumpsys package` / `ui.surface.show` | 桌面端专属（状态可查） |
 | 伴侣能力/权限目录 | 伴侣能力页 | `device.getCapabilities` / `device.getPermissionState` | 已接通（取决于 Core 宿主接线） |
-| 实时投屏（scrcpy / 伴侣 QUIC 视频流）与实时画面控制 | 按需截图预览替代，界面明示 | Core 媒体下行流待定义 | 服务端阻塞 |
+| 实时投屏（scrcpy H.264）与实时画面控制 | 预览控制页 + MediaCodec + 全屏触控 | Web 服务远程鉴权 WebSocket，复用 scrcpy 协议 v2 | 已接通 |
 | 实时摄像头预览（scrcpy camera / companion 流） | 暂不可用，界面明示 | Core 媒体下行流待定义 | 服务端阻塞 |
 | 无线 ADB 配对/连接/二维码 | 不可用（远程白名单无 pair/connect/devices），设备由管理员分配 | — | 安全策略阻塞 |
 | 自动化任务（DSL/调度/条件/动作/运行记录） | 任务 Tab + 编辑器（模板）+ 运行记录；引擎在本机、动作经远程通道 | 本机 SQLite + 远程 `adb.exec` / `device.invoke`；DSL 与桌面同构 | 已接通（调度本机化） |

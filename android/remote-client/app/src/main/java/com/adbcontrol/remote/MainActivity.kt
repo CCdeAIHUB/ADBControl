@@ -1,7 +1,7 @@
 package com.adbcontrol.remote
 
+import android.annotation.SuppressLint
 import android.app.Activity
-import android.app.AlertDialog
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -9,7 +9,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.EditText
@@ -24,6 +23,8 @@ import com.adbcontrol.remote.ui.AuthScreens
 import com.adbcontrol.remote.ui.MainShell
 import com.adbcontrol.remote.ui.common.Page
 import com.adbcontrol.remote.ui.common.PageHost
+import com.adbcontrol.remote.ui.common.themedDialogBuilder
+import com.adbcontrol.remote.navigation.PageStackState
 
 /**
  * 唯一 Activity：
@@ -40,6 +41,7 @@ class MainActivity : Activity(), PageHost {
 
     // 页面栈：主壳在底，二级页依次覆盖。
     private val pageStack = mutableListOf<Page>()
+    private val pageStackState = PageStackState()
     private var currentSession: AppState.Ready? = null
     private var lastBackAt = 0L
 
@@ -59,6 +61,11 @@ class MainActivity : Activity(), PageHost {
         rootContainer = FrameLayout(this)
         setContentView(rootContainer)
         installSystemBarInsets()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(
+                android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+            ) { handleBack() }
+        }
         controller.start()
     }
 
@@ -117,6 +124,7 @@ class MainActivity : Activity(), PageHost {
                 graph.activeSession = state.session
                 currentSession = state
                 pageStack.clear()
+                pageStackState.clear()
                 rootContainer.removeAllViews()
                 rootContainer.addView(MainShell(this, this, graph, state.session).build(), ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
@@ -126,6 +134,7 @@ class MainActivity : Activity(), PageHost {
                 graph.activeSession = null
                 currentSession = null
                 pageStack.clear()
+                pageStackState.clear()
                 rootContainer.removeAllViews()
                 rootContainer.addView(authView(state), ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
@@ -199,7 +208,7 @@ class MainActivity : Activity(), PageHost {
     }
 
     override fun confirm(title: String, message: String, danger: Boolean, action: () -> Unit) {
-        AlertDialog.Builder(this)
+        themedDialogBuilder()
             .setTitle(title)
             .setMessage(message)
             .setNegativeButton("取消", null)
@@ -208,7 +217,10 @@ class MainActivity : Activity(), PageHost {
     }
 
     override fun pushPage(page: Page) {
+        // 每次只展示栈顶页面。旧实现让 MainShell 和所有历史页同时可见，造成详情页透明叠层。
+        rootContainer.getChildAt(rootContainer.childCount - 1)?.visibility = View.GONE
         pageStack.add(page)
+        pageStackState.push()
         rootContainer.addView(page.build(), ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
         ))
@@ -216,11 +228,13 @@ class MainActivity : Activity(), PageHost {
 
     override fun popPage() {
         val top = pageStack.removeLastOrNull() ?: return
+        check(pageStackState.pop())
         top.onDetach()
         // 只移除栈顶视图；下层是 MainShell 或更早的页面，保持其状态不变。
         if (rootContainer.childCount > 0) {
             rootContainer.removeViewAt(rootContainer.childCount - 1)
         }
+        rootContainer.getChildAt(rootContainer.childCount - 1)?.visibility = View.VISIBLE
     }
 
     override fun openDevice(device: RemoteDevice) {
@@ -298,7 +312,7 @@ class MainActivity : Activity(), PageHost {
     }
 
     override fun showChoiceDialog(title: String, options: List<String>, onSelected: (String) -> Unit) {
-        AlertDialog.Builder(this)
+        themedDialogBuilder()
             .setTitle(title)
             .setItems(options.toTypedArray()) { _, which -> onSelected(options[which]) }
             .setNegativeButton("取消", null)
@@ -306,7 +320,7 @@ class MainActivity : Activity(), PageHost {
     }
 
     override fun showTextDialog(title: String, message: String) {
-        AlertDialog.Builder(this)
+        themedDialogBuilder()
             .setTitle(title)
             .setMessage(message.ifBlank { "（无内容）" })
             .setPositiveButton("关闭", null)
@@ -316,7 +330,7 @@ class MainActivity : Activity(), PageHost {
     override fun showPromptDialog(title: String, hint: String, onConfirm: (String) -> Unit) {
         val input = EditText(this).apply { setPadding(dp(40), dp(24), dp(40), 0) }
         input.hint = hint
-        AlertDialog.Builder(this)
+        themedDialogBuilder()
             .setTitle(title)
             .setView(input)
             .setNegativeButton("取消", null)
@@ -330,7 +344,7 @@ class MainActivity : Activity(), PageHost {
             adjustViewBounds = true
             setPadding(dp(12), dp(12), dp(12), dp(12))
         }
-        AlertDialog.Builder(this)
+        themedDialogBuilder()
             .setTitle(title)
             .setView(imageView)
             .setPositiveButton("关闭", null)
@@ -350,12 +364,12 @@ class MainActivity : Activity(), PageHost {
 
     // ---------- 返回键 ----------
 
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (event.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
-            handleBack()
-            return true
-        }
-        return super.dispatchKeyEvent(event)
+    // Android 13+ 已在 onCreate 注册预测返回；此入口只服务旧系统。Lint 无法识别该版本分流。
+    @SuppressLint("GestureBackNavigation")
+    @Deprecated("Android 13+ uses OnBackInvokedDispatcher")
+    override fun onBackPressed() {
+        // Android 12 及以下仍由 Activity 回调；Android 13+ 由上面的预测返回回调处理。
+        handleBack()
     }
 
     private fun handleBack() {

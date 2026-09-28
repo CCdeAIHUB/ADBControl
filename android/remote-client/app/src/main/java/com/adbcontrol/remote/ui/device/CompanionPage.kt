@@ -51,7 +51,7 @@ class CompanionPage(
         body.addView(permissionCard)
         body.addView(text(
             "边界说明：安装/更新伴侣 APK、下发 QUIC 配置需要桌面端在设备局域网内完成；" +
-                "实时投屏与摄像头实时流需要 Core 的视频下行流，当前远程协议仅提供控制面。",
+                "实时投屏使用 Web 服务的 scrcpy H.264 通道；能力目录需要伴侣与 Core 保持在线。",
             11f, pal.muted,
         ))
         loadStatus(statusCard)
@@ -60,16 +60,26 @@ class CompanionPage(
     }
 
     private fun loadStatus(statusCard: android.widget.FrameLayout) {
-        host.runRemote({ graph.commands.shell(device.id, "pm path com.adbcontrol.companion", 15_000) }) { path ->
-            host.runRemote({
-                graph.commands.shell(device.id, "dumpsys package com.adbcontrol.companion | grep versionName", 15_000)
-            }) { version ->
-                val columnView = statusCard.getChildAt(0) as LinearLayout
-                columnView.removeAllViews()
-                val installed = path is RemoteResult.Success && (path as RemoteResult.Success).value.success &&
-                    path.value.stdout.contains("package:")
-                val versionText = (version as? RemoteResult.Success)?.value?.stdout
-                    ?.lineSequence()?.firstOrNull { it.contains("versionName=") }
+        val columnView = statusCard.getChildAt(0) as LinearLayout
+        columnView.removeAllViews()
+        columnView.addView(text("检测中…", 13f, pal.muted))
+        // 合并为一次有界远程调用，避免旧实现第二个串行请求未完成时永久停在“检测中”。
+        host.runRemote({
+            graph.commands.shell(
+                device.id,
+                "pm path com.adbcontrol.companion; dumpsys package com.adbcontrol.companion 2>/dev/null | grep -m1 versionName= || true",
+                15_000,
+            )
+        }) { result ->
+            columnView.removeAllViews()
+            when (result) {
+                is RemoteResult.Failure -> columnView.addView(errorCard(
+                    "检测失败", result.error.message, result.error.errorCode, result.error.suggestion,
+                ) { loadStatus(statusCard) })
+                is RemoteResult.Success -> {
+                val output = result.value.stdout
+                val installed = result.value.success && output.contains("package:")
+                val versionText = output.lineSequence().firstOrNull { it.contains("versionName=") }
                     ?.substringAfter("versionName=")?.trim().orEmpty()
                 columnView.addView(
                     text(
@@ -82,6 +92,7 @@ class CompanionPage(
                     else "未检测到伴侣 App；安装需要桌面端执行 adb install（APK 由桌面端内置）。",
                     12f, pal.secondary,
                 ))
+                }
             }
         }
     }

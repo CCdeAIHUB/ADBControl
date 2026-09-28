@@ -1,6 +1,7 @@
 package com.adbcontrol.remote.ui.device
 
 import android.app.AlertDialog
+import com.adbcontrol.remote.ui.common.themedDialogBuilder
 import android.content.Context
 import android.view.View
 import android.view.ViewGroup
@@ -154,7 +155,7 @@ class HardwarePage(
             appendLine("GPU: ${snapshot.gpuAccess} ${snapshot.gpuCurFreqHz?.let { formatFrequency(it) } ?: ""}")
             appendLine("刷新率: ${snapshot.refreshRate ?: "—"} Hz")
         }
-        AlertDialog.Builder(context)
+        context.themedDialogBuilder()
             .setTitle("硬件详情")
             .setMessage(detail)
             .setPositiveButton("关闭", null)

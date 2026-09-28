@@ -2,6 +2,8 @@ package com.adbcontrol.remote
 
 import com.adbcontrol.remote.data.adb.AppFrameParser
 import com.adbcontrol.remote.data.adb.HardwareSnapshotData
+import com.adbcontrol.remote.data.adb.HardwareMonitorConfig
+import com.adbcontrol.remote.data.adb.HardwareMonitorMetric
 import com.adbcontrol.remote.data.adb.LockStateParser
 import com.adbcontrol.remote.data.adb.LsParser
 import com.adbcontrol.remote.data.adb.PackageCatalogParser
@@ -27,6 +29,7 @@ import com.adbcontrol.remote.model.CoreProfile
 import com.adbcontrol.remote.model.Session
 import com.adbcontrol.remote.model.UserRole
 import com.adbcontrol.remote.navigation.AccessPolicy
+import com.adbcontrol.remote.navigation.PageStackState
 import com.adbcontrol.remote.security.OperationRisk
 import com.adbcontrol.remote.security.RemotePathPolicy
 import com.adbcontrol.remote.security.RiskPolicy
@@ -61,6 +64,8 @@ object ContractTests {
         tofuConnectUsesNonNullEmptyCertificateArray()
         mobileScreenEndpointPolicyRules()
         diagnosticUploadBatchRules()
+        pageStackBackRules()
+        hardwareMonitorSelectionRules()
     }
 
     // ---------- 导航与安全 ----------
@@ -159,6 +164,29 @@ object ContractTests {
         val link = entries.first { it.name == "link" }
         check(link.isSymlink && !link.name.contains("data/other"))
         check(entries.first { it.name == "notes.txt" }.sizeBytes == 1024L)
+        // Android toybox 可能输出 ISO 日期，不能把时间误当文件名。
+        val toybox = LsParser.parse("drwxrwx--x 2 root sdcard_rw 4096 2026-09-28 12:34 Download")
+        check(toybox.single().isDirectory && toybox.single().name == "Download")
+    }
+
+    private fun pageStackBackRules() {
+        // 场景：设备详情与工具页逐层返回，二级页存在时主壳不得透出。
+        val stack = PageStackState()
+        check(stack.showsMainShell)
+        stack.push(); stack.push()
+        check(!stack.showsMainShell && stack.depth == 2)
+        check(stack.pop() && stack.depth == 1)
+        check(stack.pop() && stack.showsMainShell)
+        check(!stack.pop())
+    }
+
+    private fun hardwareMonitorSelectionRules() {
+        // 场景：监控项可增删，但必须至少保留一项，避免空记录。
+        val config = HardwareMonitorConfig(setOf(HardwareMonitorMetric.CPU, HardwareMonitorMetric.MEMORY))
+        check(config.set(HardwareMonitorMetric.CPU, false))
+        check(!config.set(HardwareMonitorMetric.MEMORY, false))
+        check(config.set(HardwareMonitorMetric.APP_FPS, true))
+        check(config.selected() == setOf(HardwareMonitorMetric.MEMORY, HardwareMonitorMetric.APP_FPS))
     }
 
     private fun packageCatalogParsingRules() {

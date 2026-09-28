@@ -11,6 +11,7 @@ import android.view.ViewGroup
 import android.widget.*
 import com.adbcontrol.remote.core.ThemeManager
 import com.adbcontrol.remote.core.ThemePalette
+import com.adbcontrol.remote.R
 
 /**
  * 主题化组件库：全部页面从这里取色与构建控件，禁止在页面里硬编码颜色。
@@ -20,6 +21,12 @@ import com.adbcontrol.remote.core.ThemePalette
 val Context.pal: ThemePalette get() = ThemeManager.palette(this)
 
 fun Context.dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+/** 所有弹窗统一使用品牌深浅色主题，避免系统原生白框在深色页面中突兀。 */
+fun Context.themedDialogBuilder(): android.app.AlertDialog.Builder = android.app.AlertDialog.Builder(
+    this,
+    if (pal.isDark) R.style.Theme_ADBControlRemote_Dialog_Dark else R.style.Theme_ADBControlRemote_Dialog_Light,
+)
 
 fun Context.shape(color: Int, radius: Int = 8, strokeColor: Int? = null): GradientDrawable =
     GradientDrawable().apply {

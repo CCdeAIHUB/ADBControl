@@ -110,15 +110,27 @@ object LsParser {
         .toList()
 
     private fun parseLine(line: String): Entry? {
-        val columns = line.trim().split(Regex("\\s+"), limit = 9)
-        if (columns.size < 9) return null
+        val columns = line.trim().split(Regex("\\s+"))
+        if (columns.size < 7) return null
         val permissions = columns[0]
         if (permissions.length < 2) return null
         val isDirectory = permissions.startsWith("d")
         val isSymlink = permissions.startsWith("l")
-        val size = columns[4].toLongOrNull() ?: 0L
-        val modified = "${columns[5]} ${columns[6]} ${columns[7]}"
-        var name = columns[8]
+        // toybox 版本之间是否输出硬链接数并不一致，以 owner/group/size 的相对位置解析。
+        val ownerIndex = if (columns.getOrNull(1)?.toLongOrNull() != null) 2 else 1
+        val sizeIndex = ownerIndex + 2
+        val modifiedIndex = sizeIndex + 1
+        if (columns.size <= modifiedIndex + 1) return null
+        val size = columns[sizeIndex].toLongOrNull() ?: 0L
+        val modifiedCount = when {
+            Regex("\\d{4}-\\d{2}-\\d{2}").matches(columns[modifiedIndex]) && columns.getOrNull(modifiedIndex + 1)?.contains(':') == true -> 2
+            Regex("\\d{4}-\\d{2}-\\d{2}").matches(columns[modifiedIndex]) -> 1
+            else -> 3
+        }
+        val nameIndex = modifiedIndex + modifiedCount
+        if (columns.size <= nameIndex) return null
+        val modified = columns.subList(modifiedIndex, nameIndex).joinToString(" ")
+        var name = columns.subList(nameIndex, columns.size).joinToString(" ")
         val symlinkIndex = name.indexOf(" -> ")
         if (symlinkIndex > 0) name = name.substring(0, symlinkIndex)
         name = name.trim().removeSuffix("/")

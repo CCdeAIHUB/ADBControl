@@ -1,6 +1,7 @@
 package com.adbcontrol.remote.ui.automation
 
 import android.app.AlertDialog
+import com.adbcontrol.remote.ui.common.themedDialogBuilder
 import android.content.Context
 import android.view.View
 import android.widget.LinearLayout
@@ -82,7 +83,7 @@ class TaskEditPage(
     }
 
     private fun showError(message: String) {
-        AlertDialog.Builder(context)
+        context.themedDialogBuilder()
             .setTitle("校验失败")
             .setMessage(message)
             .setPositiveButton("知道了", null)

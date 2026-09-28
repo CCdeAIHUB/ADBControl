@@ -6,7 +6,6 @@ import android.app.Activity
 import android.graphics.BitmapFactory
 import android.os.Handler
 import android.os.Looper
-import android.util.Base64
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -28,12 +27,12 @@ import com.adbcontrol.remote.model.RemoteResult
 import com.adbcontrol.remote.ui.common.BasePage
 import com.adbcontrol.remote.ui.common.PageHost
 import com.adbcontrol.remote.ui.common.withAlpha
-import org.json.JSONObject
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
 import com.adbcontrol.remote.transport.H264SurfaceDecoder
 import com.adbcontrol.remote.transport.ScreenEndpointPolicy
 import com.adbcontrol.remote.transport.ScreenStreamClient
+import com.adbcontrol.remote.transport.RemoteScreenshotClient
 
 /**
  * 预览控制页（对应桌面端“预览”Tab + 预览触控 + 锁屏覆盖层 + 安全键盘）：
@@ -59,7 +58,9 @@ class PreviewControlPage(
         adjustViewBounds = true
         setBackgroundColor(0xFF10131A.toInt())
     }
-    private val surfaceView = SurfaceView(context).apply { visibility = View.GONE }
+    // Surface 必须保持 VISIBLE 才会创建；旧实现初始 GONE，导致“开始投屏”永远拿不到有效 Surface。
+    private val surfaceView = SurfaceView(context).apply { visibility = View.VISIBLE }
+    private val screenshotClient = RemoteScreenshotClient()
     private val stateText = text("点击“刷新”或开启自动预览", 12f, pal.muted)
     private val lockOverlay = buildLockOverlay().apply { visibility = View.GONE }
     private var lastPngHash: Int = 0
@@ -148,7 +149,12 @@ class PreviewControlPage(
         controlsView = scroll(controlBody())
         root.addView(controlsView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         surfaceView.holder.addCallback(object : SurfaceHolder.Callback {
-            override fun surfaceCreated(holder: SurfaceHolder) = Unit
+            override fun surfaceCreated(holder: SurfaceHolder) {
+                if (pendingLiveStart) {
+                    pendingLiveStart = false
+                    startLive()
+                }
+            }
             override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = Unit
             override fun surfaceDestroyed(holder: SurfaceHolder) { stopLive("显示区域已释放") }
         })
@@ -205,7 +211,8 @@ class PreviewControlPage(
             return
         }
         if (!surfaceView.holder.surface.isValid) {
-            stateText.text = "投屏显示区域尚未就绪，请稍后重试"
+            pendingLiveStart = true
+            stateText.text = "正在准备投屏显示区域…"
             return
         }
         stopAuto()
@@ -254,7 +261,7 @@ class PreviewControlPage(
         decoder?.close()
         decoder = null
         codecConfig = null
-        surfaceView.visibility = View.GONE
+        // 不隐藏 SurfaceView，否则再次开始投屏时 Surface 无法创建。
         imageView.visibility = View.VISIBLE
         if (message.isNotBlank()) stateText.text = message
     }
@@ -344,35 +351,26 @@ class PreviewControlPage(
     private fun refresh() {
         if (!refreshing.compareAndSet(false, true)) return
         stateText.text = "正在请求截图…"
-        host.runRemote({
-            graph.companion.screenshot(device.id, maxSize = 960)
-        }) { result ->
+        val profile = graph.activeProfile
+        val session = graph.activeSession
+        val endpoint = profile?.let { ScreenEndpointPolicy.derive(it.endpoint, it.webEndpoint) }
+        if (session == null || endpoint == null) {
+            refreshing.set(false)
+            stateText.text = "截图服务地址不可用，请检查 Core 配置"
+            return
+        }
+        host.runRemote({ screenshotClient.capture(endpoint, session.token, device.id) }) { result ->
             refreshing.set(false)
             when (result) {
                 is RemoteResult.Failure -> {
                     stateText.text = "${result.error.message}（${result.error.errorCode}）"
-                    if (result.error.errorCode == "COMPANION_SCREENSHOT_LOCKED") setLocked(true)
                 }
                 is RemoteResult.Success -> showPng(result.value)
             }
         }
     }
 
-    private fun showPng(payload: JSONObject) {
-        // 伴侣结果：{ok?, result:{format,pngBase64}}；兼容直接平铺 pngBase64。
-        val base64 = payload.optString("pngBase64").ifBlank {
-            payload.optJSONObject("result")?.optString("pngBase64").orEmpty()
-        }
-        if (base64.isBlank()) {
-            stateText.text = "未返回 PNG 数据；请确认伴侣 App 无障碍授权与前台连接。"
-            return
-        }
-        val bytes = try {
-            Base64.decode(base64, Base64.DEFAULT)
-        } catch (error: Throwable) {
-            stateText.text = "截图数据解析失败：${error.message}"
-            return
-        }
+    private fun showPng(bytes: ByteArray) {
         // 帧去重：与桌面端一致，相同帧不重复渲染。
         if (bytes.contentHashCode() == lastPngHash) {
             stateText.text = "画面未变化"
@@ -386,6 +384,7 @@ class PreviewControlPage(
         }
         latestImageSize = bitmap.width to bitmap.height
         imageView.setImageBitmap(bitmap)
+        imageView.visibility = View.VISIBLE
         setLocked(false)
         stateText.text = "已更新 · ${bitmap.width}x${bitmap.height} · ${bytes.size / 1024} KiB"
     }
@@ -581,4 +580,6 @@ class PreviewControlPage(
         stopLive("")
         if (fullScreen) toggleFullScreen()
     }
+
+    private var pendingLiveStart = false
 }

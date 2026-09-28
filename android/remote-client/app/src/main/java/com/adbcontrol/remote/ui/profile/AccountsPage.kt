@@ -1,6 +1,7 @@
 package com.adbcontrol.remote.ui.profile
 
 import android.app.AlertDialog
+import com.adbcontrol.remote.ui.common.themedDialogBuilder
 import android.content.Context
 import android.view.View
 import android.widget.LinearLayout
@@ -83,7 +84,7 @@ class AccountsPage(
 
     private fun resetForm(account: RemoteAccount) {
         val password = input("新密码（至少 8 个字符）", password = true)
-        AlertDialog.Builder(context)
+        context.themedDialogBuilder()
             .setTitle("重置 ${account.username} 的密码")
             .setView(password)
             .setNegativeButton("取消", null)

@@ -1,6 +1,7 @@
 package com.adbcontrol.remote.ui.profile
 
 import android.app.AlertDialog
+import com.adbcontrol.remote.ui.common.themedDialogBuilder
 import android.content.Context
 import android.view.View
 import android.widget.LinearLayout
@@ -51,7 +52,7 @@ class SettingsPage(
 
     private fun pickTheme() {
         val modes = ThemeMode.entries.map { it.title }
-        AlertDialog.Builder(context)
+        context.themedDialogBuilder()
             .setTitle("主题模式")
             .setItems(modes.toTypedArray()) { _, which ->
                 val mode = ThemeMode.entries[which]
@@ -70,7 +71,7 @@ class SettingsPage(
             setText(graph.settings.previewIntervalMs.toString())
             setPadding(dp(40), dp(20), dp(40), 0)
         }
-        AlertDialog.Builder(context)
+        context.themedDialogBuilder()
             .setTitle("预览轮询间隔")
             .setView(input)
             .setNegativeButton("取消", null)

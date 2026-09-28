@@ -1,6 +1,7 @@
 package com.adbcontrol.remote.ui.profile
 
 import android.app.AlertDialog
+import com.adbcontrol.remote.ui.common.themedDialogBuilder
 import android.content.Context
 import android.view.View
 import android.widget.LinearLayout
@@ -65,7 +66,7 @@ class ProfilePage(
         val current = input("当前密码", password = true)
         val replacement = input("新密码（至少 8 个字符）", password = true)
         val fields = column(8) { addView(current); addView(replacement) }
-        AlertDialog.Builder(context)
+        context.themedDialogBuilder()
             .setTitle("修改登录密码")
             .setView(fields)
             .setNegativeButton("取消", null)

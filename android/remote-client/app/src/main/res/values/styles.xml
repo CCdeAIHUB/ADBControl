@@ -7,4 +7,18 @@
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:windowActionModeOverlay">true</item>
     </style>
+    <style name="Theme.ADBControlRemote.Dialog.Light" parent="android:style/Theme.Material.Light.Dialog.Alert">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">@color/brand</item>
+        <item name="android:windowBackground">#FFFFFFFF</item>
+        <item name="android:textColorPrimary">#FF172033</item>
+        <item name="android:textColorSecondary">#FF667085</item>
+    </style>
+    <style name="Theme.ADBControlRemote.Dialog.Dark" parent="android:style/Theme.Material.Dialog.Alert">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">@color/brand</item>
+        <item name="android:windowBackground">#FF151A22</item>
+        <item name="android:textColorPrimary">#FFF4F6FA</item>
+        <item name="android:textColorSecondary">#FF9BA5B5</item>
+    </style>
 </resources>

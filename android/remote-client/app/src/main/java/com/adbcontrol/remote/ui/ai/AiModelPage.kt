@@ -1,6 +1,7 @@
 package com.adbcontrol.remote.ui.ai
 
 import android.app.AlertDialog
+import com.adbcontrol.remote.ui.common.themedDialogBuilder
 import android.content.Context
 import android.view.View
 import android.widget.LinearLayout
@@ -73,7 +74,7 @@ class AiModelPage(
         val wrapper = column(8) {
             addView(name); addView(modelId); addView(apiUrl); addView(apiKey)
         }
-        AlertDialog.Builder(context)
+        context.themedDialogBuilder()
             .setTitle("添加模型")
             .setView(wrapper)
             .setNegativeButton("取消", null)

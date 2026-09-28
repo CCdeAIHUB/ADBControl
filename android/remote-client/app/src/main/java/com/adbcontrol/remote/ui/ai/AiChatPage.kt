@@ -17,6 +17,7 @@ import com.adbcontrol.remote.model.RemoteDevice
 import com.adbcontrol.remote.model.RemoteResult
 import com.adbcontrol.remote.ui.common.BasePage
 import com.adbcontrol.remote.ui.common.PageHost
+import com.adbcontrol.remote.ui.common.themedDialogBuilder
 import com.adbcontrol.remote.ui.common.withAlpha
 
 /**
@@ -252,7 +253,7 @@ class AiChatPage(
         val latch = java.util.concurrent.CountDownLatch(1)
         var approved = false
         mainHandler.post {
-            android.app.AlertDialog.Builder(context)
+            context.themedDialogBuilder()
                 .setTitle(title)
                 .setMessage(detail)
                 .setNegativeButton("拒绝") { _, _ -> latch.countDown() }
@@ -269,7 +270,7 @@ class AiChatPage(
         var selected: List<String>? = null
         mainHandler.post {
             val checked = BooleanArray(options.size)
-            val builder = android.app.AlertDialog.Builder(context)
+            val builder = context.themedDialogBuilder()
                 .setTitle(question)
             if (multiSelect) {
                 builder.setMultiChoiceItems(options.toTypedArray(), checked) { _, _, _ -> }
