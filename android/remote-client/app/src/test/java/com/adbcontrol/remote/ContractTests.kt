@@ -36,6 +36,7 @@ import com.adbcontrol.remote.security.RiskPolicy
 import com.adbcontrol.remote.transport.jniCertificateBytes
 import com.adbcontrol.remote.transport.ScreenEndpointPolicy
 import com.adbcontrol.remote.data.log.DiagnosticUploadPolicy
+import com.adbcontrol.remote.ui.device.ScreenViewportMapper
 import java.time.ZoneId
 
 object ContractTests {
@@ -63,6 +64,7 @@ object ContractTests {
         fingerprintPolicyRules()
         tofuConnectUsesNonNullEmptyCertificateArray()
         mobileScreenEndpointPolicyRules()
+        mobileScreenViewportMappingRules()
         diagnosticUploadBatchRules()
         pageStackBackRules()
         hardwareMonitorSelectionRules()
@@ -460,6 +462,26 @@ object ContractTests {
         check(ScreenEndpointPolicy.derive("quic://10.0.0.8:45921", "https://10.0.0.8:9443") == "wss://10.0.0.8:9443")
         check(ScreenEndpointPolicy.derive("quic://remote.example.com:45921", "") == null)
         check(ScreenEndpointPolicy.derive("quic://remote.example.com:45921", "https://remote.example.com") == "wss://remote.example.com")
+    }
+
+    private fun mobileScreenViewportMappingRules() {
+        // 竖屏画面在较宽容器内必须保持源比例，并在左右形成不可触控的留白。
+        val viewport = ScreenViewportMapper.fit(1080, 1920, 576, 1280)
+        check(viewport.left == 108f && viewport.top == 0f)
+        check(viewport.width == 864f && viewport.height == 1920f)
+        check(ScreenViewportMapper.map(50f, 960f, viewport, 576, 1280) == null)
+        check(ScreenViewportMapper.map(540f, 960f, viewport, 576, 1280) == ScreenViewportMapper.Point(288, 640))
+
+        // 截图可能被服务端缩放，控制坐标仍须映射到设备物理屏幕，而不是截图像素。
+        val screenshotViewport = ScreenViewportMapper.fit(450, 1000, 576, 1280)
+        check(
+            ScreenViewportMapper.map(225f, 500f, screenshotViewport, 1080, 2400) ==
+                ScreenViewportMapper.Point(540, 1200),
+        )
+
+        // 设备旋转后 wm size 与画面方向相反时，控制目标尺寸需要随当前画面方向旋转。
+        check(ScreenViewportMapper.orientTarget(1080, 2400, 1280, 576) == (2400 to 1080))
+        check(ScreenViewportMapper.orientTarget(1080, 2400, 576, 1280) == (1080 to 2400))
     }
 
     private fun diagnosticUploadBatchRules() {

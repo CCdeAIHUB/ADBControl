@@ -36,6 +36,10 @@ console.
    compatibility fallback.
 5. Cleartext `ws://` is allowed only for loopback and RFC1918 LAN addresses.
    Non-private targets require `wss://`.
+6. PNG and H.264 output share one aspect-ratio-preserving media viewport. Touch
+   input is accepted only inside that viewport. Live input maps to the scrcpy
+   frame size, while PNG input maps to the orientation-adjusted physical device
+   size because screenshot transport may resize the image.
 
 ## Consequences
 
@@ -48,3 +52,5 @@ console.
   override it in the Core profile.
 - Client logs become remotely diagnosable without uploading command text,
   credentials, tokens, screenshots or video payloads.
+- Letterbox regions and fullscreen overlay controls cannot emit device touches;
+  normal and fullscreen modes therefore use identical coordinate semantics.

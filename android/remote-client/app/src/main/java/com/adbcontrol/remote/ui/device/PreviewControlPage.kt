@@ -29,6 +29,7 @@ import com.adbcontrol.remote.ui.common.PageHost
 import com.adbcontrol.remote.ui.common.withAlpha
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
+import kotlin.math.roundToInt
 import com.adbcontrol.remote.transport.H264SurfaceDecoder
 import com.adbcontrol.remote.transport.ScreenEndpointPolicy
 import com.adbcontrol.remote.transport.ScreenStreamClient
@@ -60,6 +61,8 @@ class PreviewControlPage(
     }
     // Surface 必须保持 VISIBLE 才会创建；旧实现初始 GONE，导致“开始投屏”永远拿不到有效 Surface。
     private val surfaceView = SurfaceView(context).apply { visibility = View.VISIBLE }
+    /** 截图、视频和触控共用的实际画面矩形；外层容器只负责留白与悬浮控制条。 */
+    private val mediaStage = FrameLayout(context).apply { setBackgroundColor(0xFF10131A.toInt()) }
     private val screenshotClient = RemoteScreenshotClient()
     private val stateText = text("点击“刷新”或开启自动预览", 12f, pal.muted)
     private val lockOverlay = buildLockOverlay().apply { visibility = View.GONE }
@@ -71,6 +74,7 @@ class PreviewControlPage(
     private var decoder: H264SurfaceDecoder? = null
     private var codecConfig: ByteArray? = null
     private var streamSize: Pair<Int, Int>? = null
+    private var contentSize: Pair<Int, Int> = 9 to 20
     private var rootView: LinearLayout? = null
     private var topBarView: View? = null
     private var previewHolderView: FrameLayout? = null
@@ -116,19 +120,16 @@ class PreviewControlPage(
             }
         }
         previewAreaView = previewArea
-        val previewPadding = FrameLayout(context).apply { setPadding(dp(8), dp(8), dp(8), dp(8)) }
-        previewPadding.addView(surfaceView, FrameLayout.LayoutParams(
+        mediaStage.addView(surfaceView, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
         ))
-        previewPadding.addView(imageView, FrameLayout.LayoutParams(
+        mediaStage.addView(imageView, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
         ))
-        previewArea.addView(previewPadding, FrameLayout.LayoutParams(
+        mediaStage.addView(lockOverlay, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
         ))
-        previewArea.addView(lockOverlay, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
-        ))
+        previewArea.addView(mediaStage, FrameLayout.LayoutParams(dp(126), dp(280), Gravity.CENTER))
         previewArea.addView(exitFullScreenButton, FrameLayout.LayoutParams(dp(104), dp(40), Gravity.TOP or Gravity.END).apply {
             topMargin = dp(12)
             rightMargin = dp(12)
@@ -136,7 +137,9 @@ class PreviewControlPage(
         previewArea.addView(fullScreenControls, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL,
         ).apply { bottomMargin = dp(14) })
-        installTouchHandling(previewArea)
+        // 只在真实画面矩形内接收触控，黑边和悬浮控制区不再向设备发送事件。
+        installTouchHandling(mediaStage)
+        previewArea.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> updateMediaStageLayout() }
         val previewHolder = FrameLayout(context).apply { setBackgroundColor(pal.background) }
         previewHolderView = previewHolder
         previewHolder.setPadding(dp(14), dp(10), dp(14), 0)
@@ -222,6 +225,7 @@ class PreviewControlPage(
                 mainHandler.post {
                     streamSize = width to height
                     latestImageSize = streamSize
+                    updateMediaStageLayout(streamSize)
                     stateText.text = "实时投屏连接成功 · ${width}x$height"
                 }
             }
@@ -285,6 +289,7 @@ class PreviewControlPage(
         (context as? Activity)?.window?.decorView?.systemUiVisibility = if (fullScreen) {
             View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
         } else View.SYSTEM_UI_FLAG_VISIBLE
+        previewAreaView?.post { updateMediaStageLayout() }
     }
 
     /** 快捷键横向滑动条：固定 72dp 宽度胶囊按钮，永不换行挤压。 */
@@ -383,6 +388,7 @@ class PreviewControlPage(
             return
         }
         latestImageSize = bitmap.width to bitmap.height
+        updateMediaStageLayout(latestImageSize)
         imageView.setImageBitmap(bitmap)
         imageView.visibility = View.VISIBLE
         setLocked(false)
@@ -445,6 +451,33 @@ class PreviewControlPage(
         lockOverlay.visibility = if (locked) View.VISIBLE else View.GONE
     }
 
+    /**
+     * 普通模式与全屏模式都只改变可用容器，真实媒体舞台始终保持当前帧的原始宽高比。
+     * 8dp 安全边距避免普通模式圆角裁切画面；全屏时仍由 contain 规则自动居中。
+     */
+    private fun updateMediaStageLayout(size: Pair<Int, Int>? = null) {
+        size?.takeIf { it.first > 0 && it.second > 0 }?.let { contentSize = it }
+        val area = previewAreaView ?: return
+        if (area.width <= 0 || area.height <= 0) {
+            area.post { updateMediaStageLayout() }
+            return
+        }
+        val inset = if (fullScreen) 0 else dp(8)
+        val availableWidth = (area.width - inset * 2).coerceAtLeast(1)
+        val availableHeight = (area.height - inset * 2).coerceAtLeast(1)
+        val viewport = ScreenViewportMapper.fit(
+            availableWidth,
+            availableHeight,
+            contentSize.first,
+            contentSize.second,
+        )
+        mediaStage.layoutParams = FrameLayout.LayoutParams(
+            viewport.width.roundToInt().coerceAtLeast(1),
+            viewport.height.roundToInt().coerceAtLeast(1),
+            Gravity.CENTER,
+        )
+    }
+
     // ---------- 触控 ----------
 
     @SuppressLint("ClickableViewAccessibility")
@@ -460,15 +493,27 @@ class PreviewControlPage(
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    dispatchLiveTouch(MotionEvent.ACTION_MOVE, event.x, event.y)
+                    dispatchLiveTouch(
+                        MotionEvent.ACTION_MOVE,
+                        event.x.coerceIn(0f, (area.width - 1).coerceAtLeast(0).toFloat()),
+                        event.y.coerceIn(0f, (area.height - 1).coerceAtLeast(0).toFloat()),
+                    )
                     true
                 }
                 MotionEvent.ACTION_UP -> {
-                    val upX = event.x
-                    val upY = event.y
+                    val upX = event.x.coerceIn(0f, (area.width - 1).coerceAtLeast(0).toFloat())
+                    val upY = event.y.coerceIn(0f, (area.height - 1).coerceAtLeast(0).toFloat())
                     val elapsed = System.currentTimeMillis() - downAt
                     if (stream != null) dispatchLiveTouch(MotionEvent.ACTION_UP, upX, upY)
                     else dispatchGesture(downX, downY, upX, upY, elapsed)
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    dispatchLiveTouch(
+                        MotionEvent.ACTION_UP,
+                        event.x.coerceIn(0f, (area.width - 1).coerceAtLeast(0).toFloat()),
+                        event.y.coerceIn(0f, (area.height - 1).coerceAtLeast(0).toFloat()),
+                    )
                     true
                 }
                 else -> true
@@ -479,16 +524,9 @@ class PreviewControlPage(
     private fun dispatchLiveTouch(action: Int, x: Float, y: Float) {
         val client = stream ?: return
         val size = streamSize ?: return
-        val width = imageView.width.coerceAtLeast(1)
-        val height = imageView.height.coerceAtLeast(1)
-        val videoAspect = size.first.toFloat() / size.second
-        val viewAspect = width.toFloat() / height
-        val scale = if (viewAspect > videoAspect) height.toFloat() / size.second else width.toFloat() / size.first
-        val offsetX = (width - size.first * scale) / 2f
-        val offsetY = (height - size.second * scale) / 2f
-        val mappedX = ((x - offsetX) / scale).toInt().coerceIn(0, size.first - 1)
-        val mappedY = ((y - offsetY) / scale).toInt().coerceIn(0, size.second - 1)
-        client.touch(action, mappedX, mappedY, size.first, size.second)
+        val viewport = ScreenViewportMapper.fit(mediaStage.width, mediaStage.height, size.first, size.second)
+        val mapped = ScreenViewportMapper.map(x, y, viewport, size.first, size.second) ?: return
+        client.touch(action, mapped.x, mapped.y, size.first, size.second)
     }
 
     /** 手势判定与桌面端一致：位移小且 <500ms 为点击；原地点按 ≥500ms 为长按；否则滑动。 */
@@ -501,35 +539,15 @@ class PreviewControlPage(
             host.notify("尚未读取设备分辨率，无法映射坐标")
             return
         }
-        val viewWidth = imageView.width.toFloat().coerceAtLeast(1f)
-        val viewHeight = imageView.height.toFloat().coerceAtLeast(1f)
-        fun map(x: Float, y: Float): Pair<Int, Int> {
-            val imageAspect = image.first.toFloat() / image.second
-            val viewAspect = viewWidth / viewHeight
-            val scale: Float
-            val offsetX: Float
-            val offsetY: Float
-            if (viewAspect > imageAspect) {
-                scale = viewHeight / image.second
-                offsetX = (viewWidth - image.first * scale) / 2f
-                offsetY = 0f
-            } else {
-                scale = viewWidth / image.first
-                offsetX = 0f
-                offsetY = (viewHeight - image.second * scale) / 2f
-            }
-            val deviceX = ((x - offsetX) / scale).toInt().coerceIn(0, image.first - 1)
-            val deviceY = ((y - offsetY) / scale).toInt().coerceIn(0, image.second - 1)
-            return deviceX to deviceY
-        }
-
-        val (startX, startY) = map(downX, downY)
-        val (endX, endY) = map(upX, upY)
+        val target = ScreenViewportMapper.orientTarget(screen.width, screen.height, image.first, image.second)
+        val viewport = ScreenViewportMapper.fit(mediaStage.width, mediaStage.height, image.first, image.second)
+        val start = ScreenViewportMapper.map(downX, downY, viewport, target.first, target.second) ?: return
+        val end = ScreenViewportMapper.map(upX, upY, viewport, target.first, target.second) ?: start
         val moved = abs(upX - downX) > dp(12) || abs(upY - downY) > dp(12)
         when {
-            !moved && elapsedMs < 500 -> sendShell("input tap $startX $startY")
-            !moved -> sendShell("input swipe $startX $startY $startX $startY ${elapsedMs.coerceIn(650, 3000)}")
-            else -> sendShell("input swipe $startX $startY $endX $endY ${elapsedMs.coerceIn(120, 3000)}")
+            !moved && elapsedMs < 500 -> sendShell("input tap ${start.x} ${start.y}")
+            !moved -> sendShell("input swipe ${start.x} ${start.y} ${start.x} ${start.y} ${elapsedMs.coerceIn(650, 3000)}")
+            else -> sendShell("input swipe ${start.x} ${start.y} ${end.x} ${end.y} ${elapsedMs.coerceIn(120, 3000)}")
         }
     }
 
@@ -551,9 +569,10 @@ class PreviewControlPage(
         val image = latestImageSize
         val screen = screenSize
         if (image == null || screen == null) return
+        val target = ScreenViewportMapper.orientTarget(screen.width, screen.height, image.first, image.second)
         when {
             tap != null -> host.runRemote({
-                graph.companion.tap(device.id, tap.groupValues[1].toInt(), tap.groupValues[2].toInt(), image.first, image.second)
+                graph.companion.tap(device.id, tap.groupValues[1].toInt(), tap.groupValues[2].toInt(), target.first, target.second)
             }) { if (it is RemoteResult.Failure) host.notify(it.error.message) }
             swipe != null -> host.runRemote({
                 graph.companion.swipe(
@@ -561,7 +580,7 @@ class PreviewControlPage(
                     swipe.groupValues[1].toInt(), swipe.groupValues[2].toInt(),
                     swipe.groupValues[3].toInt(), swipe.groupValues[4].toInt(),
                     swipe.groupValues.getOrNull(5)?.toIntOrNull() ?: 250,
-                    image.first, image.second,
+                    target.first, target.second,
                 )
             }) { if (it is RemoteResult.Failure) host.notify(it.error.message) }
         }
