@@ -1,6 +1,6 @@
 # ADBControl Remote for Android
 
-原生 Kotlin 安卓远程客户端（v0.3.1）。它只连接远程 `adbcontrol-core`，不携带 ADB
+原生 Kotlin 安卓远程客户端（v0.3.2）。它只连接远程 `adbcontrol-core`，不携带 ADB
 可执行文件、不访问 USB 调试接口，也不在手机本地执行目标设备能力——一切设备操作
 经加密 QUIC 通道由 Core 定向下发。
 
