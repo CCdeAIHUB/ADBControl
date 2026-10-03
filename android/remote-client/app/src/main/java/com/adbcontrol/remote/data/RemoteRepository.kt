@@ -82,7 +82,8 @@ class RemoteRepository(private val transport: RemoteTransport) {
             is RemoteResult.Success -> companions.value.associateBy({ it.first }, { it.second to it.third })
             is RemoteResult.Failure -> emptyMap()
         }
-        return RemoteResult.Success(assignedDevices.map { deviceId ->
+        val effectiveIds = RemoteDeviceListPolicy.effectiveIds(assignedDevices, companionMap.keys.toList())
+        return RemoteResult.Success(effectiveIds.map { deviceId ->
             val companion = companionMap[deviceId]
             RemoteDevice(
                 id = deviceId,

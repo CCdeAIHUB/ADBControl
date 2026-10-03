@@ -8,6 +8,7 @@ import com.adbcontrol.remote.model.RemoteDevice
 import com.adbcontrol.remote.model.RemoteResult
 import com.adbcontrol.remote.ui.common.BasePage
 import com.adbcontrol.remote.ui.common.PageHost
+import com.adbcontrol.remote.transport.ScreenEndpointPolicy
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -35,7 +36,10 @@ class CompanionPage(
         body.addView(row {
             addView(secondaryButton("重新检测") { loadStatus(statusCard) }, LinearLayout.LayoutParams(0, dp(44), 1f))
             addView(secondaryButton("呼出伴侣界面") {
-                host.runRemote({ graph.companion.showSurface(device.id) }) { result ->
+                host.runRemote({
+                    val (endpoint, token) = endpointAndToken()
+                    graph.remoteCompanion.invoke(endpoint, token, device.id, "android.ui.background_surface", "ui.surface.show")
+                }) { result ->
                     when (result) {
                         is RemoteResult.Success -> host.notify("已请求设备呼出伴侣界面")
                         is RemoteResult.Failure -> host.notify("呼出失败：${result.error.message}")
@@ -63,13 +67,9 @@ class CompanionPage(
         val columnView = statusCard.getChildAt(0) as LinearLayout
         columnView.removeAllViews()
         columnView.addView(text("检测中…", 13f, pal.muted))
-        // 合并为一次有界远程调用，避免旧实现第二个串行请求未完成时永久停在“检测中”。
         host.runRemote({
-            graph.commands.shell(
-                device.id,
-                "pm path com.adbcontrol.companion; dumpsys package com.adbcontrol.companion 2>/dev/null | grep -m1 versionName= || true",
-                15_000,
-            )
+            val (endpoint, token) = endpointAndToken()
+            graph.remoteCompanion.status(endpoint, token, device.id)
         }) { result ->
             columnView.removeAllViews()
             when (result) {
@@ -77,10 +77,9 @@ class CompanionPage(
                     "检测失败", result.error.message, result.error.errorCode, result.error.suggestion,
                 ) { loadStatus(statusCard) })
                 is RemoteResult.Success -> {
-                val output = result.value.stdout
-                val installed = result.value.success && output.contains("package:")
-                val versionText = output.lineSequence().firstOrNull { it.contains("versionName=") }
-                    ?.substringAfter("versionName=")?.trim().orEmpty()
+                val status = result.value.value as? JSONObject ?: JSONObject()
+                val installed = status.optBoolean("installed")
+                val versionText = status.optString("installedVersionName")
                 columnView.addView(
                     text(
                         if (installed) "已安装${if (versionText.isNotBlank()) " · v$versionText" else ""}" else "未安装",
@@ -88,7 +87,7 @@ class CompanionPage(
                     ),
                 )
                 columnView.addView(text(
-                    if (installed) "包名 com.adbcontrol.companion；设备端会话状态：${device.companionState.ifBlank { "未注册" }}"
+                    if (installed) "包名 com.adbcontrol.companion；${status.optString("message", "已通过服务端检测")}"
                     else "未检测到伴侣 App；安装需要桌面端执行 adb install（APK 由桌面端内置）。",
                     12f, pal.secondary,
                 ))
@@ -98,7 +97,10 @@ class CompanionPage(
     }
 
     private fun loadCapabilities(capabilityCard: android.widget.FrameLayout, permissionCard: android.widget.FrameLayout) {
-        host.runRemote({ graph.repository.getCapabilities(device.id) }) { capabilities ->
+        host.runRemote({
+            val (endpoint, token) = endpointAndToken()
+            graph.remoteCompanion.capabilities(endpoint, token, device.id)
+        }) { capabilities ->
             val capColumn = capabilityCard.getChildAt(0) as LinearLayout
             capColumn.removeAllViews()
             when (capabilities) {
@@ -108,11 +110,12 @@ class CompanionPage(
                     12f, pal.secondary,
                 ))
                 is RemoteResult.Success -> {
-                    val array = when (val value = capabilities.value) {
+                    val array = when (val value = capabilities.value.value) {
                         is JSONArray -> value
                         else -> JSONArray()
                     }
-                    capColumn.addView(text("共 ${array.length()} 项能力", 13f, pal.text, true))
+                    val channel = if (capabilities.value.transport == "adb-broadcast") " · ADB 兼容通道" else " · 伴侣直连"
+                    capColumn.addView(text("共 ${array.length()} 项能力$channel", 13f, pal.text, true))
                     for (index in 0 until array.length()) {
                         val item = array.optJSONObject(index) ?: continue
                         val operations = item.optJSONArray("operations")?.let { ops ->
@@ -123,7 +126,10 @@ class CompanionPage(
                 }
             }
         }
-        host.runRemote({ graph.repository.getPermissionState(device.id) }) { permissions ->
+        host.runRemote({
+            val (endpoint, token) = endpointAndToken()
+            graph.remoteCompanion.permissions(endpoint, token, device.id)
+        }) { permissions ->
             val permColumn = permissionCard.getChildAt(0) as LinearLayout
             permColumn.removeAllViews()
             when (permissions) {
@@ -131,7 +137,7 @@ class CompanionPage(
                     "读取失败：${permissions.error.message}（${permissions.error.errorCode}）", 12f, pal.secondary,
                 ))
                 is RemoteResult.Success -> {
-                    val array = permissions.value as? JSONArray ?: JSONArray()
+                    val array = permissions.value.value as? JSONArray ?: JSONArray()
                     if (array.length() == 0) {
                         permColumn.addView(text("无权限状态数据", 12f, pal.muted))
                     }
@@ -149,5 +155,14 @@ class CompanionPage(
                 }
             }
         }
+    }
+
+    private fun endpointAndToken(): Pair<String, String> {
+        val profile = graph.activeProfile ?: error("尚未连接远程核心")
+        val endpoint = ScreenEndpointPolicy.derive(profile.endpoint, profile.webEndpoint)
+            ?: error("当前连接未配置可用的 Web 服务地址")
+        val token = graph.activeSession?.token?.takeIf(String::isNotBlank)
+            ?: error("远程会话已失效")
+        return endpoint to token
     }
 }

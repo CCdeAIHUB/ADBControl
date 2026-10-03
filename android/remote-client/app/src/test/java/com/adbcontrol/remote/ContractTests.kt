@@ -36,6 +36,7 @@ import com.adbcontrol.remote.security.RiskPolicy
 import com.adbcontrol.remote.transport.jniCertificateBytes
 import com.adbcontrol.remote.transport.ScreenEndpointPolicy
 import com.adbcontrol.remote.data.log.DiagnosticUploadPolicy
+import com.adbcontrol.remote.data.RemoteDeviceListPolicy
 import com.adbcontrol.remote.ui.device.ScreenViewportMapper
 import java.time.ZoneId
 
@@ -68,6 +69,16 @@ object ContractTests {
         diagnosticUploadBatchRules()
         pageStackBackRules()
         hardwareMonitorSelectionRules()
+        remoteDeviceIdentityRefreshRules()
+    }
+
+    private fun remoteDeviceIdentityRefreshRules() {
+        // 场景：账号保存的是带“ (2)”的 mDNS 标识，而 Core 报告当前无后缀标识；
+        // UI 必须采用当前标识，不能继续把可用设备显示为离线。
+        val assigned = setOf("adb-R3CR70SJHHR-2VyQ5v (2)._adb-tls-connect._tcp")
+        val reported = listOf("adb-R3CR70SJHHR-2VyQ5v._adb-tls-connect._tcp")
+        check(RemoteDeviceListPolicy.effectiveIds(assigned, reported) == reported)
+        check(RemoteDeviceListPolicy.effectiveIds(assigned, emptyList()) == assigned.toList())
     }
 
     // ---------- 导航与安全 ----------

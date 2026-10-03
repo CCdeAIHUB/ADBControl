@@ -43,7 +43,7 @@ class DeviceDetailPage(
         body.addView(quickControls())
         body.addView(lockText)
         refreshStatus()
-        return scroll(body)
+        return subPage("设备详情 · ${device.displayName}", body)
     }
 
     private fun statusCard(): View {
