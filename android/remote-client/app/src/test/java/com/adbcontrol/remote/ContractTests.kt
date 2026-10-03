@@ -77,8 +77,9 @@ object ContractTests {
         // UI 必须采用当前标识，不能继续把可用设备显示为离线。
         val assigned = setOf("adb-R3CR70SJHHR-2VyQ5v (2)._adb-tls-connect._tcp")
         val reported = listOf("adb-R3CR70SJHHR-2VyQ5v._adb-tls-connect._tcp")
-        check(RemoteDeviceListPolicy.effectiveIds(assigned, reported) == reported)
-        check(RemoteDeviceListPolicy.effectiveIds(assigned, emptyList()) == assigned.toList())
+        check(RemoteDeviceListPolicy.effectiveIds(reported) == reported)
+        // 账号分配只表达访问权限；服务端没有当前设备时不能凭空生成离线卡片。
+        check(RemoteDeviceListPolicy.effectiveIds(emptyList()).isEmpty())
     }
 
     // ---------- 导航与安全 ----------
