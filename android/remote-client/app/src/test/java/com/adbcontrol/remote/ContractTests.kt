@@ -412,6 +412,8 @@ object ContractTests {
         check(SafeKeyboard.keyeventCommand("backspace") == 67)
         check(SafeKeyboard.keyeventCommand("enter") == 66)
         check(SafeKeyboard.keyeventCommand("space") == 62)
+        check(com.adbcontrol.remote.data.adb.DeviceKeyEvent.fromLabel("主页") == "HOME")
+        check(com.adbcontrol.remote.data.adb.DeviceKeyEvent.fromLabel("不存在") == null)
         check(SafeKeyboard.printableCommand('a') == "a")
         check(SafeKeyboard.printableCommand('\'') == "'\\''")
         check(SafeKeyboard.printableCommand('中') == null)

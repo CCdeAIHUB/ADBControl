@@ -77,14 +77,16 @@ class DevicesPage(
     }
 
     private fun deviceCard(device: RemoteDevice): View {
+		var latestDevice = device
         val title = text(device.displayName, 16f, pal.text, true)
         val subtitle = text(device.subtitle(), 11f, pal.muted)
         val badge = badge("读取中…", pal.muted)
         deviceCardViews[device.id] = { updated ->
-            title.text = updated.displayName
-            subtitle.text = updated.subtitle()
-            val color = if (updated.adbOnline) pal.success else pal.muted
-            badge.text = if (updated.adbOnline) "在线" else "离线"
+			latestDevice = updated.copy(companionState = device.companionState, appVersion = device.appVersion)
+			title.text = latestDevice.displayName
+			subtitle.text = latestDevice.subtitle()
+			val color = if (latestDevice.adbOnline) pal.success else pal.muted
+			badge.text = if (latestDevice.adbOnline) "在线" else "离线"
             badge.setTextColor(color)
             badge.background = shape(withAlpha(color, 0x1E), 10)
         }
@@ -98,7 +100,7 @@ class DevicesPage(
                 addView(subtitle)
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(8) })
         }, 14).apply {
-            setOnClickListener { host.openDevice(device) }
+			setOnClickListener { host.openDevice(latestDevice) }
             foreground = ripple()
         }
     }

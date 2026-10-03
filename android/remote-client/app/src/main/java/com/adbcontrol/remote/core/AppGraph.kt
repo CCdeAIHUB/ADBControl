@@ -34,6 +34,7 @@ class AppGraph(context: Context) {
     val repository = RemoteRepository(transport)
     val companion = CompanionGateway(repository)
     val commands = DeviceCommandGateway(repository)
+    val hardwareMonitor = com.adbcontrol.remote.transport.RemoteHardwareMonitorClient()
     val settings = SettingsStore(appContext)
     val aiModelStore = AiModelStore(appContext)
     val aiConversation = AiConversationStore(appContext)

@@ -14,8 +14,8 @@ class SettingsStore(context: Context) {
 
     /** 预览轮询间隔毫秒（与桌面端一致：500–60000，默认 3000）。 */
     var previewIntervalMs: Int
-        get() = preferences.getInt("preview_interval_ms", 3000).coerceIn(500, 60_000)
-        set(value) = preferences.edit().putInt("preview_interval_ms", value.coerceIn(500, 60_000)).apply()
+        get() = preferences.getInt("preview_interval_ms", 3000).coerceIn(1_000, 60_000)
+        set(value) = preferences.edit().putInt("preview_interval_ms", value.coerceIn(1_000, 60_000)).apply()
 
     /** 自动化前台调度开关。 */
     var automationSchedulerEnabled: Boolean

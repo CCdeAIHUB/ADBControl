@@ -96,14 +96,9 @@ class DeviceDetailPage(
     /** 与桌面端“常用控制”一致的单命令快捷键：一行两个，避免窄屏文字被裁切。 */
     private fun quickControls(): View {
         val actions = listOf(
-            listOf("返回", "input keyevent KEYCODE_BACK"),
-            listOf("主页", "input keyevent KEYCODE_HOME"),
-            listOf("多任务", "input keyevent KEYCODE_APP_SWITCH"),
-            listOf("音量+", "input keyevent KEYCODE_VOLUME_UP"),
-            listOf("音量-", "input keyevent KEYCODE_VOLUME_DOWN"),
-            listOf("电源", "input keyevent KEYCODE_POWER"),
-            listOf("点亮", "input keyevent KEYCODE_WAKEUP"),
-            listOf("锁屏", "input keyevent KEYCODE_SLEEP"),
+            listOf("返回", "BACK"), listOf("主页", "HOME"), listOf("多任务", "APP_SWITCH"),
+            listOf("音量+", "VOLUME_UP"), listOf("音量-", "VOLUME_DOWN"), listOf("电源", "POWER"),
+            listOf("点亮", "WAKEUP"), listOf("锁屏", "SLEEP"),
         )
         val grid = column(8)
         actions.chunked(2).forEach { group ->
@@ -119,8 +114,8 @@ class DeviceDetailPage(
         return grid
     }
 
-    private fun sendKey(shellCommand: String) {
-        host.runRemote({ graph.commands.shell(device.id, shellCommand) }) { result ->
+    private fun sendKey(key: String) {
+        host.runRemote({ graph.commands.keyEvent(device.id, key) }) { result ->
             when (result) {
                 is RemoteResult.Failure -> host.notify("${result.error.message}（${result.error.errorCode}）")
                 is RemoteResult.Success -> Unit // 按键成功无需打断用户

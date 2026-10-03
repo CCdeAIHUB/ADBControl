@@ -18,6 +18,9 @@ class DeviceCommandGateway(private val repository: RemoteRepository, private val
     fun shell(deviceId: String, command: String, timeoutMs: Long = defaultTimeoutMs): RemoteResult<AdbOutput> =
         exec(deviceId, listOf("shell", command), timeoutMs)
 
+    fun keyEvent(deviceId: String, key: String): RemoteResult<AdbOutput> =
+        exec(deviceId, listOf("shell", "input", "keyevent", key), 8_000)
+
     /** 锁屏两段式查询（含 OneUI 降级），返回解析结果与原始输出。 */
     fun queryLockState(deviceId: String): RemoteResult<LockQuery> {
         val primary = StringBuilder()

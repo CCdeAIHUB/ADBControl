@@ -34,6 +34,7 @@ import com.adbcontrol.remote.transport.H264SurfaceDecoder
 import com.adbcontrol.remote.transport.ScreenEndpointPolicy
 import com.adbcontrol.remote.transport.ScreenStreamClient
 import com.adbcontrol.remote.transport.RemoteScreenshotClient
+import com.adbcontrol.remote.transport.RawPcmAudioPlayer
 
 /**
  * 预览控制页（对应桌面端“预览”Tab + 预览触控 + 锁屏覆盖层 + 安全键盘）：
@@ -72,6 +73,7 @@ class PreviewControlPage(
     private var autoTimer: Runnable? = null
     private var stream: ScreenStreamClient? = null
     private var decoder: H264SurfaceDecoder? = null
+    private var audioPlayer: RawPcmAudioPlayer? = null
     private var codecConfig: ByteArray? = null
     private var streamSize: Pair<Int, Int>? = null
     private var contentSize: Pair<Int, Int> = 9 to 20
@@ -89,11 +91,9 @@ class PreviewControlPage(
         background = shape(withAlpha(pal.terminalBackground, 0xDD), 12, pal.border)
         setPadding(dp(6), dp(6), dp(6), dp(6))
         listOf(
-            "返回" to "input keyevent KEYCODE_BACK",
-            "主页" to "input keyevent KEYCODE_HOME",
-            "多任务" to "input keyevent KEYCODE_APP_SWITCH",
+            "返回" to "BACK", "主页" to "HOME", "多任务" to "APP_SWITCH",
         ).forEach { (label, command) ->
-            addView(secondaryButton(label) { sendShell(command) }, LinearLayout.LayoutParams(dp(76), dp(40)).apply { rightMargin = dp(4) })
+            addView(secondaryButton(label) { sendKey(command) }, LinearLayout.LayoutParams(dp(76), dp(40)).apply { rightMargin = dp(4) })
         }
     }
 
@@ -184,13 +184,14 @@ class PreviewControlPage(
             addView(autoButton, LinearLayout.LayoutParams(0, dp(40), 1f).apply { leftMargin = dp(8) })
         })
         body.addView(row {
-            val intervalInput = input("间隔毫秒 500-60000").apply {
+            val intervalInput = input("间隔毫秒 1000-60000").apply {
                 setText(settings.previewIntervalMs.toString())
                 inputType = android.text.InputType.TYPE_CLASS_NUMBER
             }
             addView(intervalInput, LinearLayout.LayoutParams(0, dp(40), 1f))
             addView(secondaryButton("保存间隔") {
-                intervalInput.text.toString().toIntOrNull()?.let { settings.previewIntervalMs = it }
+                intervalInput.text.toString().toIntOrNull()?.let { settings.previewIntervalMs = it.coerceIn(1_000, 60_000) }
+				if (autoTimer != null) startAuto()
                 host.notify("预览间隔已保存：${settings.previewIntervalMs}ms")
             }, LinearLayout.LayoutParams(0, dp(40), 1f).apply { leftMargin = dp(8) })
         })
@@ -250,6 +251,18 @@ class PreviewControlPage(
                     com.adbcontrol.remote.data.log.AppDiagnostics.failure("screen.decoder.frame", "media.codec", 0, "SCREEN_DECODER_FRAME_FAILED", "type=${it.javaClass.simpleName}")
                 }
             }
+            override fun onAudioAvailable(available: Boolean) {
+                if (available) runCatching {
+                    audioPlayer = RawPcmAudioPlayer().also { it.start() }
+                }.onFailure {
+                    audioPlayer?.close()
+                    audioPlayer = null
+                    mainHandler.post { stateText.text = "视频已连接，但音频播放初始化失败：${it.message}" }
+                    com.adbcontrol.remote.data.log.AppDiagnostics.failure("screen.audio.configure", "audio.track", 0, "SCREEN_AUDIO_CONFIG_FAILED", "type=${it.javaClass.simpleName}")
+                }
+                else mainHandler.post { stateText.text = "实时投屏连接成功 · 当前设备不支持系统音频捕获" }
+            }
+            override fun onAudio(data: ByteArray, presentationTimeUs: Long) { audioPlayer?.write(data) }
             override fun onState(message: String, errorCode: String) {
                 mainHandler.post {
                     stateText.text = if (errorCode.isBlank()) message else "$message（$errorCode）"
@@ -264,6 +277,8 @@ class PreviewControlPage(
         stream = null
         decoder?.close()
         decoder = null
+        audioPlayer?.close()
+        audioPlayer = null
         codecConfig = null
         // 不隐藏 SurfaceView，否则再次开始投屏时 Surface 无法创建。
         imageView.visibility = View.VISIBLE
@@ -295,13 +310,8 @@ class PreviewControlPage(
     /** 快捷键横向滑动条：固定 72dp 宽度胶囊按钮，永不换行挤压。 */
     private fun quickBar(): View {
         val actions = listOf(
-            "返回" to "input keyevent KEYCODE_BACK",
-            "主页" to "input keyevent KEYCODE_HOME",
-            "多任务" to "input keyevent KEYCODE_APP_SWITCH",
-            "音量+" to "input keyevent KEYCODE_VOLUME_UP",
-            "音量-" to "input keyevent KEYCODE_VOLUME_DOWN",
-            "电源" to "input keyevent KEYCODE_POWER",
-            "唤醒" to "input keyevent KEYCODE_WAKEUP",
+            "返回" to "BACK", "主页" to "HOME", "多任务" to "APP_SWITCH",
+            "音量+" to "VOLUME_UP", "音量-" to "VOLUME_DOWN", "电源" to "POWER", "唤醒" to "WAKEUP",
             "键盘" to "",
         )
         val chips = row {
@@ -312,7 +322,7 @@ class PreviewControlPage(
                         if (command.isBlank()) {
                             SafeKeyboardSheet(context, host, graph, device) { refresh() }.show()
                         } else {
-                            sendShell(command)
+                            sendKey(command)
                         }
                     },
                     // 88dp：容纳“音量+”等双字符标签（按钮左右内边距 12dp×2）。
@@ -558,6 +568,17 @@ class PreviewControlPage(
                 is RemoteResult.Success -> if (result.value.exitCode != 0) {
                     // INJECT_EVENTS 场景回退到伴侣无障碍触控（桌面端行为一致）。
                     fallbackCompanionTouch(command)
+                }
+            }
+        }
+    }
+
+    private fun sendKey(key: String) {
+        host.runRemote({ graph.commands.keyEvent(device.id, key) }) { result ->
+            when (result) {
+                is RemoteResult.Failure -> host.notify("按键发送失败：${result.error.message}（${result.error.errorCode}）")
+                is RemoteResult.Success -> if (!result.value.success) {
+                    host.notify("设备拒绝按键：${result.value.stderr.ifBlank { "exit=${result.value.exitCode}" }}")
                 }
             }
         }

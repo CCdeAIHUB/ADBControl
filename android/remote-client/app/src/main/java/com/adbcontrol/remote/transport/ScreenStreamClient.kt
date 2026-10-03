@@ -23,6 +23,8 @@ class ScreenStreamClient(
         fun onMeta(width: Int, height: Int)
         fun onConfig(data: ByteArray)
         fun onFrame(data: ByteArray, presentationTimeUs: Long, keyFrame: Boolean)
+        fun onAudioAvailable(available: Boolean)
+        fun onAudio(data: ByteArray, presentationTimeUs: Long)
         fun onState(message: String, errorCode: String = "")
     }
 
@@ -32,7 +34,7 @@ class ScreenStreamClient(
     fun start(fps: Int = 30) {
         close()
         val encoded = URLEncoder.encode(deviceId, Charsets.UTF_8.name()).replace("+", "%20")
-        val url = "$baseEndpoint/api/v1/remote/devices/$encoded/screen?fps=${fps.coerceIn(5, 60)}&protocol=2"
+        val url = "$baseEndpoint/api/v1/remote/devices/$encoded/screen?fps=${fps.coerceIn(5, 60)}&protocol=3"
         val request = Request.Builder().url(url).header("Authorization", "Bearer $sessionToken").build()
         AppDiagnostics.record("info", "screen.connect.start", "screen.websocket", true, 0, "", "device=$deviceId")
         socket = http.newWebSocket(request, object : WebSocketListener() {
@@ -40,7 +42,10 @@ class ScreenStreamClient(
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val json = runCatching { JSONObject(text) }.getOrNull() ?: return
                 when (json.optString("type")) {
-                    "meta" -> listener.onMeta(json.optInt("width"), json.optInt("height"))
+                    "meta" -> {
+                        listener.onMeta(json.optInt("width"), json.optInt("height"))
+                        listener.onAudioAvailable(json.optString("audioCodec") == "raw-s16le-48000-stereo")
+                    }
                     "error" -> listener.onState(json.optString("message", "投屏服务返回错误"), "SCREEN_SERVER_ERROR")
                 }
             }
@@ -50,7 +55,12 @@ class ScreenStreamClient(
                 val kind = packet[0].toInt()
                 val pts = ByteBuffer.wrap(packet, 1, 8).order(ByteOrder.BIG_ENDIAN).long
                 val payload = packet.copyOfRange(9, packet.size)
-                if (kind == 1) listener.onConfig(payload) else listener.onFrame(payload, pts, kind == 2)
+                when (kind) {
+                    1 -> listener.onConfig(payload)
+                    3 -> Unit
+                    4 -> listener.onAudio(payload, pts)
+                    else -> listener.onFrame(payload, pts, kind == 2)
+                }
             }
             override fun onFailure(webSocket: WebSocket, error: Throwable, response: Response?) {
                 val code = if (response?.code == 401 || response?.code == 403) "SCREEN_AUTH_FAILED" else "SCREEN_WEBSOCKET_FAILED"

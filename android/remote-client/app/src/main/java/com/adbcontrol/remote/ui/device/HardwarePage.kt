@@ -16,6 +16,7 @@ import com.adbcontrol.remote.ui.common.BasePage
 import com.adbcontrol.remote.ui.common.PageHost
 import com.adbcontrol.remote.ui.common.formatBytes
 import com.adbcontrol.remote.ui.common.formatFrequency
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 硬件信息（对应桌面端“硬件”Tab 仪表盘）：
@@ -35,6 +36,7 @@ class HardwarePage(
     private val dashboard = column(12)
     private var timer: Runnable? = null
     private var latest: HardwareSnapshotData? = null
+    private val refreshing = AtomicBoolean(false)
 
     override fun build(): View {
         val root = column {
@@ -45,6 +47,7 @@ class HardwarePage(
             ViewGroup.LayoutParams.MATCH_PARENT, dp(56),
         ))
         root.addView(scroll(dashboard))
+		dashboard.addView(loadingView("正在读取硬件信息，首次采集可能需要数秒…"))
         refresh()
         scheduleNext()
         return root
@@ -62,13 +65,18 @@ class HardwarePage(
     }
 
     private fun refresh() {
+		if (!refreshing.compareAndSet(false, true)) return
         host.runRemote({ graph.commands.shell(device.id, HardwareSnapshot.snapshotCommand, 15_000) }) { output ->
             if (output is RemoteResult.Failure) {
-                dashboard.removeAllViews()
-                dashboard.addView(errorCard("采集失败", output.error.message, output.error.errorCode, output.error.suggestion) { refresh() })
+				refreshing.set(false)
+				if (latest == null) {
+					dashboard.removeAllViews()
+					dashboard.addView(errorCard("采集超时或失败", output.error.message, output.error.errorCode, output.error.suggestion) { refresh() })
+				} else host.notify("硬件信息刷新失败，已保留上一帧（${output.error.errorCode}）")
                 return@runRemote
             }
             host.runRemote({ graph.commands.shell(device.id, HardwareSnapshot.appFrameCommand, 15_000) }) { frame ->
+				refreshing.set(false)
                 val snapshot = HardwareSnapshotData.parse((output as RemoteResult.Success).value.stdout)
                 latest = snapshot
                 val frameOutput = (frame as? RemoteResult.Success)?.value?.stdout.orEmpty()

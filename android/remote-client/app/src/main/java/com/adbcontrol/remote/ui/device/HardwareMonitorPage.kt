@@ -15,6 +15,8 @@ import com.adbcontrol.remote.data.adb.HardwareMonitorMetric
 import com.adbcontrol.remote.data.io.DownloadsWriter
 import com.adbcontrol.remote.model.RemoteDevice
 import com.adbcontrol.remote.model.RemoteResult
+import com.adbcontrol.remote.transport.RemoteHardwareMonitorStatus
+import com.adbcontrol.remote.transport.ScreenEndpointPolicy
 import com.adbcontrol.remote.ui.common.BasePage
 import com.adbcontrol.remote.ui.common.PageHost
 import com.adbcontrol.remote.ui.common.SparklineView
@@ -22,8 +24,8 @@ import java.util.Locale
 
 /**
  * 硬件监控（对应桌面端“硬件监控”窗口的最小完整子集）：
- * - 1 秒采样（同一 SnapshotCommand，与桌面端一致），默认曲线：CPU 估算占用 / 内存占用 / 最高温度 / 刷新率；
- * - 记录：开始/结束记录，样本保存到内存（100ms 统计节流的桌面行为此处简化为采样即记录）；
+ * - 采样任务归 Core 所在的 Go 服务所有，离开页面后仍继续，只有显式停止才结束；
+ * - 页面只轮询任务状态与最近样本，不再自行叠加 ADB 请求；
  * - 导出：CSV 写入 Downloads/ADBControl（桌面端导出 xlsx/html/sqlite；远程端受本地文件能力限制，
  *   CSV 为移动端等价交换格式，协议说明见 README）。
  */
@@ -92,7 +94,7 @@ class HardwareMonitorPage(
             ViewGroup.LayoutParams.MATCH_PARENT, dp(56),
         ))
         val content = column(12)
-        statusLabel = text("采样中… 已记录 0 条样本", 12f, pal.muted)
+        statusLabel = text("正在读取后台任务状态…", 12f, pal.muted)
         content.addView(statusLabel)
         content.addView(row {
             recordButton = primaryButton("开始记录") { toggleRecording() }
@@ -158,7 +160,7 @@ class HardwareMonitorPage(
             override fun run() {
                 sample()
                 timer = this
-                mainHandler.postDelayed(this, 1_000)
+                mainHandler.postDelayed(this, 3_000)
             }
         }
         timer = runnable
@@ -175,36 +177,46 @@ class HardwareMonitorPage(
     }
 
     private fun sample() {
-        host.runRemote({ graph.commands.shell(device.id, HardwareSnapshot.snapshotCommand, 10_000) }) { snapshot ->
-            if (snapshot !is RemoteResult.Success) return@runRemote
-            host.runRemote({ graph.commands.shell(device.id, HardwareSnapshot.appFrameCommand, 10_000) }) { frame ->
-                val data = HardwareSnapshotData.parse(snapshot.value.stdout)
-                val fps = (frame as? RemoteResult.Success)?.value?.stdout?.let { output ->
-                    AppFrameParser.fps(AppFrameParser.parseFrameTimes(output), lastAppFrameTimestamp)
-                }
-                val cpu = data.cpuUsageEstimatePercent
-                val memory = data.memUsedPercent
-                val temperature = data.temperaturesCelsius.maxOfOrNull { it.second }
-                    ?: data.batteryTempTenths?.let { it / 10.0 }
-                val refresh = data.refreshRate
-                val cpuFrequency = data.cpuFreqs.values.takeIf { it.isNotEmpty() }?.average()?.div(1_000_000.0)
-                val extendedTotal = data.memTotalKb + data.swapTotalKb
-                val extendedUsed = if (extendedTotal > 0) {
-                    ((extendedTotal - data.memAvailableKb - data.swapFreeKb).toDouble() / extendedTotal * 100.0).coerceIn(0.0, 100.0)
-                } else null
-                val gpuFrequency = data.gpuCurFreqHz?.div(1_000_000.0)
-                val gpuMemory = data.gpuMemoryBytes?.div(1_048_576.0)
-                cpuSamples.add(cpu); memorySamples.add(memory)
-                temperatureSamples.add(temperature); refreshSamples.add(refresh)
-                fpsSamples.add(fps)
-                cpuFrequencySamples.add(cpuFrequency); extendedMemorySamples.add(extendedUsed)
-                gpuUsageSamples.add(data.gpuUsagePercent); gpuFrequencySamples.add(gpuFrequency); gpuMemorySamples.add(gpuMemory)
-                if (recording) {
-                    recorded.add(Sample(System.currentTimeMillis(), cpu, memory, temperature, refresh, fps, cpuFrequency, extendedUsed, data.gpuUsagePercent, gpuFrequency, gpuMemory))
-                }
-                mainHandler.post { render() }
+        val profile = graph.activeProfile
+        val session = graph.activeSession
+        val endpoint = profile?.let { ScreenEndpointPolicy.derive(it.endpoint, it.webEndpoint) }
+        if (session == null || endpoint == null) {
+            statusLabel.text = "后台监控服务地址不可用"
+            return
+        }
+        host.runRemote({ graph.hardwareMonitor.status(endpoint, session.token, device.id) }) { result ->
+            when (result) {
+                is RemoteResult.Failure -> statusLabel.text = "读取失败：${result.error.message}（${result.error.errorCode}）"
+                is RemoteResult.Success -> applyRemoteStatus(result.value)
             }
         }
+    }
+
+    private fun applyRemoteStatus(status: RemoteHardwareMonitorStatus) {
+        recording = status.running
+        recorded.clear()
+        status.samples.takeLast(240).forEach { sample ->
+            val memory = sample.memoryTotalKb.takeIf { it > 0 }?.let { total ->
+                ((total - sample.memoryAvailableKb).toDouble() / total * 100.0).coerceIn(0.0, 100.0)
+            }
+            val cpuFrequency = sample.cpuFrequenciesKHz.takeIf { it.isNotEmpty() }?.average()?.div(1_000_000.0)
+            recorded += Sample(sample.capturedAtEpochMs, null, memory, sample.temperaturesC.maxOrNull(), null, null, cpuFrequency, memory, null, null, null)
+        }
+        fun replace(target: MutableList<Double?>, values: List<Double?>) { target.clear(); target.addAll(values) }
+        replace(cpuSamples, recorded.map { it.cpuPercent }); replace(cpuFrequencySamples, recorded.map { it.cpuFrequencyGhz })
+        replace(memorySamples, recorded.map { it.memoryPercent }); replace(extendedMemorySamples, recorded.map { it.extendedMemoryPercent })
+        replace(temperatureSamples, recorded.map { it.temperatureCelsius }); replace(refreshSamples, recorded.map { it.refreshRate })
+        replace(fpsSamples, recorded.map { it.appFps }); replace(gpuUsageSamples, recorded.map { it.gpuUsagePercent })
+        replace(gpuFrequencySamples, recorded.map { it.gpuFrequencyMhz }); replace(gpuMemorySamples, recorded.map { it.gpuMemoryMb })
+        recordButton.text = if (recording) "停止记录" else "开始记录"
+        metricButton.isEnabled = !recording
+        statusLabel.setTextColor(if (recording) pal.warning else pal.muted)
+        statusLabel.text = when {
+            recording -> "● 后台记录中 · 已记录 ${status.sampleCount} 条；离开本页仍会继续"
+            status.lastError.isNotBlank() -> "任务已停止 · 最近错误：${status.lastError}（${status.lastErrorCode}）"
+            else -> "后台任务未运行 · 已保留 ${status.sampleCount} 条样本"
+        }
+        render()
     }
 
     private fun render() {
@@ -219,26 +231,31 @@ class HardwareMonitorPage(
         refreshChart.setSamples(refreshSamples)
         fpsChart.setSamples(fpsSamples)
         statusLabel.text = if (recording) {
-            "记录中… 已记录 ${recorded.size} 条样本"
+            "● 后台记录中 · 已记录 ${recorded.size} 条样本；离开本页仍会继续"
         } else {
-            "采样中… 已记录 ${recorded.size} 条样本"
+            "后台任务未运行 · 已保留 ${recorded.size} 条样本"
         }
     }
 
     private fun toggleRecording() {
-        if (recording) {
-            recording = false
-            recordButton.text = "开始记录"
-            metricButton.isEnabled = true
-            host.notify("记录结束，共 ${recorded.size} 条样本，可导出 CSV")
-        } else {
-            recorded.clear()
-            recording = true
-            recordButton.text = "停止记录"
-            metricButton.isEnabled = false
-            host.notify("开始记录（1 秒/样本）")
+        val profile = graph.activeProfile
+        val session = graph.activeSession
+        val endpoint = profile?.let { ScreenEndpointPolicy.derive(it.endpoint, it.webEndpoint) }
+        if (session == null || endpoint == null) { host.notify("后台监控服务地址不可用"); return }
+        recordButton.isEnabled = false
+        host.runRemote({
+            if (recording) graph.hardwareMonitor.stop(endpoint, session.token, device.id)
+            else graph.hardwareMonitor.start(endpoint, session.token, device.id)
+        }) { result ->
+            recordButton.isEnabled = true
+            when (result) {
+                is RemoteResult.Failure -> host.notify("操作失败：${result.error.message}（${result.error.errorCode}）")
+                is RemoteResult.Success -> {
+                    applyRemoteStatus(result.value)
+                    host.notify(if (result.value.running) "后台记录已开始，离开页面后仍会继续" else "后台记录已手动停止")
+                }
+            }
         }
-        render()
     }
 
     private fun exportCsv() {

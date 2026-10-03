@@ -21,11 +21,11 @@
 | 文件管理（浏览/删除/ls 解析） | 文件页 | `ls -la -p` / `rm -rf`（RemotePathPolicy 保护根目录） | 已接通 |
 | 文件上传/下载 | 文件页（上传 ≤20MB 分块、下载 ≤3MB、存 Downloads/ADBControl） | shell base64 分块（1MiB/argv/4MiB 协议限制，见代码注释） | 已接通（受限适配） |
 | 硬件信息仪表盘（SoC/内存/电池/温度/GPU/刷新率/前台FPS、5s 自动刷新） | 硬件页 | SnapshotCommand / AppFrameCommand（与桌面逐字一致） | 已接通 |
-| 硬件监控记录与导出 | 硬件监控页（1s 采样、曲线、记录、CSV 导出） | 同上；导出 CSV 替代桌面 xlsx/html/sqlite | 已接通（格式适配） |
+| 硬件监控记录与导出 | 服务端后台串行采样、曲线、显式停止、CSV 导出；离开页面继续 | Web 服务远程鉴权监控路由；独立于自动化任务 | 已接通（格式适配） |
 | 重启六动作（系统/Bootloader/Fastbootd/Recovery/EDL/关机） | 重启页（危险确认） | `adb.exec reboot…` / `shell reboot -p` | 已接通 |
 | 伴侣安装/QUIC 配置下发 | 状态检测 + 呼出伴侣界面；安装与配置需桌面端 | `pm path` / `dumpsys package` / `ui.surface.show` | 桌面端专属（状态可查） |
 | 伴侣能力/权限目录 | 伴侣能力页 | `device.getCapabilities` / `device.getPermissionState` | 已接通（取决于 Core 宿主接线） |
-| 实时投屏（scrcpy H.264）与实时画面控制 | 预览控制页 + MediaCodec + 全屏触控 | Web 服务远程鉴权 WebSocket，复用 scrcpy 协议 v2 | 已接通 |
+| 实时投屏（scrcpy H.264 + 设备声音）与实时画面控制 | 预览控制页 + MediaCodec + AudioTrack + 全屏触控 | Web 服务远程鉴权 WebSocket，复用 scrcpy 协议 v3 | 已接通 |
 | 实时摄像头预览（scrcpy camera / companion 流） | 暂不可用，界面明示 | Core 媒体下行流待定义 | 服务端阻塞 |
 | 无线 ADB 配对/连接/二维码 | 不可用（远程白名单无 pair/connect/devices），设备由管理员分配 | — | 安全策略阻塞 |
 | 自动化任务（DSL/调度/条件/动作/运行记录） | 任务 Tab + 编辑器（模板）+ 运行记录；引擎在本机、动作经远程通道 | 本机 SQLite + 远程 `adb.exec` / `device.invoke`；DSL 与桌面同构 | 已接通（调度本机化） |

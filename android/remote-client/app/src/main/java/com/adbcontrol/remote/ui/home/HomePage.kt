@@ -105,7 +105,12 @@ class HomePage(
                     if (first == null) {
                         host.notify("暂无设备，请到“设备”页查看，或联系管理员分配")
                     } else {
-                        host.openDevice(first)
+						host.runRemote({ graph.repository.enrichDevice(first.id) }) { enriched ->
+							val current = (enriched as? RemoteResult.Success)?.value?.copy(
+								companionState = first.companionState, appVersion = first.appVersion,
+							) ?: first
+							host.openDevice(current)
+						}
                     }
                 }
             }
