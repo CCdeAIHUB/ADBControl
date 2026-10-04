@@ -8,6 +8,8 @@ import android.view.ViewGroup
 import android.widget.LinearLayout
 import com.adbcontrol.remote.core.AppGraph
 import com.adbcontrol.remote.data.adb.LsParser
+import com.adbcontrol.remote.data.adb.RemoteFilePathPolicy
+import com.adbcontrol.remote.data.log.AppDiagnostics
 import com.adbcontrol.remote.security.RemotePathPolicy
 import com.adbcontrol.remote.data.io.DownloadsWriter
 import com.adbcontrol.remote.model.RemoteDevice
@@ -77,7 +79,9 @@ class FilesPage(
         pathInputRef.setText(normalized)
         listContainer.removeAllViews()
         listContainer.addView(loadingView("正在读取 $normalized …"))
-        host.runRemote({ graph.commands.shell(device.id, "ls -la -p '$normalized'", 20_000) }) { result ->
+        val listingPath = RemoteFilePathPolicy.directoryListingPath(normalized)
+        AppDiagnostics.record("info", "files.list.start", "remote.files", true, 0, "", "device=${device.id} path=$listingPath")
+        host.runRemote({ graph.commands.shell(device.id, "ls -la -p '$listingPath'", 20_000) }) { result ->
             listContainer.removeAllViews()
             when (result) {
                 is RemoteResult.Failure -> listContainer.addView(
@@ -114,7 +118,9 @@ class FilesPage(
             if (entry.isDirectory) {
                 navigate(joinPath(currentPath, entry.name))
             } else if (entry.isSymlink) {
-                host.notify("符号链接不支持进一步操作")
+                val target = RemoteFilePathPolicy.resolveLink(currentPath, entry.name, entry.linkTarget)
+                AppDiagnostics.record("info", "files.symlink.navigate", "remote.files", true, 0, "", "from=$currentPath/${entry.name} target=$target")
+                navigate(target)
             } else {
                 showFileActions(entry)
             }

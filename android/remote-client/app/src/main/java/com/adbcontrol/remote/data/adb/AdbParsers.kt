@@ -100,6 +100,7 @@ object LsParser {
         val sizeBytes: Long,
         val modifiedText: String,
         val permissions: String,
+        val linkTarget: String = "",
     )
 
     fun parse(output: String): List<Entry> = output.lineSequence()
@@ -132,10 +133,41 @@ object LsParser {
         val modified = columns.subList(modifiedIndex, nameIndex).joinToString(" ")
         var name = columns.subList(nameIndex, columns.size).joinToString(" ")
         val symlinkIndex = name.indexOf(" -> ")
+        val linkTarget = if (symlinkIndex > 0) name.substring(symlinkIndex + 4).trim() else ""
         if (symlinkIndex > 0) name = name.substring(0, symlinkIndex)
         name = name.trim().removeSuffix("/")
         if (name.isBlank()) return null
-        return Entry(name, isDirectory, isSymlink, size, modified, permissions)
+        return Entry(name, isDirectory, isSymlink, size, modified, permissions, linkTarget)
+    }
+}
+
+data class RemoteDeviceProperties(val brand: String, val model: String, val androidVersion: String) {
+    companion object {
+        fun fromOutputs(brand: String, model: String, androidVersion: String) = RemoteDeviceProperties(
+            brand.trim(), model.trim(), androidVersion.trim(),
+        )
+    }
+}
+
+/** 路径规则独立于 UI，确保 Android 目录符号链接可以按目录语义列出。 */
+object RemoteFilePathPolicy {
+    fun directoryListingPath(path: String): String = if (path == "/") path else path.trimEnd('/') + "/"
+
+    fun resolveLink(currentPath: String, name: String, target: String): String {
+        if (target.startsWith('/')) return normalize(target)
+        return normalize(currentPath.trimEnd('/') + "/" + name + "/../" + target)
+    }
+
+    private fun normalize(path: String): String {
+        val segments = mutableListOf<String>()
+        path.split('/').forEach { segment ->
+            when (segment) {
+                "", "." -> Unit
+                ".." -> if (segments.isNotEmpty()) segments.removeAt(segments.lastIndex)
+                else -> segments += segment
+            }
+        }
+        return "/" + segments.joinToString("/")
     }
 }
 

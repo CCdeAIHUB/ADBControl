@@ -11,6 +11,7 @@ import com.adbcontrol.remote.ui.common.PageHost
 import com.adbcontrol.remote.transport.ScreenEndpointPolicy
 import org.json.JSONArray
 import org.json.JSONObject
+import com.adbcontrol.remote.data.log.AppDiagnostics
 
 /**
  * 伴侣能力页（对应桌面端“APP连接”能力面）：
@@ -54,8 +55,8 @@ class CompanionPage(
         val permissionCard = card(column(8) { addView(text("读取中…", 13f, pal.muted)) })
         body.addView(permissionCard)
         body.addView(text(
-            "边界说明：安装/更新伴侣 APK、下发 QUIC 配置需要桌面端在设备局域网内完成；" +
-                "实时投屏使用 Web 服务的 scrcpy H.264 通道；能力目录需要伴侣与 Core 保持在线。",
+            "通道说明：App 已安装或正在运行不等于 QUIC 已连接。ADB 通道负责安装、配置与兼容命令；" +
+                "QUIC 实时会话负责实时能力与权限同步。实时投屏使用 Web 服务的 scrcpy H.264 通道。",
             11f, pal.muted,
         ))
         loadStatus(statusCard)
@@ -80,6 +81,9 @@ class CompanionPage(
                 val status = result.value.value as? JSONObject ?: JSONObject()
                 val installed = status.optBoolean("installed")
                 val versionText = status.optString("installedVersionName")
+                val adbConnected = status.optString("adbTransport") == "connected"
+                val quicConnected = status.optString("quicTransport") == "connected"
+                AppDiagnostics.record("info", "companion.status.loaded", "companion.remote", true, 0, status.optString("quicErrorCode"), "device=${device.id} installed=$installed adb=$adbConnected quic=$quicConnected")
                 columnView.addView(
                     text(
                         if (installed) "已安装${if (versionText.isNotBlank()) " · v$versionText" else ""}" else "未安装",
@@ -91,6 +95,11 @@ class CompanionPage(
                     else "未检测到伴侣 App；安装需要桌面端执行 adb install（APK 由桌面端内置）。",
                     12f, pal.secondary,
                 ))
+                if (installed) {
+                    columnView.addView(kvRow("ADB 配置/兼容通道", if (adbConnected) "已连接 · 可执行兼容能力" else "未连接"))
+                    columnView.addView(kvRow("伴侣 QUIC 实时会话", if (quicConnected) "已连接 · 实时能力与权限可同步" else "未连接${status.optString("quicErrorCode").takeIf(String::isNotBlank)?.let { " · $it" }.orEmpty()}"))
+                    columnView.addView(text(status.optString("quicMessage"), 11f, pal.muted))
+                }
                 }
             }
         }
@@ -114,7 +123,7 @@ class CompanionPage(
                         is JSONArray -> value
                         else -> JSONArray()
                     }
-                    val channel = if (capabilities.value.transport == "adb-broadcast") " · ADB 兼容通道" else " · 伴侣直连"
+                    val channel = if (capabilities.value.transport == "adb-broadcast") " · ADB 兼容通道（非 QUIC）" else " · 伴侣 QUIC 实时会话"
                     capColumn.addView(text("共 ${array.length()} 项能力$channel", 13f, pal.text, true))
                     for (index in 0 until array.length()) {
                         val item = array.optJSONObject(index) ?: continue

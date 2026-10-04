@@ -10,6 +10,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
+import com.adbcontrol.remote.data.log.AppDiagnostics
 
 data class RemoteCompanionPayload(val value: Any, val transport: String)
 
@@ -24,6 +25,9 @@ class RemoteCompanionClient {
 
     fun status(endpoint: String, token: String, deviceId: String) =
         request(endpoint, token, deviceId, "/companion/status", "GET")
+
+    fun metadata(endpoint: String, token: String, deviceId: String) =
+        request(endpoint, token, deviceId, "/metadata", "GET")
 
     fun capabilities(endpoint: String, token: String, deviceId: String) =
         request(endpoint, token, deviceId, "/capabilities", "GET")
@@ -46,6 +50,7 @@ class RemoteCompanionClient {
             val root = runCatching { JSONObject(text) }.getOrNull()
             if (!response.isSuccessful) {
                 val failure = root?.optJSONObject("error")
+                AppDiagnostics.failure("companion.http", "companion.remote", 0, failure?.optString("errorCode").orEmpty().ifBlank { "COMPANION_HTTP_${response.code}" }, "device=$deviceId suffix=$suffix status=${response.code}")
                 RemoteResult.Failure(AppError(
                     failure?.optString("errorCode")?.takeIf(String::isNotBlank) ?: "COMPANION_HTTP_${response.code}",
                     failure?.optString("message")?.takeIf(String::isNotBlank) ?: "伴侣服务返回 ${response.code}",
@@ -59,10 +64,13 @@ class RemoteCompanionClient {
                     is JSONObject, is JSONArray -> raw
                     else -> JSONObject().put("value", raw)
                 }
-                RemoteResult.Success(RemoteCompanionPayload(value, response.header("X-ADBControl-Companion-Transport").orEmpty()))
+                val transport = response.header("X-ADBControl-Companion-Transport").orEmpty()
+                AppDiagnostics.record("info", "companion.http.completed", "companion.remote", true, 0, "", "device=$deviceId suffix=$suffix transport=$transport")
+                RemoteResult.Success(RemoteCompanionPayload(value, transport))
             }
         }
     } catch (error: Throwable) {
+        AppDiagnostics.failure("companion.http", "companion.remote", 0, "COMPANION_HTTP_FAILED", "device=$deviceId suffix=$suffix type=${error.javaClass.simpleName}")
         RemoteResult.Failure(AppError("COMPANION_HTTP_FAILED", error.message ?: "伴侣服务请求失败", "companion.remote", true))
     }
 }

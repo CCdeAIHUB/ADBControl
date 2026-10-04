@@ -6,6 +6,8 @@ import com.adbcontrol.remote.data.adb.HardwareMonitorConfig
 import com.adbcontrol.remote.data.adb.HardwareMonitorMetric
 import com.adbcontrol.remote.data.adb.LockStateParser
 import com.adbcontrol.remote.data.adb.LsParser
+import com.adbcontrol.remote.data.adb.RemoteDeviceProperties
+import com.adbcontrol.remote.data.adb.RemoteFilePathPolicy
 import com.adbcontrol.remote.data.adb.PackageCatalogParser
 import com.adbcontrol.remote.data.adb.SafeKeyboard
 import com.adbcontrol.remote.data.adb.WmSizeParser
@@ -35,6 +37,7 @@ import com.adbcontrol.remote.security.RemotePathPolicy
 import com.adbcontrol.remote.security.RiskPolicy
 import com.adbcontrol.remote.transport.jniCertificateBytes
 import com.adbcontrol.remote.transport.ScreenEndpointPolicy
+import com.adbcontrol.remote.transport.ScreenDecodeGate
 import com.adbcontrol.remote.data.log.DiagnosticUploadPolicy
 import com.adbcontrol.remote.data.RemoteDeviceListPolicy
 import com.adbcontrol.remote.ui.device.ScreenViewportMapper
@@ -52,6 +55,9 @@ object ContractTests {
         lockStateParserTwoStageRules()
         wmSizeParserPrefersOverride()
         lsParserHandlesColumnsAndSymlinks()
+        symlinkDirectoryNavigationRules()
+        remoteDevicePropertyRules()
+        screenDecodeGatePreservesFirstKeyFrame()
         packageCatalogParsingRules()
         hardwareSnapshotParsingRules()
         appFrameFpsWindowRules()
@@ -177,10 +183,36 @@ object ContractTests {
         check(entries.first().isDirectory && entries.first().name == "Pics")
         val link = entries.first { it.name == "link" }
         check(link.isSymlink && !link.name.contains("data/other"))
+        check(link.linkTarget == "/data/other")
         check(entries.first { it.name == "notes.txt" }.sizeBytes == 1024L)
         // Android toybox 可能输出 ISO 日期，不能把时间误当文件名。
         val toybox = LsParser.parse("drwxrwx--x 2 root sdcard_rw 4096 2026-09-28 12:34 Download")
         check(toybox.single().isDirectory && toybox.single().name == "Download")
+    }
+
+    private fun symlinkDirectoryNavigationRules() {
+        // /sdcard 通常是目录符号链接；尾部斜杠要求 toybox ls 解引用目标目录。
+        check(RemoteFilePathPolicy.directoryListingPath("/") == "/")
+        check(RemoteFilePathPolicy.directoryListingPath("/sdcard") == "/sdcard/")
+        check(RemoteFilePathPolicy.resolveLink("/", "sdcard", "/storage/self/primary") == "/storage/self/primary")
+        check(RemoteFilePathPolicy.resolveLink("/system/bin", "tool", "../xbin/tool") == "/system/xbin/tool")
+    }
+
+    private fun remoteDevicePropertyRules() {
+        // getprop 只能逐个读取属性；合并后型号必须优先于 ADB 代号展示。
+        val properties = RemoteDeviceProperties.fromOutputs("Samsung\n", "SM-F926N\n", "14\n")
+        check(properties.brand == "Samsung")
+        check(properties.model == "SM-F926N")
+        check(properties.androidVersion == "14")
+    }
+
+    private fun screenDecodeGatePreservesFirstKeyFrame() {
+        // 配置帧与首关键帧紧邻到达时，解码器就绪前不得静默丢弃关键帧。
+        val gate = ScreenDecodeGate(maxPendingFrames = 3)
+        check(gate.offer(byteArrayOf(1), 1, keyFrame = true).isEmpty())
+        val pending = gate.markConfigured()
+        check(pending.size == 1 && pending.single().keyFrame)
+        check(gate.offer(byteArrayOf(2), 2, keyFrame = false).size == 1)
     }
 
     private fun pageStackBackRules() {

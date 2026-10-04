@@ -8,6 +8,7 @@ import java.nio.ByteBuffer
 
 /** Small Annex-B H.264 decoder for the Web screen protocol-v2 packet stream. */
 class H264SurfaceDecoder(private val surface: Surface) {
+    enum class QueueResult { INPUT_BUSY, QUEUED, RENDERED }
     private var codec: MediaCodec? = null
     private var width = 0
     private var height = 0
@@ -29,19 +30,22 @@ class H264SurfaceDecoder(private val surface: Surface) {
     }
 
     @Synchronized
-    fun queue(data: ByteArray, presentationTimeUs: Long, keyFrame: Boolean) {
-        val decoder = codec ?: return
+    fun queue(data: ByteArray, presentationTimeUs: Long, keyFrame: Boolean): QueueResult {
+        val decoder = codec ?: return QueueResult.INPUT_BUSY
         val inputIndex = decoder.dequeueInputBuffer(10_000)
-        if (inputIndex >= 0) {
-            decoder.getInputBuffer(inputIndex)?.apply { clear(); put(data) }
-            decoder.queueInputBuffer(inputIndex, 0, data.size, presentationTimeUs, if (keyFrame) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
-        }
+        if (inputIndex < 0) return QueueResult.INPUT_BUSY
+        val input = decoder.getInputBuffer(inputIndex) ?: return QueueResult.INPUT_BUSY
+        input.apply { clear(); put(data) }
+        decoder.queueInputBuffer(inputIndex, 0, data.size, presentationTimeUs, if (keyFrame) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
         val info = MediaCodec.BufferInfo()
+        var rendered = false
         while (true) {
             val outputIndex = decoder.dequeueOutputBuffer(info, 0)
             if (outputIndex < 0) break
             decoder.releaseOutputBuffer(outputIndex, info.size > 0)
+            rendered = rendered || info.size > 0
         }
+        return if (rendered) QueueResult.RENDERED else QueueResult.QUEUED
     }
 
     @Synchronized

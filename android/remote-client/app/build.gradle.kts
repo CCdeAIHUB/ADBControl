@@ -17,8 +17,8 @@ android {
         applicationId = "com.adbcontrol.remote"
         minSdk = 29
         targetSdk = 36
-        versionCode = 15
-        versionName = "0.3.6"
+        versionCode = 16
+        versionName = "0.3.7"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }

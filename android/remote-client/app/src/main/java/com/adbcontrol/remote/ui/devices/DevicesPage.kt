@@ -11,6 +11,8 @@ import com.adbcontrol.remote.model.Session
 import com.adbcontrol.remote.ui.common.BasePage
 import com.adbcontrol.remote.ui.common.PageHost
 import com.adbcontrol.remote.ui.common.ripple
+import com.adbcontrol.remote.transport.ScreenEndpointPolicy
+import org.json.JSONObject
 
 /**
  * 设备 Tab：设备卡列表（对应桌面端设备页）。
@@ -69,7 +71,18 @@ class DevicesPage(
 
     /** 逐台补齐型号信息；get-state 失败视为 ADB 离线（与桌面端连接判定一致）。 */
     private fun enrich(device: RemoteDevice) {
-        host.runRemote({ graph.repository.enrichDevice(device.id) }) { result ->
+        host.runRemote({
+            val adbResult = graph.repository.enrichDevice(device.id)
+            if (adbResult !is RemoteResult.Success) return@runRemote adbResult
+            val profile = graph.activeProfile
+            val token = graph.activeSession?.token.orEmpty()
+            val endpoint = profile?.let { ScreenEndpointPolicy.derive(it.endpoint, it.webEndpoint) }
+            val metadata = if (endpoint != null && token.isNotBlank()) graph.remoteCompanion.metadata(endpoint, token, device.id) else null
+            val data = (metadata as? RemoteResult.Success)?.value?.value as? JSONObject
+            val remark = data?.optString("remark").orEmpty()
+            val catalogName = data?.optString("name").orEmpty()
+            RemoteResult.Success(adbResult.value.copy(name = remark.ifBlank { catalogName }))
+        }) { result ->
             if (result is RemoteResult.Success) {
                 deviceCardViews[device.id]?.invoke(result.value)
             }
@@ -110,7 +123,7 @@ class DevicesPage(
         if (parts.isNotEmpty()) append(parts.joinToString(" "))
         if (androidVersion.isNotBlank()) append(if (isNotEmpty()) " · Android $androidVersion" else "Android $androidVersion")
         batteryLevel?.let { append(if (isNotEmpty()) " · 电量 $it%" else "电量 $it%") }
-        if (companionOnline) append(if (isNotEmpty()) " · 伴侣已连接" else "伴侣已连接")
+        if (companionOnline) append(if (isNotEmpty()) " · 伴侣 QUIC 已连接" else "伴侣 QUIC 已连接")
         if (isEmpty()) append(id)
     }
 }

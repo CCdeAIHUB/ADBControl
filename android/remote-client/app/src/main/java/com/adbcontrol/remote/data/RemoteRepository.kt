@@ -13,6 +13,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 import com.adbcontrol.remote.data.log.AppDiagnostics
+import com.adbcontrol.remote.data.adb.RemoteDeviceProperties
 
 /**
  * 远程协议封装：方法、参数与响应校验全部集中在这里，UI 与业务层不得直接拼协议 JSON。
@@ -95,17 +96,25 @@ class RemoteRepository(private val transport: RemoteTransport) {
 
     /** 采集单台设备的展示信息（品牌/型号/安卓版本/电量），全部经白名单 `adb.exec`。 */
     fun enrichDevice(deviceId: String): RemoteResult<RemoteDevice> {
-        val props = adb(deviceId, "shell", "getprop", "ro.product.brand", "ro.product.model", "ro.build.version.release")
+        // Android getprop 只接受一个属性名。旧实现一次传三个参数，部分 ROM 会返回空值，
+        // 继而把 ADB mDNS 代号误当设备名展示。
+        val brand = adb(deviceId, "shell", "getprop", "ro.product.brand")
+        val model = adb(deviceId, "shell", "getprop", "ro.product.model")
+        val androidVersion = adb(deviceId, "shell", "getprop", "ro.build.version.release")
         val battery = adb(deviceId, "shell", "dumpsys", "battery")
         return adb(deviceId, "get-state").map { state ->
-            val lines = (props as? RemoteResult.Success)?.value?.stdout.orEmpty().lines().map(String::trim)
+            val properties = RemoteDeviceProperties.fromOutputs(
+                (brand as? RemoteResult.Success)?.value?.stdout.orEmpty(),
+                (model as? RemoteResult.Success)?.value?.stdout.orEmpty(),
+                (androidVersion as? RemoteResult.Success)?.value?.stdout.orEmpty(),
+            )
             val batteryText = (battery as? RemoteResult.Success)?.value?.stdout.orEmpty()
             RemoteDevice(
                 id = deviceId,
                 adbState = state.stdout.trim(),
-                brand = lines.getOrNull(0).orEmpty(),
-                model = lines.getOrNull(1).orEmpty(),
-                androidVersion = lines.getOrNull(2).orEmpty(),
+                brand = properties.brand,
+                model = properties.model,
+                androidVersion = properties.androidVersion,
                 batteryLevel = parseBatteryLevel(batteryText),
             )
         }

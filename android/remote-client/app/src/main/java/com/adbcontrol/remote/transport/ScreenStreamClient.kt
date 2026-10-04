@@ -30,19 +30,28 @@ class ScreenStreamClient(
 
     private val http = OkHttpClient.Builder().pingInterval(15, TimeUnit.SECONDS).readTimeout(0, TimeUnit.MILLISECONDS).build()
     private var socket: WebSocket? = null
+    private var configPackets = 0
+    private var keyFrames = 0
+    private var videoPackets = 0
+    private var audioPackets = 0
 
     fun start(fps: Int = 30) {
         close()
+        configPackets = 0; keyFrames = 0; videoPackets = 0; audioPackets = 0
         val encoded = URLEncoder.encode(deviceId, Charsets.UTF_8.name()).replace("+", "%20")
         val url = "$baseEndpoint/api/v1/remote/devices/$encoded/screen?fps=${fps.coerceIn(5, 60)}&protocol=3"
         val request = Request.Builder().url(url).header("Authorization", "Bearer $sessionToken").build()
         AppDiagnostics.record("info", "screen.connect.start", "screen.websocket", true, 0, "", "device=$deviceId")
         socket = http.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) = listener.onState("实时投屏已连接")
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                AppDiagnostics.record("info", "screen.websocket.open", "screen.websocket", true, 0, "", "device=$deviceId status=${response.code}")
+                listener.onState("实时投屏已连接")
+            }
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val json = runCatching { JSONObject(text) }.getOrNull() ?: return
                 when (json.optString("type")) {
                     "meta" -> {
+                        AppDiagnostics.record("info", "screen.meta.received", "screen.websocket", true, 0, "", "width=${json.optInt("width")} height=${json.optInt("height")} audio=${json.optString("audioCodec")}")
                         listener.onMeta(json.optInt("width"), json.optInt("height"))
                         listener.onAudioAvailable(json.optString("audioCodec") == "raw-s16le-48000-stereo")
                     }
@@ -56,10 +65,21 @@ class ScreenStreamClient(
                 val pts = ByteBuffer.wrap(packet, 1, 8).order(ByteOrder.BIG_ENDIAN).long
                 val payload = packet.copyOfRange(9, packet.size)
                 when (kind) {
-                    1 -> listener.onConfig(payload)
+                    1 -> {
+                        configPackets++
+                        AppDiagnostics.record("info", "screen.config.received", "screen.websocket", true, 0, "", "bytes=${payload.size} count=$configPackets")
+                        listener.onConfig(payload)
+                    }
                     3 -> Unit
-                    4 -> listener.onAudio(payload, pts)
-                    else -> listener.onFrame(payload, pts, kind == 2)
+                    4 -> { audioPackets++; listener.onAudio(payload, pts) }
+                    else -> {
+                        videoPackets++
+                        if (kind == 2) {
+                            keyFrames++
+                            AppDiagnostics.record("info", "screen.keyframe.received", "screen.websocket", true, 0, "", "bytes=${payload.size} pts=$pts count=$keyFrames videoPackets=$videoPackets")
+                        }
+                        listener.onFrame(payload, pts, kind == 2)
+                    }
                 }
             }
             override fun onFailure(webSocket: WebSocket, error: Throwable, response: Response?) {
@@ -67,7 +87,10 @@ class ScreenStreamClient(
                 AppDiagnostics.failure("screen.connect", "screen.websocket", 0, code, "type=${error.javaClass.simpleName}")
                 listener.onState(error.message ?: "实时投屏连接失败", code)
             }
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = listener.onState("实时投屏已停止")
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                AppDiagnostics.record("info", "screen.websocket.closed", "screen.websocket", true, 0, "", "code=$code reason=$reason config=$configPackets keyFrames=$keyFrames video=$videoPackets audio=$audioPackets")
+                listener.onState("实时投屏已停止")
+            }
         })
     }
 

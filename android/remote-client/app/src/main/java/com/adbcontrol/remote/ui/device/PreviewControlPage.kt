@@ -28,11 +28,13 @@ import com.adbcontrol.remote.ui.common.BasePage
 import com.adbcontrol.remote.ui.common.PageHost
 import com.adbcontrol.remote.ui.common.withAlpha
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.Executors
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import com.adbcontrol.remote.transport.H264SurfaceDecoder
 import com.adbcontrol.remote.transport.ScreenEndpointPolicy
 import com.adbcontrol.remote.transport.ScreenStreamClient
+import com.adbcontrol.remote.transport.ScreenDecodeGate
 import com.adbcontrol.remote.transport.RemoteScreenshotClient
 import com.adbcontrol.remote.transport.RawPcmAudioPlayer
 
@@ -73,6 +75,11 @@ class PreviewControlPage(
     private var autoTimer: Runnable? = null
     private var stream: ScreenStreamClient? = null
     private var decoder: H264SurfaceDecoder? = null
+    private val decodeExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "adbcontrol-screen-decoder").apply { isDaemon = true }
+    }
+    private val decodeGate = ScreenDecodeGate()
+    private val firstRenderedFrame = AtomicBoolean(false)
     private var audioPlayer: RawPcmAudioPlayer? = null
     private var codecConfig: ByteArray? = null
     private var streamSize: Pair<Int, Int>? = null
@@ -223,32 +230,45 @@ class PreviewControlPage(
         stream?.close()
         stream = ScreenStreamClient(endpoint, session.token, device.id, object : ScreenStreamClient.Listener {
             override fun onMeta(width: Int, height: Int) {
+                // 协议回调线程先保存尺寸；不能等主线程 UI 队列，否则紧随其后的 SPS/PPS 会看不到尺寸。
+                streamSize = width to height
                 mainHandler.post {
-                    streamSize = width to height
                     latestImageSize = streamSize
                     updateMediaStageLayout(streamSize)
                     stateText.text = "实时投屏连接成功 · ${width}x$height"
                 }
             }
             override fun onConfig(data: ByteArray) {
-                mainHandler.post {
+                decodeExecutor.execute {
                     codecConfig = data
-                    val size = streamSize ?: return@post
+                    val size = streamSize
+                    if (size == null) {
+                        com.adbcontrol.remote.data.log.AppDiagnostics.failure("screen.decoder.configure", "media.codec", 0, "SCREEN_META_MISSING", "configBytes=${data.size}")
+                        return@execute
+                    }
                     runCatching {
                         decoder?.close()
                         decoder = H264SurfaceDecoder(surfaceView.holder.surface).also { it.configure(size.first, size.second, data) }
-                        surfaceView.visibility = View.VISIBLE
-                        imageView.visibility = View.GONE
+                        val pending = decodeGate.markConfigured()
+                        com.adbcontrol.remote.data.log.AppDiagnostics.record("info", "screen.decoder.configured", "media.codec", true, 0, "", "size=${size.first}x${size.second} configBytes=${data.size} pending=${pending.size} surfaceValid=${surfaceView.holder.surface.isValid}")
+                        pending.forEach(::decodeFrame)
+                        mainHandler.post {
+                            surfaceView.visibility = View.VISIBLE
+                            imageView.visibility = View.GONE
+                        }
                     }.onFailure {
-                        stateText.text = "视频解码初始化失败：${it.message}"
+                        mainHandler.post { stateText.text = "视频解码初始化失败：${it.message}" }
                         com.adbcontrol.remote.data.log.AppDiagnostics.failure("screen.decoder.configure", "media.codec", 0, "SCREEN_DECODER_CONFIG_FAILED", "type=${it.javaClass.simpleName}")
                     }
                 }
             }
             override fun onFrame(data: ByteArray, presentationTimeUs: Long, keyFrame: Boolean) {
-                runCatching { decoder?.queue(data, presentationTimeUs, keyFrame) }.onFailure {
-                    mainHandler.post { stateText.text = "视频帧解码失败：${it.message}" }
-                    com.adbcontrol.remote.data.log.AppDiagnostics.failure("screen.decoder.frame", "media.codec", 0, "SCREEN_DECODER_FRAME_FAILED", "type=${it.javaClass.simpleName}")
+                decodeExecutor.execute {
+                    val ready = decodeGate.offer(data, presentationTimeUs, keyFrame)
+                    if (ready.isEmpty() && keyFrame) {
+                        com.adbcontrol.remote.data.log.AppDiagnostics.record("warn", "screen.decoder.keyframe.buffered", "media.codec", true, 0, "", "bytes=${data.size} pts=$presentationTimeUs")
+                    }
+                    ready.forEach(::decodeFrame)
                 }
             }
             override fun onAudioAvailable(available: Boolean) {
@@ -275,8 +295,12 @@ class PreviewControlPage(
     private fun stopLive(message: String = "实时投屏已停止") {
         stream?.close()
         stream = null
-        decoder?.close()
-        decoder = null
+        decodeGate.reset()
+        firstRenderedFrame.set(false)
+        decodeExecutor.execute {
+            decoder?.close()
+            decoder = null
+        }
         audioPlayer?.close()
         audioPlayer = null
         codecConfig = null
@@ -619,6 +643,22 @@ class PreviewControlPage(
         stopAuto()
         stopLive("")
         if (fullScreen) toggleFullScreen()
+        decodeExecutor.shutdown()
+    }
+
+    private fun decodeFrame(frame: ScreenDecodeGate.Frame) {
+        runCatching {
+            val result = decoder?.queue(frame.data, frame.presentationTimeUs, frame.keyFrame)
+            if (result == H264SurfaceDecoder.QueueResult.RENDERED && firstRenderedFrame.compareAndSet(false, true)) {
+                com.adbcontrol.remote.data.log.AppDiagnostics.record("info", "screen.decoder.first_frame_rendered", "media.codec", true, 0, "", "keyFrame=${frame.keyFrame} bytes=${frame.data.size} pts=${frame.presentationTimeUs}")
+                mainHandler.post { stateText.text = "实时投屏播放中 · ${streamSize?.first ?: 0}x${streamSize?.second ?: 0}" }
+            } else if (result == H264SurfaceDecoder.QueueResult.INPUT_BUSY) {
+                com.adbcontrol.remote.data.log.AppDiagnostics.record("warn", "screen.decoder.input_busy", "media.codec", true, 0, "", "keyFrame=${frame.keyFrame} bytes=${frame.data.size}")
+            }
+        }.onFailure {
+            mainHandler.post { stateText.text = "视频帧解码失败：${it.message}" }
+            com.adbcontrol.remote.data.log.AppDiagnostics.failure("screen.decoder.frame", "media.codec", 0, "SCREEN_DECODER_FRAME_FAILED", "type=${it.javaClass.simpleName}")
+        }
     }
 
     private var pendingLiveStart = false
