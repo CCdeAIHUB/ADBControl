@@ -38,6 +38,8 @@ import com.adbcontrol.remote.security.RiskPolicy
 import com.adbcontrol.remote.transport.jniCertificateBytes
 import com.adbcontrol.remote.transport.ScreenEndpointPolicy
 import com.adbcontrol.remote.transport.ScreenDecodeGate
+import com.adbcontrol.remote.transport.H264OutputPolicy
+import android.media.MediaCodec
 import com.adbcontrol.remote.data.log.DiagnosticUploadPolicy
 import com.adbcontrol.remote.data.RemoteDeviceListPolicy
 import com.adbcontrol.remote.ui.device.ScreenViewportMapper
@@ -58,6 +60,7 @@ object ContractTests {
         symlinkDirectoryNavigationRules()
         remoteDevicePropertyRules()
         screenDecodeGatePreservesFirstKeyFrame()
+        surfaceDecoderRendersZeroSizedOutputBuffers()
         packageCatalogParsingRules()
         hardwareSnapshotParsingRules()
         appFrameFpsWindowRules()
@@ -213,6 +216,13 @@ object ContractTests {
         val pending = gate.markConfigured()
         check(pending.size == 1 && pending.single().keyFrame)
         check(gate.offer(byteArrayOf(2), 2, keyFrame = false).size == 1)
+    }
+
+    private fun surfaceDecoderRendersZeroSizedOutputBuffers() {
+        // 场景：MediaCodec Surface 模式可能返回 size=0 的正常画面；判定只能看 codec-config 标记。
+        check(H264OutputPolicy.isRenderableBuffer(0))
+        check(H264OutputPolicy.isRenderableBuffer(MediaCodec.BUFFER_FLAG_KEY_FRAME))
+        check(!H264OutputPolicy.isRenderableBuffer(MediaCodec.BUFFER_FLAG_CODEC_CONFIG))
     }
 
     private fun pageStackBackRules() {

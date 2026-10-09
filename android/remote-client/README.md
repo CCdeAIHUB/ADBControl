@@ -1,5 +1,7 @@
 # ADBControl Remote for Android
 
+当前调试版本：`0.3.8`（versionCode 17）。构建产物位于 `app/build/outputs/apk/debug/app-debug.apk`；部署后的 Web 下载地址为 `/downloads/adbcontrol-remote-0.3.8.apk`。
+
 原生 Kotlin 安卓远程客户端（v0.3.5）。它只连接远程 `adbcontrol-core`，不携带 ADB
 可执行文件、不访问 USB 调试接口，也不在手机本地执行目标设备能力——一切设备操作
 经加密 QUIC 通道由 Core 定向下发。

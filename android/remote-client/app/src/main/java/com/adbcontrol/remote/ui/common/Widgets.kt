@@ -151,8 +151,8 @@ fun Context.topBar(title: String, onBack: () -> Unit, action: TextView.() -> Uni
             addView(FlatIconView(this@topBar, AppIcon.BACK, pal.text).apply {
                 setOnClickListener { onBack() }
                 foreground = ripple()
-                setPadding(dp(11), dp(16), dp(11), dp(16))
-            }, LinearLayout.LayoutParams(dp(46), dp(56)))
+                setPadding(dp(10), dp(18), dp(10), dp(18))
+            }, LinearLayout.LayoutParams(dp(40), dp(56)))
             addView(text(title, 16f, pal.text, true).apply {
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
@@ -191,7 +191,7 @@ fun Context.statusDot(textValue: String, color: Int): View = row {
 fun Context.featureTile(title: String, subtitle: String, emoji: String, onClick: () -> Unit): View =
     card(column(6) {
         addView(FrameLayout(this@featureTile).apply {
-            addView(FlatIconView(this@featureTile, iconFor("$title $emoji")), FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER))
+            addView(FlatIconView(this@featureTile, FlatIconCatalog.from("$title $emoji")), FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER))
             background = shape(pal.brandSoft, 8)
         }, LinearLayout.LayoutParams(dp(34), dp(34)))
         addView(text(title, 14f, pal.text, true))
@@ -228,14 +228,17 @@ fun Context.listRow(
     onClick: (() -> Unit)? = null,
     trailing: View? = null,
     emoji: String = "",
+    leading: View? = null,
 ): View = card(row {
-    if (emoji.isNotBlank()) {
-        addView(FlatIconView(this@listRow, iconFor("$title $emoji")), LinearLayout.LayoutParams(dp(24), dp(24)))
+    if (leading != null) {
+        addView(leading, LinearLayout.LayoutParams(dp(36), dp(36)))
+    } else if (emoji.isNotBlank()) {
+        addView(FlatIconView(this@listRow, FlatIconCatalog.from("$title $emoji")), LinearLayout.LayoutParams(dp(24), dp(24)))
     }
     addView(column(3) {
         addView(text(title, 15f, pal.text, true))
         if (subtitle.isNotBlank()) addView(text(subtitle, 11f, pal.muted))
-    }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = if (emoji.isBlank()) 0 else dp(8) })
+    }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = if (emoji.isBlank() && leading == null) 0 else dp(8) })
     if (trailing != null) addView(trailing) else addView(FlatIconView(this@listRow, AppIcon.FORWARD, pal.muted), LinearLayout.LayoutParams(dp(20), dp(20)))
 }, 12).apply {
     if (onClick != null) {
@@ -248,7 +251,7 @@ fun Context.listRow(
 fun Context.emptyView(title: String, detail: String, emoji: String = "📭"): View = column(8) {
     gravity = Gravity.CENTER
     setPadding(dp(32), dp(48), dp(32), dp(48))
-    addView(FlatIconView(this@emptyView, iconFor("$title $emoji")), LinearLayout.LayoutParams(dp(48), dp(48)))
+    addView(FlatIconView(this@emptyView, FlatIconCatalog.from("$title $emoji")), LinearLayout.LayoutParams(dp(48), dp(48)))
     addView(text(title, 15f, pal.text, true).apply { gravity = Gravity.CENTER })
     addView(text(detail, 12f, pal.muted).apply { gravity = Gravity.CENTER })
 }

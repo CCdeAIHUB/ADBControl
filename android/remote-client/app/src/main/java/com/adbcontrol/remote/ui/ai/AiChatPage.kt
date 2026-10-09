@@ -33,6 +33,7 @@ class AiChatPage(
     host: PageHost,
     private val graph: AppGraph,
     private val boundDevice: RemoteDevice?,
+    private val onClose: (() -> Unit)? = null,
 ) : BasePage(context, host), AiAgentRuntime.Host {
 
     private val messagesContainer = column(10)
@@ -52,7 +53,7 @@ class AiChatPage(
         }
         root.addView(topBar("AI 助手${boundDevice?.let { " · ${it.displayName}" } ?: ""}", onBack = {
             cancelFlag.set(true)
-            host.popPage()
+            onClose?.invoke() ?: host.popPage()
         }))
         // 工具栏：模型 / 权限模式。
         root.addView(row {

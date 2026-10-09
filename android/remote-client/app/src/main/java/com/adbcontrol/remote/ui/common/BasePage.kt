@@ -44,7 +44,8 @@ abstract class BasePage(
         onClick: (() -> Unit)? = null,
         trailing: View? = null,
         emoji: String = "",
-    ): View = context.listRow(title, subtitle, onClick, trailing, emoji)
+        leading: View? = null,
+    ): View = context.listRow(title, subtitle, onClick, trailing, emoji, leading)
     protected fun emptyView(title: String, detail: String, emoji: String = "📭"): View = context.emptyView(title, detail, emoji)
     protected fun loadingView(message: String = "正在加载…"): View = context.loadingView(message)
     protected fun errorCard(

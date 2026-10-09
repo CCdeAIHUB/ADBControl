@@ -47,6 +47,7 @@ class HardwarePage(
             ViewGroup.LayoutParams.MATCH_PARENT, dp(56),
         ))
         root.addView(scroll(dashboard))
+		dashboard.addView(primaryButton("打开硬件监控") { host.pushPage(HardwareMonitorPage(context, host, graph, device)) })
 		dashboard.addView(loadingView("正在读取硬件信息，首次采集可能需要数秒…"))
         refresh()
         scheduleNext()
@@ -87,6 +88,7 @@ class HardwarePage(
 
     private fun render(snapshot: HardwareSnapshotData, frameOutput: String) {
         dashboard.removeAllViews()
+        dashboard.addView(primaryButton("打开硬件监控") { host.pushPage(HardwareMonitorPage(context, host, graph, device)) })
         dashboard.addView(metricRow(
             "CPU ${snapshot.cpuUsageEstimatePercent?.let { fmt("%.0f%%", it) } ?: "—"}",
             "内存 ${snapshot.memUsedPercent?.let { fmt("%.0f%%", it) } ?: "—"}",

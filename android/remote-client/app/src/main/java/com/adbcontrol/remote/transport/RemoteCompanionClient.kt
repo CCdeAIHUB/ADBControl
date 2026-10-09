@@ -35,6 +35,9 @@ class RemoteCompanionClient {
     fun permissions(endpoint: String, token: String, deviceId: String) =
         request(endpoint, token, deviceId, "/permissions", "GET")
 
+    fun packages(endpoint: String, token: String, deviceId: String) =
+        request(endpoint, token, deviceId, "/packages", "GET")
+
     fun invoke(endpoint: String, token: String, deviceId: String, capabilityId: String, operation: String, args: JSONObject = JSONObject()) =
         request(endpoint, token, deviceId, "/capabilities/invoke", "POST",
             JSONObject().put("capabilityId", capabilityId).put("operation", operation).put("args", args).toString())

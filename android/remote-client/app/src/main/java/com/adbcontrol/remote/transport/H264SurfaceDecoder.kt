@@ -39,11 +39,23 @@ class H264SurfaceDecoder(private val surface: Surface) {
         decoder.queueInputBuffer(inputIndex, 0, data.size, presentationTimeUs, if (keyFrame) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
         val info = MediaCodec.BufferInfo()
         var rendered = false
-        while (true) {
-            val outputIndex = decoder.dequeueOutputBuffer(info, 0)
-            if (outputIndex < 0) break
-            decoder.releaseOutputBuffer(outputIndex, info.size > 0)
-            rendered = rendered || info.size > 0
+        var attempts = 0
+        while (attempts++ < 8) {
+            val outputIndex = decoder.dequeueOutputBuffer(info, if (attempts == 1) 10_000 else 0)
+            when {
+                outputIndex >= 0 -> {
+                    // Surface 解码器的 output BufferInfo.size 合法地可能为 0；只要不是
+                    // codec-config 缓冲区就必须 release(render=true)，否则画面会永久黑屏。
+                    val isFrame = H264OutputPolicy.isRenderableBuffer(info.flags)
+                    decoder.releaseOutputBuffer(outputIndex, isFrame)
+                    rendered = rendered || isFrame
+                }
+                outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                    AppDiagnostics.record("info", "screen.decoder.format_changed", "media.codec", true, 0, "", decoder.outputFormat.toString())
+                }
+                outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> break
+                else -> Unit
+            }
         }
         return if (rendered) QueueResult.RENDERED else QueueResult.QUEUED
     }
@@ -72,4 +84,9 @@ class H264SurfaceDecoder(private val surface: Surface) {
     }
 
     private fun withStartCode(unit: ByteArray) = byteArrayOf(0, 0, 0, 1) + unit
+}
+
+/** Pure decoder-output policy kept outside MediaCodec so the Surface zero-byte regression is contract-tested. */
+object H264OutputPolicy {
+    fun isRenderableBuffer(flags: Int): Boolean = flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0
 }

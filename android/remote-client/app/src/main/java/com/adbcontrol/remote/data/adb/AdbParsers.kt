@@ -179,6 +179,8 @@ object PackageCatalogParser {
         val isSystem: Boolean = false,
         val versionName: String = "",
         val apkPath: String = "",
+        val iconPngBase64: String = "",
+        val iconText: String = "APP",
     )
 
     fun parsePackageList(output: String, system: Boolean): List<PackageEntry> = output.lineSequence()

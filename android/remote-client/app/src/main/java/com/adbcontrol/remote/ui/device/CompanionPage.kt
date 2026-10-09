@@ -33,9 +33,14 @@ class CompanionPage(
     override fun build(): View {
         body.addView(sectionTitle("伴侣 App 状态", "安装在目标设备上，为远程提供能力通道"))
         val statusCard = card(column(8) { addView(text("检测中…", 13f, pal.muted)) })
+        val capabilityCard = card(column(8) { addView(text("读取中…", 13f, pal.muted)) })
+        val permissionCard = card(column(8) { addView(text("读取中…", 13f, pal.muted)) })
         body.addView(statusCard)
         body.addView(row {
-            addView(secondaryButton("重新检测") { loadStatus(statusCard) }, LinearLayout.LayoutParams(0, dp(44), 1f))
+            addView(secondaryButton("重新检测") {
+                loadStatus(statusCard)
+                loadCapabilities(capabilityCard, permissionCard)
+            }, LinearLayout.LayoutParams(0, dp(44), 1f))
             addView(secondaryButton("呼出伴侣界面") {
                 host.runRemote({
                     val (endpoint, token) = endpointAndToken()
@@ -49,10 +54,8 @@ class CompanionPage(
             }, LinearLayout.LayoutParams(0, dp(44), 1f).apply { leftMargin = dp(8) })
         })
         body.addView(sectionTitle("能力目录", "由伴侣 App 上报，决定远程可调用范围"))
-        val capabilityCard = card(column(8) { addView(text("读取中…", 13f, pal.muted)) })
         body.addView(capabilityCard)
         body.addView(sectionTitle("权限状态", "缺失权限会在调用时以 COMPANION_PERMISSION_DENIED 明确失败"))
-        val permissionCard = card(column(8) { addView(text("读取中…", 13f, pal.muted)) })
         body.addView(permissionCard)
         body.addView(text(
             "通道说明：App 已安装或正在运行不等于 QUIC 已连接。ADB 通道负责安装、配置与兼容命令；" +

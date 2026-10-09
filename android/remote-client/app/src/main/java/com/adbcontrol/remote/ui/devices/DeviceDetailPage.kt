@@ -12,12 +12,13 @@ import com.adbcontrol.remote.ui.common.BasePage
 import com.adbcontrol.remote.ui.common.PageHost
 import com.adbcontrol.remote.ui.device.CompanionPage
 import com.adbcontrol.remote.ui.device.FilesPage
-import com.adbcontrol.remote.ui.device.HardwareMonitorPage
 import com.adbcontrol.remote.ui.device.HardwarePage
 import com.adbcontrol.remote.ui.device.PreviewControlPage
 import com.adbcontrol.remote.ui.device.RebootPage
 import com.adbcontrol.remote.ui.device.TerminalPage
 import com.adbcontrol.remote.ui.device.AppsPage
+import com.adbcontrol.remote.transport.ScreenEndpointPolicy
+import org.json.JSONObject
 
 /**
  * 设备详情中枢：对应桌面端设备详情页。
@@ -33,6 +34,7 @@ class DeviceDetailPage(
 
     private val statusText = text("", 12f, pal.muted)
     private val lockText = text("锁屏状态：检测中…", 12f, pal.muted)
+    private val companionBadge = badge(if (device.companionOnline) "伴侣已连接" else "伴侣未连接", if (device.companionOnline) pal.brand else pal.muted)
 
     override fun build(): View {
         val body = column(14)
@@ -57,7 +59,7 @@ class DeviceDetailPage(
                 }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
                 addView(column(3) {
                     addView(badge(if (device.adbOnline) "ADB 在线" else "ADB 离线", if (device.adbOnline) pal.success else pal.muted))
-                    addView(badge(if (device.companionOnline) "伴侣已连接" else "伴侣未连接", if (device.companionOnline) pal.brand else pal.muted))
+                    addView(companionBadge)
                 })
             })
             addView(statusText)
@@ -72,7 +74,6 @@ class DeviceDetailPage(
             listOf("📦", "软件管理", "列表 · 启停 · 卸载") to { host.pushPage(AppsPage(context, host, graph, device)) },
             listOf("📁", "文件管理", "浏览 · 上传 · 下载") to { host.pushPage(FilesPage(context, host, graph, device)) },
             listOf("📈", "硬件信息", "SoC · 内存 · 温度") to { host.pushPage(HardwarePage(context, host, graph, device)) },
-            listOf("⏱", "硬件监控", "采样 · 记录 · 导出") to { host.pushPage(HardwareMonitorPage(context, host, graph, device)) },
             listOf("🔄", "重启选项", "系统 · Bootloader 等") to { host.pushPage(RebootPage(context, host, graph, device)) },
             listOf("🧩", "伴侣能力", "状态 · 权限 · 能力") to { host.pushPage(CompanionPage(context, host, graph, device)) },
         )
@@ -142,6 +143,18 @@ class DeviceDetailPage(
                     LockStateParser.LockState.Unlocked -> "未锁屏"
                     LockStateParser.LockState.Unknown -> "未知"
                 }
+            }
+        }
+        val profile = graph.activeProfile
+        val session = graph.activeSession
+        val endpoint = profile?.let { ScreenEndpointPolicy.derive(it.endpoint, it.webEndpoint) }
+        if (endpoint != null && session != null) {
+            host.runRemote({ graph.remoteCompanion.status(endpoint, session.token, device.id) }) { result ->
+                val connected = (result as? RemoteResult.Success)?.value?.value
+                    .let { it as? JSONObject }?.optString("quicTransport") == "connected"
+                companionBadge.text = if (connected) "伴侣已连接" else "伴侣未连接"
+                companionBadge.setTextColor(if (connected) pal.brand else pal.muted)
+                companionBadge.background = shape(withAlpha(if (connected) pal.brand else pal.muted, 0x1E), 6)
             }
         }
     }

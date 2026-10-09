@@ -4,8 +4,12 @@ import android.content.Context
 import android.view.View
 import android.view.ViewGroup
 import android.widget.LinearLayout
+import android.widget.ImageView
+import android.util.Base64
+import android.graphics.BitmapFactory
 import com.adbcontrol.remote.core.AppGraph
 import com.adbcontrol.remote.data.adb.PackageCatalogParser
+import com.adbcontrol.remote.data.adb.RemotePackageCatalog
 import com.adbcontrol.remote.model.RemoteDevice
 import com.adbcontrol.remote.model.RemoteResult
 import com.adbcontrol.remote.ui.common.BasePage
@@ -62,6 +66,25 @@ class AppsPage(
     private fun load() {
         listContainer.removeAllViews()
         listContainer.addView(loadingView("正在读取应用列表…"))
+        val profile = graph.activeProfile
+        val session = graph.activeSession
+        val endpoint = profile?.let { com.adbcontrol.remote.transport.ScreenEndpointPolicy.derive(it.endpoint, it.webEndpoint) }
+        if (endpoint != null && session != null) {
+            host.runRemote({ graph.remoteCompanion.packages(endpoint, session.token, device.id) }) { result ->
+                if (result is RemoteResult.Success) {
+                    allPackages = RemotePackageCatalog.parse(result.value.value)
+                    render()
+                } else {
+                    loadViaAdb()
+                }
+            }
+            return
+        }
+        loadViaAdb()
+    }
+
+    /** Offline-compatible fallback; the authenticated API is preferred because it includes Companion labels/icons. */
+    private fun loadViaAdb() {
         host.runRemote({ graph.commands.shell(device.id, "pm list packages", 20_000) }) { allResult ->
             if (allResult is RemoteResult.Failure) {
                 listContainer.removeAllViews()
@@ -95,6 +118,7 @@ class AppsPage(
                                 it.copy(label = info.label, versionName = info.versionName, apkPath = info.apkPath)
                             } else it
                         }
+                        render()
                     }
                 }
             }
@@ -124,9 +148,23 @@ class AppsPage(
             if (entry.versionName.isNotBlank()) append(" · ${entry.versionName}")
             append(if (entry.isSystem) " · 系统" else " · 第三方")
         },
-        emoji = "📦",
+        emoji = if (entry.iconPngBase64.isBlank()) "📦" else "",
+        leading = packageIcon(entry),
         onClick = { showActions(entry) },
     )
+
+    private fun packageIcon(entry: PackageCatalogParser.PackageEntry): View? {
+        if (entry.iconPngBase64.isBlank()) return null
+        return runCatching {
+            val bytes = Base64.decode(entry.iconPngBase64, Base64.DEFAULT)
+            ImageView(context).apply {
+                setImageBitmap(BitmapFactory.decodeByteArray(bytes, 0, bytes.size))
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                background = shape(pal.surfaceMuted, 8)
+                clipToOutline = true
+            }
+        }.getOrNull()
+    }
 
     private fun showActions(entry: PackageCatalogParser.PackageEntry) {
         val options = listOf(

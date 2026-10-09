@@ -41,7 +41,8 @@ class FlatIconView(context: Context, private val icon: AppIcon, private val tint
 
 enum class AppIcon { HOME, DEVICE, TASK, USER, SCREEN, FOLDER, APP, SETTINGS, LOG, TERMINAL, POWER, LOCK, BACK, FORWARD, GENERIC }
 
-fun iconFor(value: String): AppIcon = when {
+object FlatIconCatalog {
+fun from(value: String): AppIcon = when {
     value.contains("主页") || value in setOf("⌂", "🏠") -> AppIcon.HOME
     value.contains("设备") || value.contains("手机") || value in setOf("📱", "📲") -> AppIcon.DEVICE
     value.contains("任务") || value in setOf("🗓", "⏱", "🔔") -> AppIcon.TASK
@@ -55,4 +56,5 @@ fun iconFor(value: String): AppIcon = when {
     value.contains("重启") || value == "⏻" -> AppIcon.POWER
     value.contains("锁") || value == "🔒" -> AppIcon.LOCK
     else -> AppIcon.GENERIC
+}
 }
