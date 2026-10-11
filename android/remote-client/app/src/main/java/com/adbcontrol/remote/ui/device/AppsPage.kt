@@ -7,6 +7,8 @@ import android.widget.LinearLayout
 import android.widget.ImageView
 import android.util.Base64
 import android.graphics.BitmapFactory
+import android.graphics.Bitmap
+import android.util.LruCache
 import com.adbcontrol.remote.core.AppGraph
 import com.adbcontrol.remote.data.adb.PackageCatalogParser
 import com.adbcontrol.remote.data.adb.RemotePackageCatalog
@@ -35,6 +37,10 @@ class AppsPage(
     private var allPackages: List<PackageCatalogParser.PackageEntry> = emptyList()
     private var showSystem = false
     private var query = ""
+    private var renderedLimit = 60
+    private val iconCache = object : LruCache<String, Bitmap>(8 * 1024 * 1024) {
+        override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
+    }
 
     override fun build(): View {
         val root = column {
@@ -46,15 +52,16 @@ class AppsPage(
         ))
         val content = column(10)
         val searchInput = input("搜索包名或应用名").apply {
-            setOnEditorActionListener { _, _, _ -> query = text.toString().trim(); render(); true }
+            setOnEditorActionListener { _, _, _ -> query = text.toString().trim(); renderedLimit = 60; render(); true }
         }
         content.addView(searchInput)
         content.addView(row {
             addView(secondaryButton(if (showSystem) "仅第三方" else "显示系统应用") {
                 showSystem = !showSystem
+                renderedLimit = 60
                 load()
             }, LinearLayout.LayoutParams(0, dp(44), 1f))
-            addView(secondaryButton("搜索") { query = searchInput.text.toString().trim(); render() },
+            addView(secondaryButton("搜索") { query = searchInput.text.toString().trim(); renderedLimit = 60; render() },
                 LinearLayout.LayoutParams(0, dp(44), 1f).apply { leftMargin = dp(8) })
         })
         content.addView(listContainer)
@@ -64,6 +71,7 @@ class AppsPage(
     }
 
     private fun load() {
+        renderedLimit = 60
         listContainer.removeAllViews()
         listContainer.addView(loadingView("正在读取应用列表…"))
         val profile = graph.activeProfile
@@ -98,7 +106,9 @@ class AppsPage(
                 allPackages = PackageCatalogParser.parsePackageList(all, system = true).map { entry ->
                     entry.copy(isSystem = entry.packageName !in thirdSet)
                 }
-                resolveLabels()
+                // Do not fan out one remote dumpsys request per package. The quick
+                // fallback deliberately renders package names immediately; the
+                // authenticated API above provides batched labels and icons.
                 render()
             }
         }
@@ -135,9 +145,12 @@ class AppsPage(
             listContainer.addView(emptyView("没有匹配的应用", "尝试调整搜索词或切换系统应用显示", "📦"))
             return
         }
-        filtered.take(300).forEach { entry -> listContainer.addView(packageRow(entry)) }
-        if (filtered.size > 300) {
-            listContainer.addView(text("共 ${filtered.size} 个应用，已显示前 300 个，可用搜索缩小范围", 11f, pal.muted))
+        filtered.take(renderedLimit).forEach { entry -> listContainer.addView(packageRow(entry)) }
+        if (filtered.size > renderedLimit) {
+            listContainer.addView(secondaryButton("加载更多（${filtered.size - renderedLimit}）") {
+                renderedLimit = (renderedLimit + 60).coerceAtMost(filtered.size)
+                render()
+            })
         }
     }
 
@@ -156,10 +169,13 @@ class AppsPage(
     private fun packageIcon(entry: PackageCatalogParser.PackageEntry): View? {
         if (entry.iconPngBase64.isBlank()) return null
         return runCatching {
-            val bytes = Base64.decode(entry.iconPngBase64, Base64.DEFAULT)
+            val bitmap = iconCache.get(entry.packageName) ?: run {
+                val bytes = Base64.decode(entry.iconPngBase64, Base64.DEFAULT)
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.also { iconCache.put(entry.packageName, it) }
+            } ?: return@runCatching null
             ImageView(context).apply {
-                setImageBitmap(BitmapFactory.decodeByteArray(bytes, 0, bytes.size))
-                scaleType = ImageView.ScaleType.CENTER_CROP
+                setImageBitmap(bitmap)
+                scaleType = ImageView.ScaleType.FIT_CENTER
                 background = shape(pal.surfaceMuted, 8)
                 clipToOutline = true
             }

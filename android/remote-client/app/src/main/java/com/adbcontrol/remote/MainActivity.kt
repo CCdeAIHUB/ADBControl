@@ -221,9 +221,11 @@ class MainActivity : Activity(), PageHost {
         rootContainer.getChildAt(rootContainer.childCount - 1)?.visibility = View.GONE
         pageStack.add(page)
         pageStackState.push()
-        rootContainer.addView(page.build(), ViewGroup.LayoutParams(
+        val pageView = page.build().apply { alpha = 0f; translationX = dp(20).toFloat() }
+        rootContainer.addView(pageView, ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
         ))
+        pageView.animate().alpha(1f).translationX(0f).setDuration(180).start()
     }
 
     override fun popPage() {
@@ -234,7 +236,12 @@ class MainActivity : Activity(), PageHost {
         if (rootContainer.childCount > 0) {
             rootContainer.removeViewAt(rootContainer.childCount - 1)
         }
-        rootContainer.getChildAt(rootContainer.childCount - 1)?.visibility = View.VISIBLE
+        rootContainer.getChildAt(rootContainer.childCount - 1)?.apply {
+            visibility = View.VISIBLE
+            alpha = 0.86f
+            translationX = -dp(12).toFloat()
+            animate().alpha(1f).translationX(0f).setDuration(160).start()
+        }
     }
 
     override fun openDevice(device: RemoteDevice) {

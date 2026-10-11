@@ -151,8 +151,8 @@ fun Context.topBar(title: String, onBack: () -> Unit, action: TextView.() -> Uni
             addView(FlatIconView(this@topBar, AppIcon.BACK, pal.text).apply {
                 setOnClickListener { onBack() }
                 foreground = ripple()
-                setPadding(dp(10), dp(18), dp(10), dp(18))
-            }, LinearLayout.LayoutParams(dp(40), dp(56)))
+                setPadding(dp(8), dp(18), dp(8), dp(18))
+            }, LinearLayout.LayoutParams(dp(36), dp(56)))
             addView(text(title, 16f, pal.text, true).apply {
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
